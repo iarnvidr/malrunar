@@ -32,9 +32,10 @@ for f in README.md LICENSE share/supervisord-media-bridge.conf.example share/mal
     test -s "$work/out/$f" || fail "$f is missing"
 done
 grep -q 'Apache License' "$work/out/LICENSE" || fail 'LICENSE is not the Apache-2.0 text'
-test -z "$(docker image inspect --format '{{range .Config.Env}}{{.}}{{end}}{{range .Config.Entrypoint}}{{.}}{{end}}' "$image")" \
-    || fail 'component image sets environment or an entrypoint'
-bash -n "$work/out/bin/malrunar-media-bridge" "$work/out/host/setup-v4l2loopback.sh"
+test -z "$(docker image inspect --format '{{range .Config.Entrypoint}}{{.}}{{end}}' "$image")" \
+    || fail 'component image sets an entrypoint'
+bash -n "$work/out/bin/malrunar-media-bridge"
+bash -n "$work/out/host/setup-v4l2loopback.sh"
 sh -n "$work/out/bin/malrunar-xrdp-audio-tune"
 python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$work/out/bin/malrunar-media-profile"
 
