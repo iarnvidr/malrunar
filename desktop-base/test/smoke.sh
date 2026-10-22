@@ -42,7 +42,7 @@ run bash -c 'test "$(find /opt/malrunar/firefox ! -user root | wc -l)" = 0' || f
 echo '== no policies, distribution directory, autoconfig, extensions'
 run bash -c '
     set -e
-    # The official tarball ships firefox/distribution/distribution.ini (Mozilla's own); nothing else may be there.
+    # The official tarball ships firefox/distribution/distribution.ini (from Mozilla); nothing else may be there.
     test "$(cd /opt/malrunar/firefox/distribution && find . -mindepth 1 | sort)" = "./distribution.ini"
     test ! -e /opt/malrunar/firefox/policies.json
     test ! -e /opt/malrunar/firefox/defaults/pref/autoconfig.js
