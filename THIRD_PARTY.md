@@ -104,3 +104,12 @@ commit.
 Node.js (MIT, official `node` image), esbuild (MIT), gcc/make/autotools and other build tools from
 Debian/Ubuntu. Container base images: `ubuntu` (various licences, per-package copyright files) and
 `node` (Debian bookworm-slim + Node.js).
+
+## media-bridge
+
+`media-bridge` is Apache-2.0 and contains scripts only. At run time it uses ffmpeg, `pactl`
+(pulseaudio-utils), PipeWire and python3 from `desktop-base` under the licences listed above. It does
+not ship the `v4l2loopback` kernel module (GPL-2.0), which you install on the host yourself
+(`host/setup-v4l2loopback.sh` only configures it). CI installs the distribution's
+`v4l2loopback-dkms` package on a GitHub-hosted runner to test the camera path; that package is not
+part of any image.

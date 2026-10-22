@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+# Copyright 2026 efthomsen
+# SPDX-License-Identifier: Apache-2.0
+"""malrunar-media-profile: print a browser policy that lets only the listed sites use the camera
+and microphone.
+
+  malrunar-media-profile [--browser chromium|firefox] [--output FILE] URL [URL ...]
+
+chromium (default): a managed-policy file for Chromium, Chrome or Edge; install it as
+  /etc/chromium/policies/managed/media.json (Chrome: /etc/opt/chrome/policies/managed/,
+  Edge: /etc/opt/edge/policies/managed/). Capture is denied by default and allowed for the URLs,
+  which are Chromium URL patterns such as https://meet.example.com/ or https://[*.]example.com/.
+firefox: a policies.json fragment ({"policies": {"Permissions": ...}}) granting the given origins
+  (for example https://meet.example.com) camera and microphone access. Merge it into your own
+  policies.json; the Firefox in desktop-base ships none, and adding one makes your image a modified
+  Firefox build under Mozilla's distribution policy.
+The file is only printed (or written to --output); nothing is installed for you.
+"""
+import argparse
+import json
+import re
+import sys
+
+
+def chromium(urls):
+    return {
+        "AudioCaptureAllowed": False,
+        "AudioCaptureAllowedUrls": urls,
+        "VideoCaptureAllowed": False,
+        "VideoCaptureAllowedUrls": urls,
+    }
+
+
+def firefox(urls):
+    grant = {"Allow": urls}
+    return {"policies": {"Permissions": {"Camera": grant, "Microphone": dict(grant)}}}
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="malrunar-media-profile", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--browser", choices=("chromium", "firefox"), default="chromium")
+    parser.add_argument("--output", help="write to this file instead of standard output")
+    parser.add_argument("urls", nargs="+", metavar="URL", help="site URL or origin allowed to use the devices")
+    args = parser.parse_args(argv)
+    for url in args.urls:
+        if not re.fullmatch(r"https://[^\s/]+(/.*)?", url) and not re.fullmatch(r"http://(localhost|127\.0\.0\.1)(:\d+)?(/.*)?", url):
+            parser.error(f"'{url}' is not an https:// URL (plain http is only accepted for localhost)")
+    document = (chromium if args.browser == "chromium" else firefox)(args.urls)
+    text = json.dumps(document, indent=2) + "\n"
+    if args.output:
+        with open(args.output, "w") as handle:
+            handle.write(text)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -29,7 +29,7 @@ from pathlib import Path
 SCHEMA = 1
 ROOT = Path(__file__).resolve().parent.parent
 # image -> parent image built FROM (None = built from the pinned Ubuntu base or scratch)
-IMAGES = {"desktop-base": None, "obs-runtime": "desktop-base", "guacd": None, "tail-browser-mcp": None}
+IMAGES = {"desktop-base": None, "obs-runtime": "desktop-base", "guacd": None, "tail-browser-mcp": None, "media-bridge": None}
 # Files that do not influence image content.
 EXCLUDED_DIRS = {"test", "__pycache__", "node_modules", ".git"}
 # Pin that provides the human-readable version tag of each image.
