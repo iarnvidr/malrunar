@@ -11,6 +11,7 @@ ARG UBUNTU_IMAGE
 
 # --- build ------------------------------------------------------------------------------------
 FROM ${UBUNTU_IMAGE} AS build
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 ARG APT_SNAPSHOT
 ARG GUACAMOLE_VERSION
@@ -19,21 +20,18 @@ ARG GUACAMOLE_WOL_COMMIT
 ARG GUACAMOLE_WOL_SHA256
 ARG GUACAMOLE_SOCKET_NEST_COMMIT
 ARG GUACAMOLE_SOCKET_NEST_SHA256
-# The Ubuntu base image has no CA bundle, so the snapshot is read over http. Every index is
-# verified through its GPG signature (Signed-By); verification is never disabled.
-RUN set -eu; . /etc/os-release; \
-    test -n "$APT_SNAPSHOT"; \
-    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*; \
-    printf 'Types: deb\nURIs: http://snapshot.ubuntu.com/ubuntu/%s/\nSuites: %s %s-updates %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-        "$APT_SNAPSHOT" "$VERSION_CODENAME" "$VERSION_CODENAME" "$VERSION_CODENAME" > /etc/apt/sources.list.d/ubuntu.sources; \
-    retry() { n=1; while ! "$@"; do [ "$n" -lt 5 ] || return 1; sleep $((n * 15)); n=$((n + 1)); done; }; \
-    aptget() { apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 "$@"; }; \
-    retry aptget update; \
-    retry aptget upgrade -y; \
-    retry aptget install -y --no-install-recommends ca-certificates curl \
+# apt reads the pinned snapshot over TLS (snapshot.ubuntu.com redirects http to https); the helper
+# bootstraps ca-certificates first. Index signatures and certificates are always verified.
+RUN --mount=type=bind,source=scripts,target=/scripts \
+    . /scripts/apt-snapshot.sh; \
+    malrunar_snapshot_enable; \
+    malrunar_retry malrunar_apt upgrade -y; \
+    malrunar_retry malrunar_apt install -y --no-install-recommends ca-certificates curl \
         gcc g++ make pkg-config libcairo2-dev libjpeg-dev libpng-dev uuid-dev \
         freerdp3-dev libpulse-dev libssl-dev libwebp-dev perl libcunit1-dev patch; \
-    rm -rf /var/lib/apt/lists/*
+    malrunar_snapshot_disable
+# Later steps keep their original /bin/sh semantics (no pipefail in the ldd/dpkg pipeline).
+SHELL ["/bin/sh", "-c"]
 COPY guacamole-rdp-gdi.patch /tmp/rdp-gdi.patch
 # The rpath makes the daemon, libguac and the protocol plugins (dlopen'ed by libguac) find
 # /usr/local/lib without an ld.so cache entry.
@@ -77,24 +75,21 @@ RUN set -eu; export LD_LIBRARY_PATH=/out/usr/local/lib; \
 
 # --- runtime image ----------------------------------------------------------------------------
 FROM ${UBUNTU_IMAGE} AS runtime
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 ARG APT_SNAPSHOT
 # Keep the distro copyright files of every installed library (dpkg path excludes, where the base
 # image has them, would drop them).
-RUN set -eu; . /etc/os-release; \
-    test -n "$APT_SNAPSHOT"; \
+RUN --mount=type=bind,source=scripts,target=/scripts \
     rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/*docker*; \
-    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*; \
-    printf 'Types: deb\nURIs: http://snapshot.ubuntu.com/ubuntu/%s/\nSuites: %s %s-updates %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-        "$APT_SNAPSHOT" "$VERSION_CODENAME" "$VERSION_CODENAME" "$VERSION_CODENAME" > /etc/apt/sources.list.d/ubuntu.sources; \
-    retry() { n=1; while ! "$@"; do [ "$n" -lt 5 ] || return 1; sleep $((n * 15)); n=$((n + 1)); done; }; \
-    aptget() { apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 "$@"; }; \
-    retry aptget update; \
-    retry aptget upgrade -y; \
-    retry aptget install -y --no-install-recommends \
+    . /scripts/apt-snapshot.sh; \
+    malrunar_snapshot_enable; \
+    malrunar_retry malrunar_apt upgrade -y; \
+    malrunar_retry malrunar_apt install -y --no-install-recommends \
         libcairo2 libjpeg-turbo8 libpng16-16t64 libssl3t64 libwebp7 libpulse0 \
         libfreerdp3-3 libfreerdp-client3-3 libwinpr3-3; \
-    rm -rf /var/lib/apt/lists/*
+    malrunar_snapshot_disable
+SHELL ["/bin/sh", "-c"]
 COPY --from=build /out/ /
 # Fail the build if a library is missing, or a linked package version differs from what is installed,
 # or a copyright file is absent.

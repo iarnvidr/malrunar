@@ -18,15 +18,15 @@ Install prefixes: `/opt/malrunar/<component>`, `/usr/local/share/malrunar/...`. 
 Hash: `scripts/malrunar_image.py hash <image>` = f(files of the image directory except `test/`,
 root pins, image pins, parent hash). Tags: `<version>` and `h-<hash>`.
 
-Apt snapshot snippet (the ubuntu base image has no ca-certificates, so the snapshot is read over
-http; every index is verified through its GPG signature with the Ubuntu archive keyring; never
-disable verification):
+Apt: every stage that runs apt uses the snapshot helper (`<image>/scripts/apt-snapshot.sh`, one copy
+per image because the build context is the image directory). The Ubuntu base image has no CA bundle
+and snapshot.ubuntu.com redirects http to https, so the helper installs ca-certificates from the
+image's own archive sources first, then switches to https://snapshot.ubuntu.com/<APT_SNAPSHOT>.
+Signature and certificate verification are never disabled.
 
-    RUN . /etc/os-release && \
-        rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* && \
-        printf 'Types: deb\nURIs: http://snapshot.ubuntu.com/ubuntu/%s/\nSuites: %s %s-updates %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-            "$APT_SNAPSHOT" "$VERSION_CODENAME" "$VERSION_CODENAME" "$VERSION_CODENAME" \
-            > /etc/apt/sources.list.d/ubuntu.sources
-
-(The snapshot source must be written in every stage that runs apt. Add `-o Acquire::Check-Valid-Until=false`
-only if a snapshot Release file is older than its Valid-Until, which snapshot.ubuntu.com does not set.)
+    SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+    RUN --mount=type=bind,source=scripts,target=/scripts \
+        . /scripts/apt-snapshot.sh; \
+        malrunar_snapshot_enable; \
+        malrunar_retry malrunar_apt install -y --no-install-recommends <packages>; \
+        malrunar_snapshot_disable

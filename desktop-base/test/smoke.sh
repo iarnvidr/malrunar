@@ -42,14 +42,15 @@ run bash -c 'test "$(find /opt/malrunar/firefox ! -user root | wc -l)" = 0' || f
 echo '== no policies, distribution directory, autoconfig, extensions'
 run bash -c '
     set -e
-    test ! -e /opt/malrunar/firefox/distribution
+    # The official tarball ships firefox/distribution/distribution.ini (Mozilla's own); nothing else may be there.
+    test "$(cd /opt/malrunar/firefox/distribution && find . -mindepth 1 | sort)" = "./distribution.ini"
     test ! -e /opt/malrunar/firefox/policies.json
     test ! -e /opt/malrunar/firefox/defaults/pref/autoconfig.js
     test ! -e /opt/malrunar/firefox/mozilla.cfg
     test ! -e /opt/malrunar/firefox/browser/extensions
     test ! -e /etc/firefox
     test -z "$(find / -xdev -name policies.json -path "*irefox*" 2>/dev/null)"
-    test -z "$(find / -xdev -type d -name distribution -path "*irefox*" 2>/dev/null)"
+    test -z "$(find / -xdev -type d -name distribution -path "*irefox*" ! -path /opt/malrunar/firefox/distribution 2>/dev/null)"
 ' || fail 'a policies/distribution/autoconfig/extension path exists'
 run bash -c 'test ! -e /usr/local/bin/firefox && test ! -e /opt/firefox' || fail 'compat symlink or old firefox path present'
 
