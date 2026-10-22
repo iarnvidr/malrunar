@@ -19,6 +19,7 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`obs-runtime`](obs-runtime/) | A desktop that also runs OBS | `desktop-base` + OBS Studio 32.2.0, including its browser source |
 | [`obs-control`](obs-control/) | OBS you drive over HTTP | `obs-runtime` + a controller: OBS starts headless with a scene collection generated from a config file, and an HTTP API switches scenes, serves program previews, plays and records clips, reports input levels, controls the output (MPEG-TS over UDP) and makes automatic b-roll. Plugins add routes and scenes. See [docs/obs-control-api.md](docs/obs-control-api.md) |
 | [`guacd`](guacd/) | The Guacamole proxy daemon, as a container | guacd 1.6.0 built against FreeRDP 3, with an RDP GDI fix, listening on port 4822 |
+| [`guacamole-tunnel`](guacamole-tunnel/) | Several viewers in ONE remote desktop session | A small proxy in front of the Guacamole tunnel endpoints: a user's second viewer joins their running session instead of evicting the first. Its own container; it does not touch `guacd` |
 | [`tail-browser-mcp`](tail-browser-mcp/) | Letting an AI agent drive Firefox | The [Tail](https://github.com/rtf6x/tail-browser-mcp) MCP server, client and Firefox extension in `/opt/malrunar/tail-browser-mcp`. A `FROM scratch` layer you copy into your image |
 | [`office-convert`](office-convert/) | Turning Office documents into PDF | A small HTTP service around LibreOffice headless (Impress and Writer filters only, Liberation and Carlito fonts): `POST /convert` takes a .pptx, .ppt, .odp, .key, .docx, .doc or .odt and returns a PDF. One conversion at a time, no state, runs as uid 65534. It has no authentication: keep it on a trusted network. See [office-convert/README.md](office-convert/README.md) |
 | [`media-bridge`](media-bridge/) | An OBS-driven virtual camera and microphone for any call app in the desktop | A receiver that turns an MPEG-TS/UDP stream into a v4l2loopback camera and a PipeWire microphone, plus host setup, supervisord/systemd examples and audio/browser helpers in `/opt/malrunar/media-bridge`. A `FROM scratch` layer you copy into your image |
@@ -134,6 +135,7 @@ examples of how the parts combine (no product is implied; take the rows you need
 | [`obs-runtime`](obs-runtime/) | base image (`FROM`, instead of `desktop-base`) | `desktop-base` | only if OBS runs in the desktop | no |
 | [`obs-control`](obs-control/) | its own container | nothing | yes, next to the desktop | no |
 | [`guacd`](guacd/) | its own container | nothing | yes, with a Guacamole web app | yes, with a Guacamole web app |
+| [`guacamole-tunnel`](guacamole-tunnel/) | its own container | a Guacamole web app and a proxy that sets an identity header (no component of this repository) | optional, when several people watch the same desktop | optional |
 | [`office-convert`](office-convert/) | its own container | nothing | no | optional, next to the desktop |
 | [`media-bridge`](media-bridge/) | component (`COPY --from`) | `desktop-base` | yes | no |
 | [`node`](node/) | component (`COPY --from`) | nothing | optional | optional |
@@ -208,6 +210,7 @@ scripts/build.sh guacd --load && scripts/smoke.sh guacd
 scripts/build.sh desktop-base --load && scripts/build.sh obs-runtime --load && scripts/build.sh obs-control --load && scripts/smoke.sh obs-control
 scripts/build.sh media-bridge --load && scripts/smoke.sh media-bridge   # the smoke test needs desktop-base built
 scripts/build.sh office-convert --load && scripts/smoke.sh office-convert
+scripts/build.sh guacamole-tunnel --load && scripts/smoke.sh guacamole-tunnel
 scripts/build.sh node --load && scripts/smoke.sh node
 scripts/build.sh work-browser --load && scripts/smoke.sh work-browser   # the smoke test needs desktop-base built
 python3 -m unittest discover -s scripts/test    # hashes and pull request planning

@@ -53,7 +53,7 @@ class PinScopeTest(CopyCase):
         changed = self.differing()
         for image in NO_ROOT_PINS:
             self.assertNotIn(image, changed, f"{image} does not use APT_SNAPSHOT but its hash changed")
-        for image in ("desktop-base", "obs-runtime", "obs-control", "guacd", "office-convert"):
+        for image in ("desktop-base", "obs-runtime", "obs-control", "guacd", "guacamole-tunnel", "office-convert"):
             self.assertIn(image, changed, f"{image} installs packages from the snapshot")
         self.assertEqual(set(ci.republished_images(self.base, self.head)), changed)
 
