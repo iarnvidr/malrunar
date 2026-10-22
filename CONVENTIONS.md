@@ -105,3 +105,15 @@ document every setting, route and extension point under `docs/`. A test keeps th
 
 `scripts/check-public-hygiene.sh` (run by `pr.yml`) rejects private names, internal addresses and
 private environment names in any tracked file.
+
+### tools
+
+`tools/` (see [tools/README.md](tools/README.md)) holds build and deploy tooling that is not an image:
+`scripts/malrunar_image.py` stays the one tool for content hashes (directory mode for the images of
+this repository, `graph` mode for a TOML manifest of Dockerfile targets), next to the delivery,
+assembly and comparison scripts. They name no registry, host or product: those are arguments, manifest
+entries or `MALRUNAR_GRAPH_*` / `DELIVER_IMAGE_*` variables. Downloaded tools are pinned by version,
+commit and sha256 (or image digest) in the script that runs them and verified before they run. Their
+tests are `tools/test/` (stdlib `unittest`), run by the `scripts` job through
+`scripts/test/test_tools.py`; a test that needs a real Docker daemon skips without one. Every container
+a tool runs is bounded by `timeout`.

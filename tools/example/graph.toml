@@ -1,0 +1,30 @@
+# Build graph manifest (format: tools/README.md).
+schema = 1
+epoch = "1"                  # bump to force every node to be rebuilt
+namespace = "example"        # nodes are tagged example/<node>:<hash>
+dockerfile = "Dockerfile"    # default Dockerfile, relative to this file
+context = "."                # default build context
+
+[node.base]
+target = "base"
+arg = "RUNTIME_BASE_IMAGE"   # the Dockerfile ARG that receives this node's reference
+
+[node.alpha]
+target = "c-alpha"
+arg = "C_ALPHA_IMAGE"
+
+[node.beta]
+target = "c-beta"
+arg = "C_BETA_IMAGE"
+
+[node.gamma]
+target = "c-gamma"
+arg = "C_GAMMA_IMAGE"
+
+[assemble]
+base = "base"
+components = ["alpha", "beta", "gamma"]   # layered in this order
+final = "final.Dockerfile"                  # appended to the final stage: ENV, ENTRYPOINT, ...
+checks = "checks.sh"                        # run as root in the assembled image; failure keeps the old tag
+label = "example.components"
+tag = "example/assembled:latest"
