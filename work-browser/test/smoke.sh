@@ -97,6 +97,7 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("app.update.auto", false);
 USERJS
+chmod 755 "$work"   # the desktop user (uid 1000) reads these through the mount
 chmod 644 "$work/user.js"
 cat > "$work/integration.sh" <<'INTEGRATION'
 #!/usr/bin/env bash
@@ -104,7 +105,8 @@ set -euo pipefail
 export MALRUNAR_WORK_BROWSER_USER=tester MALRUNAR_WORK_BROWSER_DISPLAY=none MALRUNAR_WORK_BROWSER_ARGS=--headless
 export MALRUNAR_WORK_BROWSER_USER_JS=/work/user.js MALRUNAR_WORK_BROWSER_RETRY_SECONDS=2
 profile=/home/tester/.config/malrunar-work-browser/profile
-supervisord -n -c /etc/supervisor/supervisord.conf > /tmp/supervisord.out 2>&1 &
+# appended, not truncated: the program logs to /dev/stdout, which is this file, through its own descriptor
+supervisord -n -c /etc/supervisor/supervisord.conf >> /tmp/supervisord.out 2>&1 &
 trap 'supervisorctl -c /etc/supervisor/supervisord.conf shutdown >/dev/null 2>&1 || true; sleep 2; cat /tmp/supervisord.out' EXIT
 state=''
 for _ in $(seq 1 60); do
