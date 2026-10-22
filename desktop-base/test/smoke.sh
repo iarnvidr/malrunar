@@ -10,7 +10,7 @@ pin() { grep -h "^$1=" "$here/../pins.env" "$here/../../pins.env" | head -1 | cu
 firefox_version="$(pin FIREFOX_ESR_VERSION)"
 firefox_sha256="$(pin FIREFOX_ESR_SHA256)"
 [ -n "$firefox_version" ] && [ -n "$firefox_sha256" ] || fail 'pins missing'
-run() { docker run --rm --entrypoint '' "$image" "$@"; }
+run() { timeout -k 10 300 docker run --rm --entrypoint '' "$image" "$@"; }
 
 echo '== firefox --version equals the pin'
 out="$(run /opt/malrunar/firefox/firefox --version)"
@@ -42,14 +42,15 @@ run bash -c 'test "$(find /opt/malrunar/firefox ! -user root | wc -l)" = 0' || f
 echo '== no policies, distribution directory, autoconfig, extensions'
 run bash -c '
     set -e
-    test ! -e /opt/malrunar/firefox/distribution
+    # The official tarball ships firefox/distribution/distribution.ini (from Mozilla); nothing else may be there.
+    test "$(cd /opt/malrunar/firefox/distribution && find . -mindepth 1 | sort)" = "./distribution.ini"
     test ! -e /opt/malrunar/firefox/policies.json
     test ! -e /opt/malrunar/firefox/defaults/pref/autoconfig.js
     test ! -e /opt/malrunar/firefox/mozilla.cfg
     test ! -e /opt/malrunar/firefox/browser/extensions
     test ! -e /etc/firefox
     test -z "$(find / -xdev -name policies.json -path "*irefox*" 2>/dev/null)"
-    test -z "$(find / -xdev -type d -name distribution -path "*irefox*" 2>/dev/null)"
+    test -z "$(find / -xdev -type d -name distribution -path "*irefox*" ! -path /opt/malrunar/firefox/distribution 2>/dev/null)"
 ' || fail 'a policies/distribution/autoconfig/extension path exists'
 run bash -c 'test ! -e /usr/local/bin/firefox && test ! -e /opt/firefox' || fail 'compat symlink or old firefox path present'
 
