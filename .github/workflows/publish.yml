@@ -30,9 +30,9 @@ jobs:
       id-token: write   # keyless cosign signing (and BuildKit provenance identity)
     strategy:
       fail-fast: false
-      max-parallel: 1   # strictly in this order: obs-runtime is built FROM the published desktop-base
+      max-parallel: 1   # strictly in this order: each image is built FROM its published parent (obs-runtime, obs-control)
       matrix:
-        image: [desktop-base, obs-runtime, guacd, tail-browser-mcp, media-bridge]
+        image: [desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,7 +82,7 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
           TAG_PREFIX: ghcr.io/iarnvidr
-          DESKTOP_BASE_REF: ${{ steps.parent.outputs.ref }}
+          PARENT_REF: ${{ steps.parent.outputs.ref }}
         run: |
           set -eu
           scripts/build.sh "$IMAGE" --push -- \

@@ -8,7 +8,7 @@ computed offline, without Docker:
     patches, scripts), each as path + exec bit + sha256;
   * the root pins.env and <image>/pins.env, parsed and sorted;
   * the hash of the parent image, if the image is built FROM another one of
-    ours (obs-runtime is built FROM desktop-base), so a child is never paired
+    ours (obs-runtime is built FROM desktop-base, obs-control FROM obs-runtime), so a child is never paired
     with a different parent.
 
 Tags published for an image: `<version>` (human, from <image>/VERSION or the
@@ -29,7 +29,14 @@ from pathlib import Path
 SCHEMA = 1
 ROOT = Path(__file__).resolve().parent.parent
 # image -> parent image built FROM (None = built from the pinned Ubuntu base or scratch)
-IMAGES = {"desktop-base": None, "obs-runtime": "desktop-base", "guacd": None, "tail-browser-mcp": None, "media-bridge": None}
+IMAGES = {
+    "desktop-base": None,
+    "obs-runtime": "desktop-base",
+    "obs-control": "obs-runtime",
+    "guacd": None,
+    "tail-browser-mcp": None,
+    "media-bridge": None,
+}
 # Files that do not influence image content.
 EXCLUDED_DIRS = {"test", "__pycache__", "node_modules", ".git"}
 # Pin that provides the human-readable version tag of each image.
