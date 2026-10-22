@@ -4,11 +4,15 @@
   * root pins.env: APT_SNAPSHOT (newest snapshot.ubuntu.com timestamp that serves the release) and
     UBUNTU_IMAGE (current digest of the pinned tag on Docker Hub);
   * tail-browser-mcp/pins.env: NODE_IMAGE digest and DEBIAN_SNAPSHOT;
+  * node/pins.env: NODE_VERSION and NODE_SHA256 (newest LTS release of the pinned major line, sha256
+    from the release's SHASUMS256.txt on nodejs.org; FETCH_IMAGE only unpacks it and is moved by hand);
   * desktop-base/pins.env: FIREFOX_ESR_VERSION and FIREFOX_ESR_SHA256 (current ESR from Mozilla's
     product-details, sha256 from the release's SHA256SUMS on archive.mozilla.org).
 
-Prints one line per change and rewrites only the lines that changed. Review the resulting diff:
-the content hashes (scripts/malrunar_image.py) change with every pin.
+Prints one line per change and rewrites only the lines that changed. Review the resulting diff: an
+image's content hash (scripts/malrunar_image.py) changes only with the pins its Dockerfile declares,
+so images a pin does not touch are not republished (`changed_images.py HEAD --republish` lists the
+ones that are).
 Usage: bump_pins.py [--dry-run]
 """
 import datetime
@@ -93,6 +97,25 @@ def firefox_esr():
     raise SystemExit(f"{wanted} not in SHA256SUMS")
 
 
+def node_lts(current_version):
+    """Newest LTS release of the major line of `current_version` and the sha256 of its linux-x64 tarball."""
+    major = current_version.split(".")[0]
+    releases = json.loads(fetch("https://nodejs.org/dist/index.json")[0])
+    for release in releases:  # newest first
+        version = release["version"].lstrip("v")
+        if release["lts"] and version.split(".")[0] == major:
+            break
+    else:
+        raise SystemExit(f"no LTS release of Node {major} in nodejs.org/dist/index.json")
+    sums = fetch(f"https://nodejs.org/dist/v{version}/SHASUMS256.txt")[0].decode()
+    wanted = f"node-v{version}-linux-x64.tar.gz"
+    for line in sums.splitlines():
+        digest, _, name = line.partition("  ")
+        if name == wanted:
+            return version, digest
+    raise SystemExit(f"{wanted} not in SHASUMS256.txt")
+
+
 def main():
     dry_run = "--dry-run" in sys.argv[1:]
     root_pins = ROOT / "pins.env"
@@ -103,6 +126,12 @@ def main():
     set_pin(tail, "NODE_IMAGE", docker_hub_digest(get_pins(tail)["NODE_IMAGE"]), dry_run)
     set_pin(tail, "DEBIAN_SNAPSHOT",
             snapshot_timestamp("http://snapshot.debian.org/archive/debian", DEBIAN_SERIES), dry_run)
+    node = ROOT / "node/pins.env"
+    if node.exists():
+        version, digest = node_lts(get_pins(node)["NODE_VERSION"])
+        set_pin(node, "NODE_VERSION", version, dry_run)
+        set_pin(node, "NODE_SHA256", digest, dry_run)
+        set_pin(node, "VERSION", version, dry_run)
     desktop = ROOT / "desktop-base/pins.env"
     if desktop.exists():
         version, digest = firefox_esr()

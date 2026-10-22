@@ -140,3 +140,17 @@ source package `libreoffice`), `python3` and `fontconfig`, and the fonts Liberat
 `fonts-liberation2`), Carlito and Caladea (SIL OFL-1.1, `fonts-crosextra-carlito`,
 `fonts-crosextra-caladea`) and DejaVu (free Bitstream Vera/DejaVu licence, `fonts-dejavu-core`).
 Each package's copyright file is kept in the image.
+
+## node
+
+The `node` component is the unmodified Node.js linux-x64 release from https://nodejs.org/dist/
+(version and sha256 in `node/pins.env`). Node.js is MIT-licensed and bundles V8 (BSD), OpenSSL
+(Apache-2.0), ICU (Unicode licence), npm (Artistic-2.0), libuv, undici, zlib and others; the complete
+licence file of the release is in the image as `/opt/malrunar/node/LICENSE`. Only the headers, man
+pages and changelog are removed. Source: https://github.com/nodejs/node at the tag `v<version>`.
+
+## work-browser
+
+`work-browser` is Apache-2.0 and contains scripts only. At run time it uses the Firefox of
+`desktop-base` (Mozilla, MPL-2.0), unmodified and not redistributed by this component, together with
+`dbus-daemon`, `xdpyinfo` and `setpriv` from `desktop-base`.

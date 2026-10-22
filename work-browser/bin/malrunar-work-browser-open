@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Open a URL as a new tab (or window) in the running work browser.
+#   malrunar-work-browser-open [url]            default url: about:blank
+# MALRUNAR_WORK_BROWSER_OPEN_MODE=window opens a new window instead of a tab;
+# MALRUNAR_WORK_BROWSER_OPEN_TIMEOUT (seconds, default 15) bounds the handoff.
+# Exit status 3: the browser is not running; 4: there is no display to open a window on. Run it as the browser's user (or as root with
+# MALRUNAR_WORK_BROWSER_USER set).
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "$here/../lib/common.sh"
+
+wb_drop_privileges "${BASH_SOURCE[0]}" "$@"
+wb_require_firefox
+url="${1:-about:blank}"
+case "${MALRUNAR_WORK_BROWSER_OPEN_MODE:-tab}" in
+    tab) option=-new-tab ;;
+    window) option=-new-window ;;
+    *) wb_die "$WB_EX_CONFIG" "MALRUNAR_WORK_BROWSER_OPEN_MODE='${MALRUNAR_WORK_BROWSER_OPEN_MODE}': expected tab or window" ;;
+esac
+profile="$(wb_profile_dir)"
+owner="$(wb_lock_owner "$profile")"
+if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+    wb_log "the work browser is not running on profile $profile"
+    exit 3
+fi
+if ! display="$(wb_find_display)"; then
+    wb_die 4 'no X display answers, so there is nowhere to open a window'
+fi
+if [ "$display" = none ]; then
+    wb_die 4 'MALRUNAR_WORK_BROWSER_DISPLAY=none: a browser without a display cannot open pages from outside'
+fi
+wb_use_display "$display"
+wb_ensure_bus
+exec timeout -k 5 "${MALRUNAR_WORK_BROWSER_OPEN_TIMEOUT:-15}" "$WB_FIREFOX" -profile "$profile" "$option" "$url"

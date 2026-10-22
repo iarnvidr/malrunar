@@ -22,6 +22,8 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`tail-browser-mcp`](tail-browser-mcp/) | Letting an AI agent drive Firefox | The [Tail](https://github.com/rtf6x/tail-browser-mcp) MCP server, client and Firefox extension in `/opt/malrunar/tail-browser-mcp`. A `FROM scratch` layer you copy into your image |
 | [`office-convert`](office-convert/) | Turning Office documents into PDF | A small HTTP service around LibreOffice headless (Impress and Writer filters only, Liberation and Carlito fonts): `POST /convert` takes a .pptx, .ppt, .odp, .key, .docx, .doc or .odt and returns a PDF. One conversion at a time, no state, runs as uid 65534. It has no authentication: keep it on a trusted network. See [office-convert/README.md](office-convert/README.md) |
 | [`media-bridge`](media-bridge/) | An OBS-driven virtual camera and microphone for any call app in the desktop | A receiver that turns an MPEG-TS/UDP stream into a v4l2loopback camera and a PipeWire microphone, plus host setup, supervisord/systemd examples and audio/browser helpers in `/opt/malrunar/media-bridge`. A `FROM scratch` layer you copy into your image |
+| [`node`](node/) | A Node.js runtime in any image | Node.js 24 LTS, the unmodified nodejs.org release, in `/opt/malrunar/node`. A `FROM scratch` layer you copy into your image; it depends on nothing |
+| [`work-browser`](work-browser/) | A persistent Firefox for the desktop user | A launcher, an open-URL helper and a supervisord program for the unmodified Firefox of `desktop-base`, with the profile, preferences and policies supplied by you. A `FROM scratch` layer; it needs `desktop-base` only |
 
 ## Using them
 
@@ -45,10 +47,11 @@ Run guacd next to your Guacamole web app:
 docker run -d --name guacd -p 4822:4822 ghcr.io/iarnvidr/guacd:1.6.0
 ```
 
-Add the Tail browser bridge to any image:
+Add the Tail browser bridge to any image (its server is a Node bundle: add the `node` component too):
 
 ```dockerfile
 COPY --from=ghcr.io/iarnvidr/tail-browser-mcp:2.0.23 / /
+COPY --from=ghcr.io/iarnvidr/node:24.22.1 / /
 ```
 
 ### A virtual camera and microphone for call apps
@@ -118,6 +121,46 @@ preferences. Customise it in your own image, for example with
 [Mozilla's trademark policy](https://www.mozilla.org/foundation/trademarks/distribution-policy/),
 and that applies to your image, not this one.
 
+## Composing a desktop
+
+A product image is `desktop-base` plus an explicit list of components. Every component is opt-in:
+none pulls in another, each says in its README what it needs, and its smoke test checks that. Two
+examples of how the parts combine (no product is implied; take the rows you need):
+
+| Component | Kind | Needs | A calls desktop | A work desktop |
+|---|---|---|---|---|
+| [`desktop-base`](desktop-base/) | base image (`FROM`) | nothing | yes | yes |
+| [`obs-runtime`](obs-runtime/) | base image (`FROM`, instead of `desktop-base`) | `desktop-base` | only if OBS runs in the desktop | no |
+| [`obs-control`](obs-control/) | its own container | nothing | yes, next to the desktop | no |
+| [`guacd`](guacd/) | its own container | nothing | yes, with a Guacamole web app | yes, with a Guacamole web app |
+| [`office-convert`](office-convert/) | its own container | nothing | no | optional, next to the desktop |
+| [`media-bridge`](media-bridge/) | component (`COPY --from`) | `desktop-base` | yes | no |
+| [`node`](node/) | component (`COPY --from`) | nothing | optional | optional |
+| [`tail-browser-mcp`](tail-browser-mcp/) | component (`COPY --from`) | `node` at run time | optional | optional |
+| [`work-browser`](work-browser/) | component (`COPY --from`, with a supervisord program) | `desktop-base` | optional | yes |
+
+```dockerfile
+# a calls desktop: it receives the stream OBS (in its own container) sends, for a call app to use
+FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
+COPY --link --from=ghcr.io/iarnvidr/media-bridge:0.1.0 / /
+# your user, session and supervisord programs on top
+
+# a work desktop: a persistent Firefox and nothing else
+FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
+COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
+# your user (MALRUNAR_WORK_BROWSER_USER), policies and preferences on top, see work-browser/README.md
+```
+
+Components that run a program as part of the desktop (`work-browser`) ship it as a supervisord
+fragment, `/etc/supervisor/conf.d/malrunar-<component>.conf`, which is in the image exactly when the
+component was copied in. The convention is in [CONVENTIONS.md](CONVENTIONS.md#supervisord-programs-of-components).
+Add `node` next to anything that runs JavaScript, such as `tail-browser-mcp`:
+
+```dockerfile
+COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
+ENV PATH=/opt/malrunar/node/bin:$PATH
+```
+
 ## Reviewed and not included
 
 While building these images, the session scripts of a call desktop were reviewed and deliberately
@@ -140,10 +183,12 @@ Every input is pinned: base images by digest, Ubuntu and Debian packages through
 [snapshot.ubuntu.com](https://snapshot.ubuntu.com/) or
 [snapshot.debian.org](https://snapshot.debian.org/) archive, downloads by sha256 and git sources
 by commit. The pins live in [`pins.env`](pins.env) and each image's `pins.env`. A weekly workflow
-opens a pull request that moves them forward, which is how security updates arrive.
+opens a pull request that moves them forward (and lists which images it republishes), which is how
+security updates arrive.
 
-Builds run on GitHub-hosted runners: pull requests build and smoke-test every image, and pushes to
-`main` publish them. Each published image has an SBOM, a provenance attestation and a keyless
+Builds run on GitHub-hosted runners: pull requests build and smoke-test the images they change, and
+pushes to `main` publish them. An image's hash covers only the pins its Dockerfile uses, so the weekly
+pin update republishes only the images it actually changes. Each published image has an SBOM, a provenance attestation and a keyless
 [cosign](https://github.com/sigstore/cosign) signature. To check the signature:
 
 ```sh
@@ -161,6 +206,9 @@ scripts/build.sh guacd --load && scripts/smoke.sh guacd
 scripts/build.sh desktop-base --load && scripts/build.sh obs-runtime --load && scripts/build.sh obs-control --load && scripts/smoke.sh obs-control
 scripts/build.sh media-bridge --load && scripts/smoke.sh media-bridge   # the smoke test needs desktop-base built
 scripts/build.sh office-convert --load && scripts/smoke.sh office-convert
+scripts/build.sh node --load && scripts/smoke.sh node
+scripts/build.sh work-browser --load && scripts/smoke.sh work-browser   # the smoke test needs desktop-base built
+python3 -m unittest discover -s scripts/test    # hashes and pull request planning
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
 
@@ -171,5 +219,5 @@ To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The images contain
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
-(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` adds only scripts; `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
+(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` and `work-browser` add only scripts; `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
 The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).

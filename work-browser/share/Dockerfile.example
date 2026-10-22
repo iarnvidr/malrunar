@@ -1,0 +1,17 @@
+# A work desktop: desktop-base + work-browser, with the consumer's own user, policies and preferences.
+# (Example only. The tags are placeholders: pin by digest in anything you deploy.)
+FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
+COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
+
+RUN useradd --create-home --uid 1000 --shell /bin/bash me
+# Policies are read from /etc/firefox/policies/policies.json: this leaves the Firefox installation
+# untouched, but a Firefox that you configure is yours to call a modified build (see README).
+COPY policies.json /etc/firefox/policies/policies.json
+COPY user.js /etc/work-browser/user.js
+
+ENV MALRUNAR_WORK_BROWSER_USER=me \
+    MALRUNAR_WORK_BROWSER_USER_JS=/etc/work-browser/user.js \
+    MALRUNAR_WORK_BROWSER_START_URLS=https://example.invalid/
+# The component's supervisord program (/etc/supervisor/conf.d/malrunar-work-browser.conf) is now
+# part of this image; start supervisord the usual way, after the desktop session program(s) of yours.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/bin/supervisord", "-n"]

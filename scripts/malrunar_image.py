@@ -6,7 +6,9 @@ computed offline, without Docker:
 
   * the image's recipe: every file under <image>/ except test/ (Dockerfile,
     patches, scripts), each as path + exec bit + sha256;
-  * the root pins.env and <image>/pins.env, parsed and sorted;
+  * the pins of the image: its own <image>/pins.env and those keys of the root pins.env that its
+    Dockerfile declares as `ARG` (a root pin the image does not use cannot change it, so bumping
+    it must not republish the image: media-bridge, which only copies scripts, uses none);
   * the hash of the parent image, if the image is built FROM another one of
     ours (obs-runtime is built FROM desktop-base, obs-control FROM obs-runtime), so a child is never paired
     with a different parent.
@@ -19,10 +21,13 @@ Usage:
   malrunar_image.py hash <image>
   malrunar_image.py tags <image>          # one tag per line
   malrunar_image.py parent <image>        # parent image name or empty
-  malrunar_image.py pins <image>          # merged root+image pins as KEY=VALUE
+  malrunar_image.py pins <image>          # the pins the image's build uses, as KEY=VALUE
+  malrunar_image.py pins --all <image>    # every root pin plus the image's own (for tests)
+  malrunar_image.py legacy-hash <image>   # the hash before pins were scoped (publish.yml retags once)
 """
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -37,6 +42,14 @@ IMAGES = {
     "tail-browser-mcp": None,
     "media-bridge": None,
     "office-convert": None,
+    "node": None,
+    "work-browser": None,
+}
+# Images whose smoke test runs them inside or next to other images. This is test-time only (it is
+# not part of the hash and not a build parent); changed_images.py re-tests them when those change.
+TESTED_WITH = {
+    "media-bridge": ("desktop-base",),
+    "work-browser": ("desktop-base",),
 }
 # Files that do not influence image content.
 EXCLUDED_DIRS = {"test", "__pycache__", "node_modules", ".git"}
@@ -59,12 +72,22 @@ def parse_pins(path):
     return pins
 
 
-def merged_pins(image):
-    pins = parse_pins(ROOT / "pins.env")
-    own = parse_pins(ROOT / image / "pins.env")
+def declared_args(image, root=ROOT):
+    """Names of the build args the image's Dockerfile declares (ARG NAME or ARG NAME=default)."""
+    text = (root / image / "Dockerfile").read_text()
+    return set(re.findall(r"^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)", text, flags=re.MULTILINE))
+
+
+def merged_pins(image, root=ROOT, scoped=True):
+    """Root pins (only those the Dockerfile declares, when scoped) plus the image's own pins."""
+    pins = parse_pins(root / "pins.env")
+    own = parse_pins(root / image / "pins.env")
     clash = set(pins) & set(own)
     if clash:
         raise SystemExit(f"{image}/pins.env redefines root pins: {sorted(clash)}")
+    if scoped:
+        used = declared_args(image, root)
+        pins = {key: value for key, value in pins.items() if key in used}
     pins.update(own)
     return pins
 
@@ -77,8 +100,8 @@ def file_digest(path):
     return digest.hexdigest()
 
 
-def recipe_entries(image):
-    base = ROOT / image
+def recipe_entries(image, root=ROOT):
+    base = root / image
     if not (base / "Dockerfile").is_file():
         raise SystemExit(f"{image}/Dockerfile not found")
     entries = []
@@ -88,7 +111,7 @@ def recipe_entries(image):
             path = Path(dirpath) / name
             if name.endswith(".pyc"):
                 continue
-            relative = path.relative_to(ROOT).as_posix()
+            relative = path.relative_to(root).as_posix()
             if path.is_symlink():
                 entries.append(f"L {relative} {os.readlink(path)}\n")
             else:
@@ -97,24 +120,24 @@ def recipe_entries(image):
     return sorted(entries)
 
 
-def image_hash(image, _seen=()):
+def image_hash(image, _seen=(), root=ROOT, scoped=True):
     if image not in IMAGES:
         raise SystemExit(f"unknown image {image!r}; known: {', '.join(IMAGES)}")
     if image in _seen:
         raise SystemExit("parent cycle")
     digest = hashlib.sha256(f"malrunar {SCHEMA} {image}\n".encode())
-    for entry in recipe_entries(image):
+    for entry in recipe_entries(image, root):
         digest.update(entry.encode())
-    for key, value in sorted(merged_pins(image).items()):
+    for key, value in sorted(merged_pins(image, root, scoped).items()):
         digest.update(f"PIN {key}={value}\n".encode())
     parent = IMAGES[image]
     if parent:
-        digest.update(f"PARENT {parent} {image_hash(parent, _seen + (image,))}\n".encode())
+        digest.update(f"PARENT {parent} {image_hash(parent, _seen + (image,), root, scoped)}\n".encode())
     return digest.hexdigest()[:16]
 
 
-def version(image):
-    pins = merged_pins(image)
+def version(image, root=ROOT):
+    pins = merged_pins(image, root)
     if VERSION_PIN not in pins:
         raise SystemExit(f"{image}/pins.env must define {VERSION_PIN} (the human-readable version tag)")
     return pins[VERSION_PIN]
@@ -125,12 +148,16 @@ def tags(image):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in {"list", "hash", "tags", "parent", "pins"}:
+    if len(argv) < 2 or argv[1] not in {"list", "hash", "legacy-hash", "tags", "parent", "pins"}:
         print(__doc__, file=sys.stderr)
         return 2
     if argv[1] == "list":
         print("\n".join(IMAGES))
         return 0
+    all_pins = False
+    if argv[1] == "pins" and len(argv) == 4 and argv[2] == "--all":
+        all_pins = True
+        argv = argv[:2] + argv[3:]
     if len(argv) != 3:
         print(__doc__, file=sys.stderr)
         return 2
@@ -139,12 +166,15 @@ def main(argv):
         raise SystemExit(f"unknown image {image!r}; known: {', '.join(IMAGES)}")
     if argv[1] == "hash":
         print(image_hash(image))
+    elif argv[1] == "legacy-hash":
+        print(image_hash(image, scoped=False))
     elif argv[1] == "tags":
         print("\n".join(tags(image)))
     elif argv[1] == "parent":
         print(IMAGES[image] or "")
     else:
-        print("\n".join(f"{k}={v}" for k, v in sorted(merged_pins(image).items())))
+        pins = merged_pins(image, scoped=not all_pins)
+        print("\n".join(f"{k}={v}" for k, v in sorted(pins.items())))
     return 0
 
 
