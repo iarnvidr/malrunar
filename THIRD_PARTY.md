@@ -8,7 +8,7 @@ dpkg, under `/usr/local/share/malrunar/licenses/<component>/`.
 
 This file is a summary, not legal advice. Check the images themselves when you redistribute them.
 
-## Ubuntu packages (desktop-base, obs-runtime, obs-control, guacd)
+## Ubuntu packages (desktop-base, obs-runtime, obs-control, guacd, office-convert)
 
 All packages installed through apt come from the Ubuntu 26.04 archive (main, universe, restricted,
 multiverse) at the snapshot timestamp `APT_SNAPSHOT` in `pins.env`, with their upstream licences
@@ -129,3 +129,14 @@ not ship the `v4l2loopback` kernel module (GPL-2.0), which you install on the ho
 (`host/setup-v4l2loopback.sh` only configures it). CI installs the distribution's
 `v4l2loopback-dkms` package on a GitHub-hosted runner to test the camera path; that package is not
 part of any image.
+
+## office-convert
+
+`office-convert` is Apache-2.0 for its own code (`office-convert/convert.py`, standard library only).
+It installs from the pinned Ubuntu snapshot the LibreOffice Impress and Writer packages without a GUI
+(`libreoffice-impress-nogui`, `libreoffice-writer-nogui`, with their dependencies; LibreOffice is
+MPL-2.0 with parts under LGPL and other licences, https://www.libreoffice.org/, source: Ubuntu
+source package `libreoffice`), `python3` and `fontconfig`, and the fonts Liberation 2 (SIL OFL-1.1,
+`fonts-liberation2`), Carlito and Caladea (SIL OFL-1.1, `fonts-crosextra-carlito`,
+`fonts-crosextra-caladea`) and DejaVu (free Bitstream Vera/DejaVu licence, `fonts-dejavu-core`).
+Each package's copyright file is kept in the image.
