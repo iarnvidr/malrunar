@@ -29,6 +29,14 @@ jobs:
           # scripts without a .sh extension
           bash -n media-bridge/bin/malrunar-media-bridge
           shellcheck --severity=warning media-bridge/bin/malrunar-media-bridge media-bridge/bin/malrunar-xrdp-audio-tune
+      - name: Public hygiene (no private names, addresses or environment names in tracked files)
+        run: scripts/check-public-hygiene.sh
+      - name: obs-control tests that need only the standard library (config, scene generation, docs)
+        run: |
+          set -eu
+          for pattern in test_config.py test_scenes.py test_docs.py; do
+            python3 -m unittest discover -s obs-control/test -p "$pattern"
+          done
       - name: Content hashes are computable and stable
         run: |
           set -eu
@@ -51,11 +59,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Space-separated, built and smoke-tested in order: obs-runtime is built FROM desktop-base.
+        # Space-separated, built and smoke-tested in order: obs-runtime is built FROM desktop-base and
+        # obs-control FROM obs-runtime.
         images:
           - guacd
           - tail-browser-mcp
-          - desktop-base obs-runtime
+          - desktop-base obs-runtime obs-control
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,3 +154,85 @@ jobs:
           set -eu
           if [ "$V4L2_OK" = true ]; then export MALRUNAR_SMOKE_V4L2_DEVICE=/dev/video10; fi
           scripts/smoke.sh media-bridge
+
+  # obs-control -> UDP -> media-bridge in a desktop-base container, with audio (and video) checked at
+  # the virtual microphone and camera. The published images with the current content hashes are pulled when they exist and built from this
+  # checkout when they do not (for example in a pull request that changes them).
+  obs-control-e2e:
+    needs: scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Get desktop-base and obs-runtime (published image if it exists, else build it)
+        run: |
+          set -eu
+          for image in desktop-base obs-runtime; do
+            hash="$(python3 scripts/malrunar_image.py hash "$image")"
+            ref="ghcr.io/iarnvidr/$image:h-$hash"
+            if docker pull --quiet "$ref" >/dev/null; then
+              echo "using published $ref"
+              docker tag "$ref" "malrunar/$image:h-$hash"
+            else
+              echo "$ref is not published; building $image from this checkout"
+              scripts/build.sh "$image" --load
+            fi
+          done
+      - name: Build obs-control
+        run: scripts/build.sh obs-control --load
+      - name: Get the media-bridge component (published image if it exists, else build it)
+        run: |
+          set -eu
+          hash="$(python3 scripts/malrunar_image.py hash media-bridge)"
+          ref="ghcr.io/iarnvidr/media-bridge:h-$hash"
+          if ! docker pull --quiet "$ref" >/dev/null; then
+            echo "$ref is not published; building media-bridge from this checkout"
+            scripts/build.sh media-bridge --load
+            ref="malrunar/media-bridge:h-$hash"
+          fi
+          echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"
+      - name: Try to create a v4l2loopback camera on the hosted runner
+        id: v4l2
+        run: |
+          set +e
+          log="$RUNNER_TEMP/v4l2loopback.log"
+          {
+            echo "kernel: $(uname -r)"
+            sudo apt-get update
+            sudo apt-get install -y v4l2loopback-dkms "linux-headers-$(uname -r)"
+            sudo media-bridge/host/setup-v4l2loopback.sh --devices 1 --first-nr 10 --label 'Virtual Camera'
+          } > "$log" 2>&1
+          status=$?
+          if [ "$status" -eq 0 ] && [ -c /dev/video10 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "v4l2loopback works on this runner: the end-to-end test uses /dev/video10" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "v4l2loopback could not be loaded on this runner (exit $status); the end-to-end test uses the file video sink and still checks the audio path."
+              echo '```'
+              tail -n 30 "$log"
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+      - name: End-to-end test
+        env:
+          V4L2_OK: ${{ steps.v4l2.outputs.ok }}
+        run: |
+          set -eu
+          device=''
+          if [ "$V4L2_OK" = true ]; then device=/dev/video10; fi
+          obs-control/test/e2e/e2e.sh \
+            "malrunar/obs-control:h-$(python3 scripts/malrunar_image.py hash obs-control)" \
+            "$BRIDGE_REF" \
+            "malrunar/desktop-base:h-$(python3 scripts/malrunar_image.py hash desktop-base)" \
+            $device

@@ -1,0 +1,23 @@
+# Sample configuration for the image smoke test.
+[[cameras]]
+key = "live"
+scene = "Smoke Live"
+source = "Smoke Camera"
+url = "file:///usr/local/share/malrunar/obs-control/examples/test-card.html"
+
+[media]
+key = "filler"
+scene = "Smoke Filler"
+source = "Smoke Filler Source"
+
+[stopped]
+scene = "Smoke Stopped"
+source = "Smoke Stopped Frame"
+color = "#202020"
+
+[output]
+url = "udp://127.0.0.1:18096?pkt_size=1316"
+
+[obs]
+profile = "smoke"
+collection = "smoke"

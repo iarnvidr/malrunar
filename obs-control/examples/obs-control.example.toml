@@ -1,0 +1,130 @@
+# obs-control example configuration. Copy it, keep what you change, and mount it at
+# /etc/malrunar/obs-control.toml (or point MALRUNAR_OBS_CONFIG at it).
+# Every key shown here has this value as its default unless the comment says otherwise; only
+# [[cameras]] needs a url. Any scalar [section] key can also be set with the environment variable
+# MALRUNAR_OBS_<SECTION>_<KEY> ([obs] keys: MALRUNAR_OBS_<KEY>); the first camera with
+# MALRUNAR_OBS_CAMERA_<KEY>.
+# The complete reference is docs/obs-control-api.md in https://github.com/iarnvidr/malrunar.
+
+[obs]
+# config_dir = "/config/.config/obs-studio"   # default: $XDG_CONFIG_HOME/obs-studio; must end in /obs-studio
+profile = "malrunar"
+collection = "malrunar"
+websocket_port = 4455
+# websocket_password = ""     # empty: a random password is generated once and kept in the OBS config
+websocket_auth = true
+# start_scene = ""            # scene key or name; empty: the first camera, or the stopped scene in program control
+
+[http]
+bind = "0.0.0.0"
+port = 18095
+
+[video]                       # OBS canvas and output frame
+width = 640
+height = 360
+fps = 24
+default_profile = "360p"      # which [profiles.*] entry program control starts with
+
+[output]                      # what OBS streams: MPEG-TS over UDP (H.264 + AAC), e.g. to media-bridge
+url = "udp://127.0.0.1:18096?pkt_size=1316"
+video_bitrate_kbps = 1200
+audio_bitrate_kbps = 128
+gop = 48
+x264_preset = "veryfast"
+rescale = ""                  # "WxH" to scale the output independently of the canvas
+autostart = true              # start the output when OBS has started
+
+# One entry per camera: a browser source showing a web page (a WebRTC receiver, a dashboard...).
+# The first camera is the "live" input of /api/call/live, input levels and the b-roll capture.
+[[cameras]]
+key = "live"                  # used in POST /api/scene/<key>
+scene = "Live Feed"
+source = "Camera Receiver"
+url = "https://example.invalid/camera-page"    # or: url_file = "/run/secrets/camera-url" (re-read on every use)
+# width = 0                   # 0: the canvas size
+# height = 0
+# fps = 0                     # 0: video.fps
+# restart_when_active = true  # reload the page each time its scene goes on air; unset: true, but false with program_control
+reroute_audio = true          # let OBS capture the page's audio
+shutdown_when_hidden = false  # keep the page (and any peer connection) alive while off air
+
+[media]                       # the b-roll / media scene
+key = "video"
+scene = "B-roll Video"
+source = "B-roll Source"
+file = ""                     # a video file to loop until automatic b-roll replaces it
+
+[stopped]                     # the neutral scene: a solid colour
+scene = "Stopped"
+source = "Stopped Frame"
+color = "#000000"
+
+[clips]
+scene_prefix = "Recorded"     # clip scenes are "<prefix> · <name>"
+source_prefix = "Recorded Source"
+
+[features]
+program_control = false       # /api/call/* gates, clip playback and deletion, input levels, stopped scene
+video_profiles = false        # /api/call/video-profile (needs program_control)
+sender_lease = true           # require sender heartbeats (POST /api/sender-heartbeat)
+mode_label = "program-control"  # the "mode" reported by /ready in program control
+
+[sender]
+lease_seconds = 12
+
+[broll]
+enabled = true
+auto = true                   # make today's video automatically (heartbeat or startup driven)
+seconds = 180                 # length of the finished video
+chunk_seconds = 90
+max_seconds = 1200
+silence_db = -38.0
+motion_threshold = 0.025
+min_segment_seconds = 6.0
+preview_url = ""              # URL the status endpoint reports for the preview; empty: the built-in route
+
+[access]
+identity_header = ""          # a header set by a trusted reverse proxy, e.g. "X-Forwarded-User"
+allowed_identities = []       # non-empty: b-roll is kept per identity
+enforce = false               # true: reject every request (except /health, /ready) without an allowed identity
+
+[storage]
+recordings_dir = "/config/recordings"
+state_dir = "/config/state"
+
+[relay]                       # for `entrypoint.sh relay`, and where the controller finds it
+control_url = "http://127.0.0.1:18097"
+bind_host = "127.0.0.1"
+port = 18096
+target_host = ""              # where to forward the stream (e.g. the media-bridge container); required to run the relay
+target_port = 18096
+control_host = ""             # empty: bind_host
+control_port = 18097
+capture_dir = "/tmp/malrunar-obs-captures"
+
+[console]
+enabled = true
+title = "OBS control"
+sender_url = ""               # optional page embedded in the console (a sender, a dashboard)
+secure_url = ""               # optional https URL the console redirects to when opened over http
+
+# Video profiles for POST /api/call/video-profile. Defining [profiles.*] replaces the defaults.
+[profiles.360p]
+width = 640
+height = 360
+encoder_kbps = 1200
+# camera_query = { scale = "50" }          # query parameters set on the camera URL when this profile is active
+# camera_query_drop = ["maxwidth"]         # query parameters removed from it
+
+[profiles.720p]
+width = 1280
+height = 720
+encoder_kbps = 3000
+
+[plugins]
+modules = []                  # module names or .py paths; MALRUNAR_OBS_PLUGINS is a comma-separated list
+dir = ""                      # every *.py in this directory is loaded; MALRUNAR_OBS_PLUGINS_DIR
+
+# Settings for a plugin live under [plugin.<name>] and are available as config.plugin["<name>"].
+# [plugin.example]
+# anything = "your plugin defines this"

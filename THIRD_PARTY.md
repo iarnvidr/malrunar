@@ -8,7 +8,7 @@ dpkg, under `/usr/local/share/malrunar/licenses/<component>/`.
 
 This file is a summary, not legal advice. Check the images themselves when you redistribute them.
 
-## Ubuntu packages (desktop-base, obs-runtime, guacd)
+## Ubuntu packages (desktop-base, obs-runtime, obs-control, guacd)
 
 All packages installed through apt come from the Ubuntu 26.04 archive (main, universe, restricted,
 multiverse) at the snapshot timestamp `APT_SNAPSHOT` in `pins.env`, with their upstream licences
@@ -72,6 +72,22 @@ and the `LICENSE`/`README.chromium` files in its `third_party/` tree. LGPL compo
 - Runtime libraries (cairo, libjpeg, libpng, libwebp, OpenSSL, PulseAudio client and others) from
   Ubuntu with their own licences (LGPL/MPL, IJG/BSD, libpng, BSD, Apache-2.0, LGPL-2.1+); their
   `copyright` files are kept in the image.
+
+## obs-control: the controller and its Python libraries
+
+The obs-control code (`obs-control/malrunar_obs`, the example configuration and the test card) is
+Apache-2.0 like the rest of this repository. It is run by the `python3` of `desktop-base` and uses
+two libraries installed from the pinned Ubuntu snapshot, with their dependencies and their
+`copyright` files:
+
+- `python3-aiohttp` (Apache-2.0) and its dependencies (`python3-multidict`, `python3-yarl`,
+  `python3-frozenlist`, `python3-aiosignal`, `python3-attr`, `python3-propcache` and others, each under its own
+  permissive licence).
+- `python3-websockets` (BSD-3-Clause).
+
+It drives OBS Studio through obs-websocket, which is part of the OBS Studio package above
+(GPL-2.0-or-later). The controller talks to OBS over a local WebSocket and links none of its code. The
+automatic b-roll and clip features run the `ffmpeg` and `ffprobe` of `desktop-base`.
 
 ## Firefox ESR (desktop-base): MPL-2.0
 
