@@ -125,9 +125,9 @@ kill -0 "$(cat "$work/state/browser.pid")" || fail 'the pid file does not name a
 
 echo '-- open helper hands a URL to the running browser'
 "$opener" https://three.example
-[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile -new-tab https://three.example" ] || fail "open helper arguments: $(tail -1 "$STUB_LOG")"
+[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile --headless -new-tab https://three.example" ] || fail "open helper arguments: $(tail -1 "$STUB_LOG")"
 MALRUNAR_WORK_BROWSER_OPEN_MODE=window "$opener"
-[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile -new-window about:blank" ] || fail "open helper window mode: $(tail -1 "$STUB_LOG")"
+[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile --headless -new-window about:blank" ] || fail "open helper window mode: $(tail -1 "$STUB_LOG")"
 
 echo '-- stopping the launcher stops Firefox and removes the pid file'
 pid="$(cat "$work/state/browser.pid")"

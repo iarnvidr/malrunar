@@ -24,8 +24,11 @@ if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
     wb_log "the work browser is not running on profile $profile"
     exit 3
 fi
+client_args=()
 if display="$(wb_find_display)"; then
     wb_use_display "$display"
+    # Without a display (MALRUNAR_WORK_BROWSER_DISPLAY=none, a headless browser) the client must be headless too.
+    [ "$display" != none ] || client_args+=(--headless)
 fi
 wb_ensure_bus
-exec timeout -k 5 "${MALRUNAR_WORK_BROWSER_OPEN_TIMEOUT:-15}" "$WB_FIREFOX" -profile "$profile" "$option" "$url"
+exec timeout -k 5 "${MALRUNAR_WORK_BROWSER_OPEN_TIMEOUT:-15}" "$WB_FIREFOX" -profile "$profile" ${client_args[@]+"${client_args[@]}"} "$option" "$url"
