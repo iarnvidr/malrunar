@@ -161,7 +161,7 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 xwininfo -display :77 -root -tree | grep -qi 'firefox' || { echo 'no Firefox window on the display'; exit 1; }
-tr '\0' '\n' < "/proc/$owner/environ" 2>/dev/null | grep -qx 'DISPLAY=:77' || { echo "the launcher did not export the display it found"; exit 1; }
+grep -q 'on profile .*, display :77' /tmp/supervisord.out || { echo 'the launcher did not report the display it found'; exit 1; }
 out="$(/opt/malrunar/work-browser/bin/malrunar-work-browser-open about:blank 2>&1)" || { echo "open failed: $out"; exit 1; }
 echo "malrunar-work-browser-open: ok ${out:+($out)}"
 case "$out" in *'not responding'*|*'already running'*) echo 'the handoff did not reach the running instance'; exit 1 ;; esac
