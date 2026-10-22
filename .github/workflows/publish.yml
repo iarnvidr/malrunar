@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       max-parallel: 1   # strictly in this order: each image is built FROM its published parent (obs-runtime, obs-control)
       matrix:
-        image: [desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge]
+        image: [desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge, office-convert]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

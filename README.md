@@ -20,6 +20,7 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`obs-control`](obs-control/) | OBS you drive over HTTP | `obs-runtime` + a controller: OBS starts headless with a scene collection generated from a config file, and an HTTP API switches scenes, serves program previews, plays and records clips, reports input levels, controls the output (MPEG-TS over UDP) and makes automatic b-roll. Plugins add routes and scenes. See [docs/obs-control-api.md](docs/obs-control-api.md) |
 | [`guacd`](guacd/) | The Guacamole proxy daemon, as a container | guacd 1.6.0 built against FreeRDP 3, with an RDP GDI fix, listening on port 4822 |
 | [`tail-browser-mcp`](tail-browser-mcp/) | Letting an AI agent drive Firefox | The [Tail](https://github.com/rtf6x/tail-browser-mcp) MCP server, client and Firefox extension in `/opt/malrunar/tail-browser-mcp`. A `FROM scratch` layer you copy into your image |
+| [`office-convert`](office-convert/) | Turning Office documents into PDF | A small HTTP service around LibreOffice headless (Impress and Writer filters only, Liberation and Carlito fonts): `POST /convert` takes a .pptx, .ppt, .odp, .key, .docx, .doc or .odt and returns a PDF. One conversion at a time, no state, runs as uid 65534. It has no authentication: keep it on a trusted network. See [office-convert/README.md](office-convert/README.md) |
 | [`media-bridge`](media-bridge/) | An OBS-driven virtual camera and microphone for any call app in the desktop | A receiver that turns an MPEG-TS/UDP stream into a v4l2loopback camera and a PipeWire microphone, plus host setup, supervisord/systemd examples and audio/browser helpers in `/opt/malrunar/media-bridge`. A `FROM scratch` layer you copy into your image |
 
 ## Using them
@@ -117,6 +118,13 @@ preferences. Customise it in your own image, for example with
 [Mozilla's trademark policy](https://www.mozilla.org/foundation/trademarks/distribution-policy/),
 and that applies to your image, not this one.
 
+## Reviewed and not included
+
+While building these images, the session scripts of a call desktop were reviewed and deliberately
+left out: they are specific to one deployment (a fixed user name, fixed paths, secrets handling and
+Firefox policies tied to one set of sites). Their generic parts are already covered by `desktop-base`
+and `obs-runtime`; the rest belongs in your own image on top of them.
+
 ## Tags
 
 Each image gets two tags:
@@ -152,6 +160,7 @@ You need Docker with buildx. Build `desktop-base` before `obs-runtime` and `obs-
 scripts/build.sh guacd --load && scripts/smoke.sh guacd
 scripts/build.sh desktop-base --load && scripts/build.sh obs-runtime --load && scripts/build.sh obs-control --load && scripts/smoke.sh obs-control
 scripts/build.sh media-bridge --load && scripts/smoke.sh media-bridge   # the smoke test needs desktop-base built
+scripts/build.sh office-convert --load && scripts/smoke.sh office-convert
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
 
@@ -162,5 +171,5 @@ To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The images contain
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
-(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` adds only scripts; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
+(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` adds only scripts; `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
 The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).

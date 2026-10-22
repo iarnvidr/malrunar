@@ -36,6 +36,7 @@ IMAGES = {
     "guacd": None,
     "tail-browser-mcp": None,
     "media-bridge": None,
+    "office-convert": None,
 }
 # Files that do not influence image content.
 EXCLUDED_DIRS = {"test", "__pycache__", "node_modules", ".git"}

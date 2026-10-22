@@ -1,6 +1,6 @@
 # Conventions
 
-Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge) has:
+Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge, office-convert) has:
 
 - `<image>/Dockerfile`: build context is `<image>/` only (copy nothing from outside it).
 - `<image>/pins.env`: `KEY=VALUE` lines, passed as `--build-arg`. Must define `VERSION` (the human tag).
