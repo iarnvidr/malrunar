@@ -123,11 +123,16 @@ cmp "$work/consumer-user.js" "$work/profile/user.js" || fail 'user.js was not in
 [ -s "$work/state/browser.pid" ] || fail 'no pid file'
 kill -0 "$(cat "$work/state/browser.pid")" || fail 'the pid file does not name a live process'
 
-echo '-- open helper hands a URL to the running browser'
+echo '-- open helper hands a URL to the running browser (needs a display; the stub does not use it)'
+status=0
+"$opener" https://three.example > "$work/open.log" 2>&1 || status=$?
+[ "$status" = 4 ] || fail "without a display the open helper should exit 4, got $status"
+export MALRUNAR_WORK_BROWSER_DISPLAY=:77
 "$opener" https://three.example
-[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile --headless -new-tab https://three.example" ] || fail "open helper arguments: $(tail -1 "$STUB_LOG")"
+[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile -new-tab https://three.example" ] || fail "open helper arguments: $(tail -1 "$STUB_LOG")"
 MALRUNAR_WORK_BROWSER_OPEN_MODE=window "$opener"
-[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile --headless -new-window about:blank" ] || fail "open helper window mode: $(tail -1 "$STUB_LOG")"
+[ "$(tail -1 "$STUB_LOG")" = "-profile $work/profile -new-window about:blank" ] || fail "open helper window mode: $(tail -1 "$STUB_LOG")"
+export MALRUNAR_WORK_BROWSER_DISPLAY=none
 
 echo '-- stopping the launcher stops Firefox and removes the pid file'
 pid="$(cat "$work/state/browser.pid")"

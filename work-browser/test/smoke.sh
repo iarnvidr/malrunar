@@ -15,15 +15,17 @@ fail() { echo "work-browser smoke failed: $*" >&2; exit 1; }
 desktop_base="${DESKTOP_BASE_REF:-malrunar/desktop-base:h-$(python3 "$root/scripts/malrunar_image.py" hash desktop-base)}"
 docker image inspect "$desktop_base" >/dev/null 2>&1 || fail "desktop-base image $desktop_base is not available locally (build it with scripts/build.sh desktop-base --load, or set DESKTOP_BASE_REF)"
 ubuntu_image="$(python3 "$root/scripts/malrunar_image.py" pins --all work-browser | sed -n 's/^UBUNTU_IMAGE=//p')"
-[ -n "$ubuntu_image" ] || fail 'UBUNTU_IMAGE pin missing'
+apt_snapshot="$(python3 "$root/scripts/malrunar_image.py" pins --all work-browser | sed -n 's/^APT_SNAPSHOT=//p')"
+[ -n "$ubuntu_image" ] && [ -n "$apt_snapshot" ] || fail 'UBUNTU_IMAGE or APT_SNAPSHOT pin missing'
 
 work="$(mktemp -d)"
 cid=""
 consumer="malrunar-test/work-browser-consumer:$$"
 bare="malrunar-test/work-browser-bare:$$"
+xvfb="malrunar-test/work-browser-xvfb:$$"
 cleanup() {
     [ -z "$cid" ] || docker rm -f "$cid" >/dev/null 2>&1 || true
-    docker rmi -f "$consumer" "$bare" >/dev/null 2>&1 || true
+    docker rmi -f "$xvfb" "$consumer" "$bare" >/dev/null 2>&1 || true
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -75,6 +77,8 @@ echo '== consumer image: desktop-base + the component, and nothing else (no node
 docker build --quiet --tag "$consumer" \
     --build-arg "WORK_BROWSER_IMAGE=$image" --build-arg "BASE=$desktop_base" "$here/consumer" >/dev/null
 run() { timeout -k 10 300 docker run --rm --entrypoint '' "$@"; }
+docker build --quiet --tag "$xvfb" --build-arg "CONSUMER=$consumer" --build-arg "APT_SNAPSHOT=$apt_snapshot" \
+    --file "$here/consumer/xvfb.Dockerfile" "$here/consumer" >/dev/null
 run "$consumer" bash -c '! command -v node >/dev/null && ! command -v npm >/dev/null' \
     || fail 'node is present in the test consumer; the component must not need it'
 
@@ -130,15 +134,41 @@ test "$(stat -c %U "$profile")" = tester
 # the same state a minute later: it keeps running
 sleep 5
 supervisorctl -c /etc/supervisor/supervisord.conf status work-browser | grep -q RUNNING
-# hand a URL to the running instance
-status=0
-/opt/malrunar/work-browser/bin/malrunar-work-browser-open about:blank || status=$?
-echo "malrunar-work-browser-open: exit $status"
-[ "$status" = 0 ] || exit 1
 supervisorctl -c /etc/supervisor/supervisord.conf stop work-browser
 INTEGRATION
 chmod 755 "$work/integration.sh"
 run -v "$work:/work:ro" "$consumer" /work/integration.sh || fail 'supervised Firefox'
+
+echo '== with a display (Xvfb): the launcher finds it, opens a window, and the open helper hands a URL to the running instance'
+cat > "$work/display.sh" <<'DISPLAYTEST'
+#!/usr/bin/env bash
+set -euo pipefail
+export MALRUNAR_WORK_BROWSER_USER=tester MALRUNAR_WORK_BROWSER_RETRY_SECONDS=2
+profile=/home/tester/.config/malrunar-work-browser/profile
+Xvfb :77 -screen 0 1280x800x24 -ac -nolisten tcp > /tmp/xvfb.out 2>&1 &
+supervisord -n -c /etc/supervisor/supervisord.conf >> /tmp/supervisord.out 2>&1 &
+trap 'supervisorctl -c /etc/supervisor/supervisord.conf shutdown >/dev/null 2>&1 || true; sleep 2; cat /tmp/xvfb.out /tmp/supervisord.out' EXIT
+for _ in $(seq 1 90); do
+    [ -L "$profile/lock" ] && break
+    sleep 1
+done
+[ -L "$profile/lock" ] || { echo 'Firefox never took the profile lock'; exit 1; }
+owner="$(readlink "$profile/lock")"; owner="${owner##*+}"
+ps -o args= -p "$owner" | grep -q -- '/opt/malrunar/firefox/firefox'
+# a browser window appears on the display the launcher found (it was not told which one)
+for _ in $(seq 1 60); do
+    xwininfo -display :77 -root -tree 2>/dev/null | grep -qi 'firefox' && break
+    sleep 1
+done
+xwininfo -display :77 -root -tree | grep -qi 'firefox' || { echo 'no Firefox window on the display'; exit 1; }
+tr '\0' '\n' < "/proc/$owner/environ" 2>/dev/null | grep -qx 'DISPLAY=:77' || { echo "the launcher did not export the display it found"; exit 1; }
+out="$(/opt/malrunar/work-browser/bin/malrunar-work-browser-open about:blank 2>&1)" || { echo "open failed: $out"; exit 1; }
+echo "malrunar-work-browser-open: ok ${out:+($out)}"
+case "$out" in *'not responding'*|*'already running'*) echo 'the handoff did not reach the running instance'; exit 1 ;; esac
+supervisorctl -c /etc/supervisor/supervisord.conf status work-browser | grep -q RUNNING
+DISPLAYTEST
+chmod 755 "$work/display.sh"
+timeout -k 10 300 docker run --rm --entrypoint '' --shm-size 512m -v "$work:/work:ro" "$xvfb" /work/display.sh || fail 'supervised Firefox on a display'
 
 echo '== Firefox is still exactly the one desktop-base installed'
 run "$consumer" bash -c '

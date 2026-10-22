@@ -86,7 +86,9 @@ or `ENV` in your image are all that is needed.
 6. Runs `firefox -profile <dir> -new-instance ...` and, when it exits, runs it again after the retry delay.
 
 `malrunar-work-browser-open` exits with status 3 when no browser holds the profile (instead of
-starting an unsupervised second one) and with status 78 when the image or a setting cannot work.
+starting an unsupervised second one), with status 4 when there is no display to open a window on (a
+headless Firefox, `MALRUNAR_WORK_BROWSER_DISPLAY=none`, does not take URLs from outside), and with
+status 78 when the image or a setting cannot work.
 
 ## Firefox stays unmodified
 
