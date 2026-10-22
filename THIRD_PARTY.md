@@ -8,7 +8,7 @@ dpkg, under `/usr/local/share/malrunar/licenses/<component>/`.
 
 This file is a summary, not legal advice. Check the images themselves when you redistribute them.
 
-## Ubuntu packages (desktop-base, obs-runtime, obs-control, guacd, office-convert)
+## Ubuntu packages (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, office-convert)
 
 All packages installed through apt come from the Ubuntu 26.04 archive (main, universe, restricted,
 multiverse) at the snapshot timestamp `APT_SNAPSHOT` in `pins.env`, with their upstream licences
@@ -140,6 +140,12 @@ source package `libreoffice`), `python3` and `fontconfig`, and the fonts Liberat
 `fonts-liberation2`), Carlito and Caladea (SIL OFL-1.1, `fonts-crosextra-carlito`,
 `fonts-crosextra-caladea`) and DejaVu (free Bitstream Vera/DejaVu licence, `fonts-dejavu-core`).
 Each package's copyright file is kept in the image.
+
+## guacamole-tunnel
+
+`guacamole-tunnel` is Apache-2.0 for its own code (`guacamole-tunnel/guacamole_tunnel.py`). It installs from the
+pinned Ubuntu snapshot `python3`, `python3-aiohttp` (Apache-2.0) and `python3-yarl` (Apache-2.0) with their
+dependencies; each package's copyright file is kept in the image. It contains no Guacamole code.
 
 ## node
 

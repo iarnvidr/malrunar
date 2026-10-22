@@ -29,6 +29,7 @@ import malrunar_image as mi  # noqa: E402
 # Images built and smoke-tested one after another in one job: a child is built FROM its parent.
 BUILD_GROUPS = (
     ("guacd",),
+    ("guacamole-tunnel",),
     ("tail-browser-mcp",),
     ("office-convert",),
     ("node",),
