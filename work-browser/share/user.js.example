@@ -1,0 +1,5 @@
+// Example of a consumer's preferences file. Point MALRUNAR_WORK_BROWSER_USER_JS at your own copy;
+// the launcher installs it as user.js in the profile on every start. These are examples only.
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.startup.page", 3);            // restore the previous session
+user_pref("browser.aboutwelcome.enabled", false);

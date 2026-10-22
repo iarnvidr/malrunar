@@ -1,4 +1,6 @@
-# Weekly pin bump: apt snapshots, base image digests and the Firefox ESR release, as a pull request.
+# Weekly pin bump: apt snapshots, base image digests, the Node LTS release and the Firefox ESR release,
+# as a pull request. Images whose content hash does not change (scripts/malrunar_image.py: a hash covers
+# only the pins an image's Dockerfile declares) are not republished when it merges.
 # Needs no secrets beyond GITHUB_TOKEN. Pull requests opened with GITHUB_TOKEN do not start other
 # workflows (a GitHub rule): close and reopen the PR, or push to its branch, to run pr.yml on it.
 name: weekly
@@ -42,12 +44,15 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$branch"
           git add -- pins.env '*/pins.env'
-          git commit -m 'Bump apt snapshots, base image digests and Firefox ESR'
+          git commit -m 'Bump apt snapshots, base image digests, Node and Firefox ESR'
           git push --force origin "$branch"
-          body="$(printf 'Automated weekly bump (scripts/bump_pins.py).\n\nPins changed:\n\n```\n%s\n```\n\nReview the pin diff, then merge to publish new images.' "$(git diff --stat HEAD~1 HEAD; git diff -U0 HEAD~1 HEAD | grep -E '^[+-][A-Z0-9_]+=' )")"
+          # An image whose Dockerfile does not use a bumped pin keeps its content hash and is not republished.
+          republished="$(python3 scripts/changed_images.py HEAD~1 --republish | tr '\n' ' ')"
+          unchanged="$(comm -23 <(python3 scripts/malrunar_image.py list | sort) <(python3 scripts/changed_images.py HEAD~1 --republish | sort) | tr '\n' ' ')"
+          body="$(printf 'Automated weekly bump (scripts/bump_pins.py).\n\nPins changed:\n\n```\n%s\n```\n\nImages that will be republished when this merges (their content hash changes): %s\n\nImages that keep their hash and are not republished: %s\n\nReview the pin diff, then merge to publish new images.' "$(git diff --stat HEAD~1 HEAD; git diff -U0 HEAD~1 HEAD | grep -E '^[+-][A-Z0-9_]+=' )" "${republished:-none}" "${unchanged:-none}")"
           if gh pr view "$branch" --repo "$REPO" >/dev/null 2>&1; then
             gh pr edit "$branch" --repo "$REPO" --body "$body"
           else
             gh pr create --repo "$REPO" --base main --head "$branch" \
-              --title 'Bump apt snapshots, base image digests and Firefox ESR' --body "$body"
+              --title 'Bump apt snapshots, base image digests, Node and Firefox ESR' --body "$body"
           fi

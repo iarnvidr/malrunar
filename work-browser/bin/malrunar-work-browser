@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Keep the desktop's Firefox running on a persistent profile (meant for supervisord).
+# Runs the Firefox of desktop-base unmodified; policies and preferences come from the consumer
+# (see ../README.md). Settings are MALRUNAR_WORK_BROWSER_* environment variables.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "$here/../lib/common.sh"
+
+wb_drop_privileges "${BASH_SOURCE[0]}" "$@"
+if [ "${MALRUNAR_WORK_BROWSER_ENABLED:-1}" = 0 ]; then
+    wb_log 'MALRUNAR_WORK_BROWSER_ENABLED=0: not starting the browser'
+    exit 0
+fi
+wb_require_firefox
+retry="${MALRUNAR_WORK_BROWSER_RETRY_SECONDS:-10}"
+pid_file="${MALRUNAR_WORK_BROWSER_PID_FILE:-}"
+profile="$(wb_profile_dir)"
+
+extra_args=()
+if [ -n "${MALRUNAR_WORK_BROWSER_ARGS:-}" ]; then
+    read -r -a extra_args <<< "$MALRUNAR_WORK_BROWSER_ARGS"
+fi
+urls=()
+if [ -n "${MALRUNAR_WORK_BROWSER_START_URLS:-}" ]; then
+    read -r -a urls <<< "$MALRUNAR_WORK_BROWSER_START_URLS"
+fi
+if [ "${MALRUNAR_WORK_BROWSER_DISPLAY:-}" != none ]; then
+    wb_require_command xdpyinfo
+fi
+
+browser_pid=""
+stop() {
+    [ -z "$browser_pid" ] || kill "$browser_pid" 2>/dev/null || true
+    [ -z "$pid_file" ] || rm -f "$pid_file"
+    exit 0
+}
+trap stop TERM INT
+
+while true; do
+    if ! display="$(wb_find_display)"; then
+        wb_log "no X display answers yet (is the desktop session up?); retrying in ${retry}s"
+        sleep "$retry" & wait $!
+        continue
+    fi
+    wb_use_display "$display"
+    wb_prepare_profile
+    wb_ensure_bus
+    wb_clean_stale_profile "$profile"
+
+    wb_log "starting Firefox ($WB_FIREFOX) on profile $profile, display ${display}"
+    "$WB_FIREFOX" -profile "$profile" -new-instance ${extra_args[@]+"${extra_args[@]}"} ${urls[@]+"${urls[@]}"} &
+    browser_pid=$!
+    if [ -n "$pid_file" ]; then
+        mkdir -p "$(dirname "$pid_file")"
+        printf '%s\n' "$browser_pid" > "$pid_file"
+    fi
+    status=0
+    wait "$browser_pid" || status=$?
+    browser_pid=""
+    [ -z "$pid_file" ] || rm -f "$pid_file"
+    wb_log "Firefox exited (status $status); starting it again in ${retry}s"
+    sleep "$retry" & wait $!
+done

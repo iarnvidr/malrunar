@@ -1,6 +1,7 @@
 # Publish the images to ghcr.io/iarnvidr/<image> on every push to main.
 # Tags: <version> and h-<content hash> (scripts/malrunar_image.py). An image whose h-<hash> tag
-# already exists is skipped. Each pushed image gets a BuildKit SBOM and max-mode provenance
+# already exists is skipped (the hash covers only the pins the image uses, so a weekly pin bump does not
+# republish an image it does not touch). Each pushed image gets a BuildKit SBOM and max-mode provenance
 # attestation and a keyless cosign signature (GitHub OIDC identity of this workflow).
 # Hosted runners only; GITHUB_TOKEN only; write permissions are granted per job below.
 name: publish
@@ -32,7 +33,7 @@ jobs:
       fail-fast: false
       max-parallel: 1   # strictly in this order: each image is built FROM its published parent (obs-runtime, obs-control)
       matrix:
-        image: [desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge, office-convert]
+        image: [desktop-base, obs-runtime, obs-control, guacd, tail-browser-mcp, media-bridge, office-convert, node, work-browser]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,12 +56,30 @@ jobs:
           set -eu
           hash="$(python3 scripts/malrunar_image.py hash "$IMAGE")"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
-          if docker buildx imagetools inspect "$REGISTRY/$OWNER/$IMAGE:h-$hash" >/dev/null 2>&1; then
+          ref="$REGISTRY/$OWNER/$IMAGE"
+          if docker buildx imagetools inspect "$ref:h-$hash" >/dev/null 2>&1; then
             echo "$IMAGE h-$hash is already published; skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # Transitional: before the hash only covered the pins an image's Dockerfile declares, it also
+          # covered every root pin (scripts/malrunar_image.py legacy-hash). The same inputs published under
+          # that older hash are the same image: give the digest the new tag instead of rebuilding it.
+          # Anything whose old-scheme hash is not published is a real change and is built below.
+          legacy="$(python3 scripts/malrunar_image.py legacy-hash "$IMAGE")"
+          if [ "$legacy" != "$hash" ] && docker buildx imagetools inspect "$ref:h-$legacy" >/dev/null 2>&1; then
+            old_digest="$(docker buildx imagetools inspect "$ref:h-$legacy" --format '{{.Manifest.Digest}}')"
+            docker buildx imagetools create --tag "$ref:h-$hash" "$ref@$old_digest"
+            new_digest="$(docker buildx imagetools inspect "$ref:h-$hash" --format '{{.Manifest.Digest}}')"
+            test "$new_digest" = "$old_digest"
+            cosign verify "$ref@$new_digest" \
+              --certificate-identity "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+            echo "$IMAGE: inputs unchanged (published as h-$legacy); tagged $ref@$new_digest as h-$hash, no rebuild" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
       - name: Resolve the published parent image
         id: parent
         if: steps.plan.outputs.skip == 'false'
