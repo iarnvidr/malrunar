@@ -122,6 +122,13 @@ preferences. Customise it in your own image, for example with
 [Mozilla's trademark policy](https://www.mozilla.org/foundation/trademarks/distribution-policy/),
 and that applies to your image, not this one.
 
+## Apps
+
+Not everything here is an image. [`apps/desktop-wrapper`](apps/desktop-wrapper/) is a macOS desktop
+app (Tauri) that wraps one website in a window of its own, with native notifications; its name,
+address, bundle id and icon come from a configuration file. It is built by its own workflow
+(`.github/workflows/desktop-wrapper.yml`) and is not published as an image.
+
 ## Composing a desktop
 
 A product image is `desktop-base` plus an explicit list of components. Every component is opt-in:

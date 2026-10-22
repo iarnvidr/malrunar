@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connecting…</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; align-items: center; justify-content: center;
+           font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: 100%; max-width: 26rem; padding: 2rem; text-align: center; }
+    h1 { margin: 0 0 .5rem; font-size: 1.15rem; font-weight: 600; }
+    p { margin: 0 0 1.25rem; opacity: .7; }
+    button { min-height: 2.5rem; padding: .4rem 1.25rem; border: 1px solid currentColor; border-radius: .375rem;
+             background: transparent; color: inherit; font: inherit; cursor: pointer; }
+    [hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <section id="connecting" aria-live="polite">
+      <h1>Connecting to <span class="name"></span>…</h1>
+    </section>
+    <section id="offline" hidden role="alert">
+      <h1>Can't reach <span class="name"></span></h1>
+      <p>Check your internet connection or VPN. Looking for <code id="host"></code>.</p>
+      <button id="retry" type="button">Retry</button>
+    </section>
+  </main>
+  <script src="loader.js"></script>
+</body>
+</html>

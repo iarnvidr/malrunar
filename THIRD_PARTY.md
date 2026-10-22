@@ -160,3 +160,10 @@ pages and changelog are removed. Source: https://github.com/nodejs/node at the t
 `work-browser` is Apache-2.0 and contains scripts only. At run time it uses the Firefox of
 `desktop-base` (Mozilla, MPL-2.0), unmodified and not redistributed by this component, together with
 `dbus-daemon`, `xdpyinfo` and `setpriv` from `desktop-base`.
+
+## apps/desktop-wrapper (not part of any image)
+
+The macOS app is Apache-2.0 (the recipe and its own code). It is built with Tauri v2 and its crates
+(Apache-2.0 or MIT), `mac-notification-sys` (MIT), `notify-rust` (MIT or Apache-2.0, non-macOS builds
+only) and the Tauri CLI (Apache-2.0 or MIT). The exact versions are in `apps/desktop-wrapper/src-tauri/Cargo.lock` and
+`apps/desktop-wrapper/package-lock.json`; each crate's licence is in its own package.
