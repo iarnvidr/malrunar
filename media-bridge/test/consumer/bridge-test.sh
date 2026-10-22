@@ -17,7 +17,8 @@ bridge=/opt/malrunar/media-bridge/bin/malrunar-media-bridge
 port=15004
 mic=smoke_mic
 work="$(mktemp -d)"
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export XDG_RUNTIME_DIR
 export HOME="${HOME:-/home/tester}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pids=()
@@ -68,10 +69,10 @@ env "${sink_env[@]}" MALRUNAR_BRIDGE_UDP_PORT="$port" MALRUNAR_BRIDGE_BIND=127.0
     MALRUNAR_BRIDGE_MIC_NAME="$mic" MALRUNAR_BRIDGE_MIC_DESCRIPTION='Smoke Test Microphone' \
     "$bridge" >"$work/bridge.log" 2>&1 & pids+=($!)
 bridge_pid=$!
-for _ in $(seq 1 30); do pactl list short sources | grep -q "[[:space:]]$mic[[:space:]]" && break; sleep 1; done
+for _ in $(seq 1 30); do pactl list short sources | grep -q "[[:space:]]${mic}[[:space:]]" && break; sleep 1; done
 
 echo "== virtual microphone in PipeWire"
-pactl list short sources | grep "[[:space:]]$mic[[:space:]]" || fail 'microphone missing from pactl sources'
+pactl list short sources | grep "[[:space:]]${mic}[[:space:]]" || fail 'microphone missing from pactl sources'
 pw-cli ls Node | grep -q "node.name = \"$mic\"" || fail 'microphone node missing from pw-cli'
 description="$(pactl list sources | awk -v n="$mic" '$1=="Name:" {cur=$2} cur==n && $1=="Description:" {sub(/^[^:]*: /,""); print; exit}')"
 [ "$description" = 'Smoke Test Microphone' ] || fail "microphone description is '$description'"
@@ -153,5 +154,5 @@ echo "== bridge stops cleanly and removes the microphone"
 kill -TERM "$bridge_pid"
 for _ in $(seq 1 20); do kill -0 "$bridge_pid" 2>/dev/null || break; sleep 0.5; done
 ! kill -0 "$bridge_pid" 2>/dev/null || fail 'bridge did not stop on SIGTERM'
-pactl list short sources | grep -q "[[:space:]]$mic[[:space:]]" && fail 'microphone still present after stop'
+pactl list short sources | grep -q "[[:space:]]${mic}[[:space:]]" && fail 'microphone still present after stop'
 echo "bridge-test ($mode) passed"
