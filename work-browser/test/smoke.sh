@@ -165,7 +165,13 @@ grep -q 'on profile .*, display :77' /tmp/supervisord.out || { echo 'the launche
 out="$(/opt/malrunar/work-browser/bin/malrunar-work-browser-open about:blank 2>&1)" || { echo "open failed: $out"; exit 1; }
 echo "malrunar-work-browser-open: ok ${out:+($out)}"
 case "$out" in *'not responding'*|*'already running'*) echo 'the handoff did not reach the running instance'; exit 1 ;; esac
-supervisorctl -c /etc/supervisor/supervisord.conf status work-browser | grep -q RUNNING
+# still up after the handoff (supervisord reports RUNNING once the program has stayed up for startsecs)
+for _ in $(seq 1 15); do
+    supervisorctl -c /etc/supervisor/supervisord.conf status work-browser | grep -q RUNNING && exit 0
+    sleep 1
+done
+supervisorctl -c /etc/supervisor/supervisord.conf status work-browser
+exit 1
 DISPLAYTEST
 chmod 755 "$work/display.sh"
 timeout -k 10 300 docker run --rm --entrypoint '' --shm-size 512m -v "$work:/work:ro" "$xvfb" /work/display.sh || fail 'supervised Firefox on a display'
