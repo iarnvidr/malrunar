@@ -35,7 +35,7 @@ run bash -c '
     test "$(id -u):$(id -g)" = "1000:1000"
     test -x /opt/malrunar/obs-control/entrypoint.sh
     test -s /usr/local/share/malrunar/obs-control/examples/obs-control.example.toml
-    if grep -rIiE "g[i]nnungagap|rod[e]kors|r[e]d cross|[e]stho|[e]sben|\\b[a]lice\\b|t[a]ilscale|[a]uthelia|c[a]ll studio|v[d]o\\.ninja" \
+    if grep -rIiE "g[i]nnungagap|rod[e]kors|r[e]d cross|[e]stho|[e]sben|\\b[a]lice\\b|t[a]ilscale|[a]uthelia|c[a]ll studio|v[d]o\\.[n]inja" \
         /opt/malrunar/obs-control /usr/local/share/malrunar/obs-control; then echo "product-specific text in the image" >&2; exit 1; fi
 ' || fail 'image layout'
 run bash -c 'python3 -c "import aiohttp, websockets; print(aiohttp.__version__, websockets.__version__)"' || fail 'python dependencies'
