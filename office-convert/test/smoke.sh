@@ -105,8 +105,17 @@ head -c 4 "$work/chunked.pdf" | grep -q '^%PDF' || fail 'chunked upload did not 
 code() { curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
 test "$(code -X POST -H 'X-Filename: malware.exe' --data-binary 'x' "http://127.0.0.1:$port/convert")" = 400 \
     || fail 'an unsupported extension was not rejected with 400'
-test "$(code -X POST -H 'X-Filename: a.docx' -H 'Transfer-Encoding: chunked' --data-binary 'x' \
-    "http://127.0.0.1:$port/convert")" != 200 || fail 'a bogus document was accepted'
+# malformed framing is a 400 (raw sockets: curl will not send these)
+python3 -I - "$port" <<'PY' || fail 'malformed Content-Length or chunk size was not rejected with 400'
+import socket, sys
+port = int(sys.argv[1])
+for head, body in ((b"Content-Length: banana", b"abc"), (b"Transfer-Encoding: chunked", b"zz\r\nabc\r\n0\r\n\r\n")):
+    with socket.create_connection(("127.0.0.1", port), timeout=30) as sock:
+        sock.sendall(b"POST /convert HTTP/1.1\r\nHost: x\r\nX-Filename: a.docx\r\n" + head + b"\r\n\r\n" + body)
+        status = sock.recv(4096).split(b"\r\n")[0]
+        if b" 400 " not in status:
+            sys.exit(f"{head!r}: {status!r}")
+PY
 test "$(code "http://127.0.0.1:$port/nothing")" = 404 || fail 'unknown path is not 404'
 
 echo '== size limit'
