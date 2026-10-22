@@ -38,6 +38,7 @@ BUILD_GROUPS = (
 DEDICATED = {
     "media-bridge": ("media-bridge",),
     "work-browser": ("work-browser",),
+    "session-kit": ("session-kit",),
     "obs-control-e2e": ("obs-control", "media-bridge", "desktop-base", "obs-runtime"),
 }
 INFRASTRUCTURE_PATHS = ("scripts/build.sh", "scripts/smoke.sh", ".github/workflows/pr.yml")

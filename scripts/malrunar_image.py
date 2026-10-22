@@ -44,12 +44,14 @@ IMAGES = {
     "office-convert": None,
     "node": None,
     "work-browser": None,
+    "session-kit": None,
 }
 # Images whose smoke test runs them inside or next to other images. This is test-time only (it is
 # not part of the hash and not a build parent); changed_images.py re-tests them when those change.
 TESTED_WITH = {
     "media-bridge": ("desktop-base",),
     "work-browser": ("desktop-base",),
+    "session-kit": ("desktop-base", "work-browser"),
 }
 # Files that do not influence image content.
 EXCLUDED_DIRS = {"test", "__pycache__", "node_modules", ".git"}
