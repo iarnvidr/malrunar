@@ -100,4 +100,4 @@ The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The ima
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
 (Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). The images keep each Ubuntu package's copyright file.
-The exact OBS package and its source are attached to the `obs-<version>` release.
+The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).

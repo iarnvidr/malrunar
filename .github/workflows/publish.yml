@@ -124,7 +124,7 @@ jobs:
           set -eu
           version="$(python3 scripts/malrunar_image.py pins obs-runtime | sed -n 's/^OBS_VERSION=//p')"
           [ -n "$version" ] || { echo 'OBS_VERSION is not pinned' >&2; exit 1; }
-          tag="obs-$version"
+          tag="obs-${version//\~/-}"   # git tags cannot contain "~" (Debian revision separator)
           if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
             echo "release $tag exists; nothing to do"
             exit 0
