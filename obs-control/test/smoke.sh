@@ -103,15 +103,15 @@ exec_in bash -c '
     test "$(head -c 2 /tmp/preview.jpg | od -An -tx1 | tr -d " \n")" = ffd8
     grep -qi "^content-type: image/jpeg" /tmp/preview.headers
 ' || fail 'the program preview is not a non-empty JPEG'
-exec_in bash -c 'timeout 10 curl -fsS --max-time 8 http://127.0.0.1:18095/api/program-live.mjpg | head -c 3000 | grep -aq -- "--frame"' || fail 'the MJPEG stream delivered no frame'
+exec_in bash -c 'timeout 10 curl -sS --max-time 8 http://127.0.0.1:18095/api/program-live.mjpg 2>/dev/null | head -c 3000 | grep -aq -- "--frame"' || fail 'the MJPEG stream delivered no frame'
 api / | grep -q 'OBS control' || fail 'console page'
 
 echo '== the output stream carries H.264 video and AAC audio'
 for _ in $(seq 1 40); do
-    exec_in test -s /tmp/capture.done 2>/dev/null && break
+    exec_in test -s /tmp/out.ts.done 2>/dev/null && break
     sleep 3
 done
-exec_in test -s /tmp/capture.done || { exec_in cat /tmp/capture.log >&2 || true; fail 'the capture did not finish'; }
+exec_in test -s /tmp/out.ts.done || { exec_in cat /tmp/capture.log >&2 || true; fail 'the capture did not finish'; }
 streams="$(exec_in ffprobe -v error -show_entries stream=codec_name,codec_type -of csv=p=0 /tmp/out.ts)"
 printf '%s\n' "$streams" | grep -q '^h264,video' || { echo "$streams" >&2; fail 'no H.264 video in the output'; }
 printf '%s\n' "$streams" | grep -q '^aac,audio' || { echo "$streams" >&2; fail 'no AAC audio in the output'; }
