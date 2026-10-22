@@ -59,7 +59,7 @@ tag = "example/assembled:latest"  # default final tag (--tag overrides)
 Paths are relative to the repository root, which is the manifest's directory unless `--root` is given.
 A node's stages receive its parents as build args: `FROM ${RUNTIME_BASE_IMAGE} AS build` or
 `COPY --from=${OTHER_IMAGE} ...` in a stage the target needs makes that node a parent, the Dockerfile
-declares `ARG RUNTIME_BASE_IMAGE` before its first `FROM`, and the tools pass the parent's
+declares `ARG RUNTIME_BASE_IMAGE=scratch` before its first `FROM` (a `FROM` can only use a global ARG, and BuildKit rejects an empty one in any stage, so the placeholder default is `scratch`), and the tools pass the parent's
 `<namespace>/<node>:<hash>` reference. Parents are built (or taken) first.
 
 ### What a node's hash covers
