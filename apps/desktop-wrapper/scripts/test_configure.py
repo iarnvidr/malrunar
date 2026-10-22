@@ -107,7 +107,7 @@ class Invalid(unittest.TestCase):
 
     def test_internal_hosts(self):
         for hosts in [["localhost"], ["*.com."], ["https://login.example.com"], ["login.example.com/path"], ["*"],
-                      ["10.0.0.1"], ["*.*.example.com"], [""], [5], "login.example.com"]:
+                      ["192.0.2.1"], ["*.*.example.com"], [""], [5], "login.example.com"]:
             with self.subTest(hosts=hosts):
                 self.assertRejects("internal_hosts", internal_hosts=hosts)
 
