@@ -1,6 +1,6 @@
 # Conventions
 
-Every image `<image>` (desktop-base, obs-runtime, guacd, tail-browser-mcp) has:
+Every image `<image>` (desktop-base, obs-runtime, guacd, tail-browser-mcp, media-bridge) has:
 
 - `<image>/Dockerfile`: build context is `<image>/` only (copy nothing from outside it).
 - `<image>/pins.env`: `KEY=VALUE` lines, passed as `--build-arg`. Must define `VERSION` (the human tag).
@@ -30,3 +30,14 @@ Signature and certificate verification are never disabled.
         malrunar_snapshot_enable; \
         malrunar_retry malrunar_apt install -y --no-install-recommends <packages>; \
         malrunar_snapshot_disable
+
+Component images (`tail-browser-mcp`, `media-bridge`) are `FROM scratch` and hold only
+`/opt/malrunar/<component>`; consumers add them with `COPY --link --from=<image> / /`. A component
+that needs a runtime from `desktop-base` (ffmpeg, PipeWire tools) documents that and is smoke-tested
+in a consumer image built on `desktop-base` (`<image>/test/consumer/Dockerfile`), not on its own.
+Tests that need host features (kernel modules, devices) take them as optional inputs and fall back
+to a documented mode, and the CI result is recorded.
+
+Environment variables a component reads are named `MALRUNAR_<COMPONENT>_*` and are all optional,
+with defaults documented in the component's README. Nothing site-specific (addresses, host names,
+product names) belongs in a recipe, a default, a comment or a test.

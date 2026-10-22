@@ -19,6 +19,7 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`obs-runtime`](obs-runtime/) | A desktop that also runs OBS | `desktop-base` + OBS Studio 32.2.0, including its browser source |
 | [`guacd`](guacd/) | The Guacamole proxy daemon, as a container | guacd 1.6.0 built against FreeRDP 3, with an RDP GDI fix, listening on port 4822 |
 | [`tail-browser-mcp`](tail-browser-mcp/) | Letting an AI agent drive Firefox | The [Tail](https://github.com/rtf6x/tail-browser-mcp) MCP server, client and Firefox extension in `/opt/malrunar/tail-browser-mcp`. A `FROM scratch` layer you copy into your image |
+| [`media-bridge`](media-bridge/) | An OBS-driven virtual camera and microphone for any call app in the desktop | A receiver that turns an MPEG-TS/UDP stream into a v4l2loopback camera and a PipeWire microphone, plus host setup, supervisord/systemd examples and audio/browser helpers in `/opt/malrunar/media-bridge`. A `FROM scratch` layer you copy into your image |
 
 ## Using them
 
@@ -46,6 +47,32 @@ Add the Tail browser bridge to any image:
 ```dockerfile
 COPY --from=ghcr.io/iarnvidr/tail-browser-mcp:2.0.23 / /
 ```
+
+### A virtual camera and microphone for call apps
+
+Run OBS in the desktop (or anywhere on the network), compose what you want to show, and let any
+call application in the remote desktop use it as its camera and microphone. The pieces:
+
+- `desktop-base` (or `obs-runtime`) is the desktop: xrdp, XFCE, PipeWire, ffmpeg.
+- `media-bridge` receives OBS's MPEG-TS/UDP output and publishes it as a v4l2loopback camera and a
+  PipeWire microphone. The camera device is created on the host by `media-bridge/host/setup-v4l2loopback.sh`
+  and mapped into the container.
+- `obs-control` (upcoming) will drive OBS from outside and start the stream the bridge listens for.
+
+```dockerfile
+FROM ghcr.io/iarnvidr/obs-runtime:32.2.0
+COPY --link --from=ghcr.io/iarnvidr/media-bridge:0.1.0 / /
+# obs-control will be added here the same way when it is published
+COPY supervisord.conf /etc/supervisor/conf.d/desktop.conf   # your programs, see media-bridge/share/
+```
+
+```sh
+sudo media-bridge/host/setup-v4l2loopback.sh --label 'Desk camera'   # once, on the host
+docker run --device /dev/video10 --group-add "$(stat -c %g /dev/video10)" -p 3389:3389 -p 5004:5004/udp my-desktop
+```
+
+See [media-bridge/README.md](media-bridge/README.md) for the settings and the file-output fallback
+for hosts that cannot load the kernel module.
 
 ### Firefox
 
@@ -89,6 +116,7 @@ You need Docker with buildx. Build `desktop-base` before `obs-runtime`.
 ```sh
 scripts/build.sh guacd --load && scripts/smoke.sh guacd
 scripts/build.sh desktop-base --load && scripts/build.sh obs-runtime --load
+scripts/build.sh media-bridge --load && scripts/smoke.sh media-bridge   # the smoke test needs desktop-base built
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
 
@@ -99,5 +127,5 @@ To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The images contain
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
-(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). The images keep each Ubuntu package's copyright file.
+(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` adds only scripts. The images keep each Ubuntu package's copyright file.
 The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).

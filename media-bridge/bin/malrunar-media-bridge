@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Copyright 2026 efthomsen
+# SPDX-License-Identifier: Apache-2.0
+#
+# malrunar-media-bridge: receive an MPEG-TS stream over UDP (for example from OBS) and turn it into
+#   * a virtual camera: video written to a v4l2loopback device (or, for tests, to a file), and
+#   * a virtual microphone: audio written to a PipeWire/PulseAudio pipe-source.
+# Runs until stopped. When ffmpeg ends (stream lost, overflow) it is started again after a pause,
+# and the virtual microphone stays loaded so applications keep their device selection.
+#
+# Configuration is by environment, all optional (see README.md in this directory):
+#   MALRUNAR_BRIDGE_UDP_PORT          5004
+#   MALRUNAR_BRIDGE_BIND              0.0.0.0
+#   MALRUNAR_BRIDGE_VIDEO_DEVICE      /dev/video10
+#   MALRUNAR_BRIDGE_VIDEO_SINK        v4l2 (default) or file:/path (raw yuv420p frames, for tests)
+#   MALRUNAR_BRIDGE_SIZE              1280x720
+#   MALRUNAR_BRIDGE_FPS               30
+#   MALRUNAR_BRIDGE_MIC_NAME          malrunar_virtual_mic
+#   MALRUNAR_BRIDGE_MIC_DESCRIPTION   Virtual Microphone
+#   MALRUNAR_BRIDGE_MIC_DEFAULT       1 (make the microphone the default source), 0 to leave it
+#   MALRUNAR_BRIDGE_START_OUTPUT_URL  empty (off); if set, POSTed after ffmpeg starts
+#   MALRUNAR_BRIDGE_INPUT_TIMEOUT     5 (seconds without input before ffmpeg gives up and restarts)
+#   MALRUNAR_BRIDGE_WAIT              60 (seconds to wait for PipeWire and the video device)
+#   MALRUNAR_BRIDGE_RESTART           1 (restart after ffmpeg ends), 0 to exit after one run
+#   MALRUNAR_BRIDGE_RESTART_DELAY     1 (seconds between runs)
+#   MALRUNAR_BRIDGE_LOGLEVEL          warning (ffmpeg -loglevel)
+#   MALRUNAR_BRIDGE_PIPE_DIR          $XDG_RUNTIME_DIR, else $TMPDIR, else /tmp (where the audio pipe lives)
+set -euo pipefail
+
+prog="malrunar-media-bridge"
+die() { printf '%s: %s\n' "$prog" "$*" >&2; exit "${2:-2}"; }
+log() { printf '%s: %s\n' "$prog" "$*" >&2; }
+
+udp_port="${MALRUNAR_BRIDGE_UDP_PORT:-5004}"
+bind_addr="${MALRUNAR_BRIDGE_BIND:-0.0.0.0}"
+video_device="${MALRUNAR_BRIDGE_VIDEO_DEVICE:-/dev/video10}"
+video_sink="${MALRUNAR_BRIDGE_VIDEO_SINK:-v4l2}"
+size="${MALRUNAR_BRIDGE_SIZE:-1280x720}"
+fps="${MALRUNAR_BRIDGE_FPS:-30}"
+mic_name="${MALRUNAR_BRIDGE_MIC_NAME:-malrunar_virtual_mic}"
+mic_description="${MALRUNAR_BRIDGE_MIC_DESCRIPTION:-Virtual Microphone}"
+mic_default="${MALRUNAR_BRIDGE_MIC_DEFAULT:-1}"
+start_url="${MALRUNAR_BRIDGE_START_OUTPUT_URL:-}"
+input_timeout="${MALRUNAR_BRIDGE_INPUT_TIMEOUT:-5}"
+wait_seconds="${MALRUNAR_BRIDGE_WAIT:-60}"
+restart="${MALRUNAR_BRIDGE_RESTART:-1}"
+restart_delay="${MALRUNAR_BRIDGE_RESTART_DELAY:-1}"
+loglevel="${MALRUNAR_BRIDGE_LOGLEVEL:-warning}"
+pipe_root="${MALRUNAR_BRIDGE_PIPE_DIR:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}}"
+
+# --- validate the configuration before touching anything --------------------------------------
+[[ "$udp_port" =~ ^[0-9]+$ ]] && (( udp_port >= 1 && udp_port <= 65535 )) \
+    || die "MALRUNAR_BRIDGE_UDP_PORT must be a port number 1-65535, got '$udp_port'"
+[[ "$bind_addr" =~ ^[A-Za-z0-9.:_-]+$ ]] || die "MALRUNAR_BRIDGE_BIND is not an address or host name: '$bind_addr'"
+[[ "$size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "MALRUNAR_BRIDGE_SIZE must look like 1280x720, got '$size'"
+width="${size%x*}"
+height="${size#*x}"
+(( width % 2 == 0 && height % 2 == 0 )) || die "MALRUNAR_BRIDGE_SIZE must have even width and height (yuv420p), got '$size'"
+[[ "$fps" =~ ^[1-9][0-9]*$ ]] || die "MALRUNAR_BRIDGE_FPS must be a whole number, got '$fps'"
+[[ "$mic_name" =~ ^[A-Za-z0-9_.-]+$ ]] || die "MALRUNAR_BRIDGE_MIC_NAME may only contain letters, digits and _.-, got '$mic_name'"
+description_re='^[^"\\[:cntrl:]]+$'
+[[ "$mic_description" =~ $description_re ]] || die "MALRUNAR_BRIDGE_MIC_DESCRIPTION must not be empty or contain quotes, backslashes or control characters"
+[[ "$mic_default" =~ ^[01]$ ]] || die "MALRUNAR_BRIDGE_MIC_DEFAULT must be 0 or 1"
+[[ "$restart" =~ ^[01]$ ]] || die "MALRUNAR_BRIDGE_RESTART must be 0 or 1"
+[[ "$input_timeout" =~ ^[1-9][0-9]*$ ]] || die "MALRUNAR_BRIDGE_INPUT_TIMEOUT must be a whole number of seconds, got '$input_timeout'"
+[[ "$wait_seconds" =~ ^[0-9]+$ ]] || die "MALRUNAR_BRIDGE_WAIT must be a whole number of seconds, got '$wait_seconds'"
+[[ "$restart_delay" =~ ^[0-9]+$ ]] || die "MALRUNAR_BRIDGE_RESTART_DELAY must be a whole number of seconds, got '$restart_delay'"
+[[ "$loglevel" =~ ^[a-z]+$ ]] || die "MALRUNAR_BRIDGE_LOGLEVEL must be an ffmpeg log level such as warning, got '$loglevel'"
+[[ -d "$pipe_root" && -w "$pipe_root" ]] || die "audio pipe directory '$pipe_root' is not a writable directory (set MALRUNAR_BRIDGE_PIPE_DIR)"
+if [[ -n "$start_url" ]]; then
+    [[ "$start_url" =~ ^https?://[^[:space:]]+$ ]] || die "MALRUNAR_BRIDGE_START_OUTPUT_URL must be an http(s) URL"
+    command -v curl >/dev/null || die "MALRUNAR_BRIDGE_START_OUTPUT_URL is set but curl is not installed"
+fi
+case "$video_sink" in
+    v4l2)
+        [[ "$video_device" =~ ^/dev/[A-Za-z0-9._/-]+$ ]] || die "MALRUNAR_BRIDGE_VIDEO_DEVICE must be a /dev path, got '$video_device'"
+        video_target="$video_device"
+        video_format=v4l2
+        ;;
+    file:?*)
+        video_target="${video_sink#file:}"
+        video_format=rawvideo
+        [[ -d "$(dirname -- "$video_target")" ]] || die "MALRUNAR_BRIDGE_VIDEO_SINK: directory of '$video_target' does not exist"
+        ;;
+    *) die "MALRUNAR_BRIDGE_VIDEO_SINK must be 'v4l2' or 'file:/path', got '$video_sink'" ;;
+esac
+for tool in ffmpeg pactl; do
+    command -v "$tool" >/dev/null || die "'$tool' not found in PATH (the bridge needs ffmpeg and pulseaudio-utils; desktop-base has both)"
+done
+
+# --- wait for PipeWire (pipewire-pulse) and the video device ----------------------------------
+ready=0
+for (( i = 0; i <= wait_seconds; i++ )); do
+    if pactl info >/dev/null 2>&1; then ready=1; break; fi
+    sleep 1
+done
+(( ready )) || die "no PipeWire/PulseAudio server answered to 'pactl info' within ${wait_seconds}s (is pipewire-pulse running, and are XDG_RUNTIME_DIR and PULSE_SERVER right?)" 3
+
+if [[ "$video_sink" == v4l2 ]]; then
+    found=0
+    for (( i = 0; i <= wait_seconds; i++ )); do
+        if [[ -c "$video_device" ]]; then found=1; break; fi
+        sleep 1
+    done
+    if (( ! found )); then
+        die "video device $video_device does not exist (waited ${wait_seconds}s).
+  The virtual camera is a v4l2loopback device, which is created on the HOST by loading a kernel module;
+  a container cannot do that. On the host run host/setup-v4l2loopback.sh (installed next to this script),
+  then give the container the device, for example: docker run --device $video_device ...
+  To run without a camera device, set MALRUNAR_BRIDGE_VIDEO_SINK=file:/some/path (frames are written to a file)." 3
+    fi
+    if [[ ! -w "$video_device" ]]; then
+        die "video device $video_device exists but is not writable by uid $(id -u) (groups: $(id -G)); fix the device permissions or add the container user to the device's group (docker run --group-add \$(stat -c %g $video_device))" 3
+    fi
+fi
+
+# --- virtual microphone -----------------------------------------------------------------------
+# Remove a stale pipe-source of the same name left by a previous run, then create ours.
+while read -r module_id _ module_args; do
+    [[ "$module_args" == *"source_name=$mic_name "* || "$module_args" == *"source_name=$mic_name" ]] || continue
+    pactl unload-module "$module_id" >/dev/null 2>&1 || true
+done < <(pactl list short modules | awk '$2 == "module-pipe-source"')
+
+umask 077
+audio_dir="$(mktemp -d "$pipe_root/malrunar-bridge.XXXXXX")"
+audio_fifo="$audio_dir/audio"
+source_id=""
+ffmpeg_pid=""
+
+cleanup() {
+    if [[ "$ffmpeg_pid" =~ ^[0-9]+$ ]]; then
+        kill "$ffmpeg_pid" >/dev/null 2>&1 || true
+        for _ in $(seq 1 20); do
+            kill -0 "$ffmpeg_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL "$ffmpeg_pid" >/dev/null 2>&1 || true
+        wait "$ffmpeg_pid" 2>/dev/null || true
+    fi
+    if [[ "$source_id" =~ ^[0-9]+$ ]]; then pactl unload-module "$source_id" >/dev/null 2>&1 || true; fi
+    rm -f "$audio_fifo"
+    rmdir "$audio_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+# The pipe is drained even when no application records from the microphone, so the decoder is
+# never blocked by an idle microphone.
+source_id="$(pactl load-module module-pipe-source "file=$audio_fifo" "source_name=$mic_name" \
+    format=s16le rate=48000 channels=2 \
+    "source_properties=\"device.description=\\\"$mic_description\\\" node.always-process=true\"")" \
+    || die "could not create the virtual microphone '$mic_name' (module-pipe-source)" 3
+if [[ "$mic_default" == 1 ]]; then
+    pactl set-default-source "$mic_name" || log "warning: could not make '$mic_name' the default source"
+fi
+log "virtual microphone '$mic_name' ($mic_description) ready"
+
+# --- receive loop -----------------------------------------------------------------------------
+# UDP fifo_size counts 188-byte packets: bounded backlog (queue size is not an end-to-end latency
+# guarantee). timeout is in microseconds.
+input_url="udp://${bind_addr}:${udp_port}?fifo_size=4096&overrun_nonfatal=0&timeout=$(( input_timeout * 1000000 ))"
+while true; do
+    log "listening on udp://${bind_addr}:${udp_port}; video -> ${video_format} ${video_target} (${size}@${fps}); audio -> ${mic_name}"
+    ffmpeg -nostdin -y -hide_banner -loglevel "$loglevel" \
+        -fflags nobuffer -flags low_delay -probesize 128k -analyzeduration 200000 \
+        -i "$input_url" \
+        -map 0:v:0 -vf "fps=${fps},scale=${width}:${height},format=yuv420p" -f "$video_format" "$video_target" \
+        -map 0:a:0 -ac 2 -ar 48000 -flush_packets 1 -f s16le "$audio_fifo" &
+    ffmpeg_pid=$!
+
+    if [[ -n "$start_url" ]]; then
+        sleep 1
+        # Starting an output that is already running must be idempotent on the controller side;
+        # the bridge never asks it to stop (an MPEG-TS sender resends its headers, so a new
+        # listener can join at any time).
+        for _ in $(seq 1 60); do
+            curl -fsS --max-time 8 -X POST "$start_url" >/dev/null 2>&1 && break
+            kill -0 "$ffmpeg_pid" 2>/dev/null || break
+            sleep 1
+        done
+    fi
+    status=0
+    wait "$ffmpeg_pid" || status=$?
+    ffmpeg_pid=""
+    if [[ "$restart" != 1 ]]; then
+        log "ffmpeg exited with status $status; MALRUNAR_BRIDGE_RESTART=0, stopping"
+        exit "$status"
+    fi
+    log "ffmpeg exited with status $status (input lost or timed out); restarting in ${restart_delay}s"
+    sleep "$restart_delay"
+done

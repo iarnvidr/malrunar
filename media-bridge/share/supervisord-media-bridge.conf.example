@@ -1,0 +1,29 @@
+; Example only. Copy to /etc/supervisor/conf.d/media-bridge.conf in your desktop image and adjust.
+; Start it after the program that runs PipeWire and pipewire-pulse (the bridge itself waits up to
+; MALRUNAR_BRIDGE_WAIT seconds for the server and the video device, then exits with a message).
+; "me" and uid 1000 stand for the desktop user of your image.
+[program:media-bridge]
+command=/opt/malrunar/media-bridge/bin/malrunar-media-bridge
+user=me
+environment=HOME="/home/me",XDG_RUNTIME_DIR="/run/user/1000",MALRUNAR_BRIDGE_UDP_PORT="5004",MALRUNAR_BRIDGE_VIDEO_DEVICE="/dev/video10",MALRUNAR_BRIDGE_SIZE="1280x720",MALRUNAR_BRIDGE_FPS="30"
+priority=30
+autostart=true
+autorestart=true
+startsecs=5
+startretries=10
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=10
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+redirect_stderr=true
+
+; Optional: apply the xrdp audio settings once per container start (it waits for xrdp-sink, which
+; only exists while an xrdp session is connected, so it is usually better run from the session's
+; autostart; see README.md).
+;[program:xrdp-audio-tune]
+;command=/opt/malrunar/media-bridge/bin/malrunar-xrdp-audio-tune
+;user=me
+;environment=XDG_RUNTIME_DIR="/run/user/1000"
+;autorestart=false
+;startsecs=0

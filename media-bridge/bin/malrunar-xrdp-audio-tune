@@ -1,0 +1,45 @@
+#!/bin/sh
+# Copyright 2026 efthomsen
+# SPDX-License-Identifier: Apache-2.0
+#
+# malrunar-xrdp-audio-tune: settings that make audio over an xrdp session reliable, and the
+# defaults a call application needs (speaker = xrdp-sink, microphone = the bridge's virtual mic).
+# Run it once per desktop session, after pipewire-pulse is up, for example from an XDG autostart
+# entry or a supervisord program with autorestart=false. Environment, all optional:
+#   MALRUNAR_AUDIO_SINK          xrdp-sink                the speaker (pipewire-module-xrdp's sink)
+#   MALRUNAR_BRIDGE_MIC_NAME     malrunar_virtual_mic     the microphone to select, if present
+#   MALRUNAR_AUDIO_RATE          44100                    PipeWire clock.force-rate (xrdp sends 44.1 kHz PCM)
+#   MALRUNAR_AUDIO_QUANTUM       4096                     clock.force-quantum
+#   MALRUNAR_AUDIO_MAX_QUANTUM   8192                     clock.max-quantum
+#   MALRUNAR_AUDIO_WAIT          30                       seconds to wait for the sink
+# A larger quantum trades a little latency for enough buffering to avoid drop-outs on the RDP path.
+set -eu
+
+sink="${MALRUNAR_AUDIO_SINK:-xrdp-sink}"
+mic="${MALRUNAR_BRIDGE_MIC_NAME:-malrunar_virtual_mic}"
+rate="${MALRUNAR_AUDIO_RATE:-44100}"
+quantum="${MALRUNAR_AUDIO_QUANTUM:-4096}"
+max_quantum="${MALRUNAR_AUDIO_MAX_QUANTUM:-8192}"
+wait_seconds="${MALRUNAR_AUDIO_WAIT:-30}"
+for value in "$rate" "$quantum" "$max_quantum" "$wait_seconds"; do
+    case "$value" in ''|*[!0-9]*) echo "malrunar-xrdp-audio-tune: settings must be whole numbers, got '$value'" >&2; exit 2 ;; esac
+done
+
+attempt=0
+while ! pactl list short sinks 2>/dev/null | grep -q "[[:space:]]${sink}[[:space:]]"; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$wait_seconds" ]; then
+        echo "malrunar-xrdp-audio-tune: sink '$sink' did not appear within ${wait_seconds}s (is pipewire-module-xrdp loaded in this session?)" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+pw-metadata -n settings 0 clock.force-rate "$rate" >/dev/null
+pw-metadata -n settings 0 clock.max-quantum "$max_quantum" >/dev/null
+pw-metadata -n settings 0 clock.force-quantum "$quantum" >/dev/null
+
+pactl set-default-sink "$sink"
+if pactl list short sources | grep -q "[[:space:]]${mic}[[:space:]]"; then
+    pactl set-default-source "$mic"
+fi
