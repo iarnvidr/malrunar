@@ -87,7 +87,7 @@ ffmpeg -nostdin -hide_banner -loglevel error -re \
 echo "== the microphone carries the tone"
 sleep 4
 # 3 s of 48 kHz stereo s16le from the microphone
-timeout 30 parec -d "$mic" --rate=48000 --channels=2 --format=s16le --raw | head -c 576000 > "$work/mic.raw"
+{ timeout 30 parec -d "$mic" --rate=48000 --channels=2 --format=s16le --raw | head -c 576000 > "$work/mic.raw"; } 2>/dev/null || true
 python3 -I - "$work/mic.raw" <<'PY'
 import struct, sys
 data = open(sys.argv[1], "rb").read()
