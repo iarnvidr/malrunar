@@ -39,6 +39,7 @@ IMAGES = {
     "obs-runtime": "desktop-base",
     "obs-control": "obs-runtime",
     "guacd": None,
+    "guacamole-tunnel": None,
     "tail-browser-mcp": None,
     "media-bridge": None,
     "office-convert": None,
