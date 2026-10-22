@@ -1,0 +1,75 @@
+# Build and smoke-test every image on pull requests. Hosted runners only, no secrets, read-only token.
+name: pr
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Shell syntax and static checks
+        run: |
+          set -eu
+          while IFS= read -r file; do bash -n "$file"; done < <(git ls-files '*.sh')
+          git ls-files '*.sh' | xargs shellcheck --severity=warning
+      - name: Content hashes are computable and stable
+        run: |
+          set -eu
+          for image in $(python3 scripts/malrunar_image.py list); do
+            first="$(python3 scripts/malrunar_image.py hash "$image")"
+            second="$(python3 scripts/malrunar_image.py hash "$image")"
+            test "$first" = "$second"
+            echo "$image $first"
+            python3 scripts/malrunar_image.py tags "$image"
+          done
+      - name: Pin updater parses the pin files
+        run: python3 -I scripts/bump_pins.py --dry-run
+
+  build:
+    needs: scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Space-separated, built and smoke-tested in order: obs-runtime is built FROM desktop-base.
+        images:
+          - guacd
+          - tail-browser-mcp
+          - desktop-base obs-runtime
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build and smoke-test
+        env:
+          IMAGES: ${{ matrix.images }}
+        run: |
+          set -eu
+          for image in $IMAGES; do
+            start="$(date +%s)"
+            scripts/build.sh "$image" --load
+            echo "build $image: $(( $(date +%s) - start )) s"
+            scripts/smoke.sh "$image"
+            docker image ls "malrunar/$image"
+          done

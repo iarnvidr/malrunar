@@ -1,0 +1,13 @@
+# Example only, not active. Copy to /etc/wireplumber/wireplumber.conf.d/<name>.conf in a consumer
+# layer to run PipeWire without any host hardware or logind (a container with only virtual audio).
+wireplumber.profiles = {
+  main = {
+    monitor.alsa = disabled
+    monitor.alsa-midi = disabled
+    monitor.bluez = disabled
+    monitor.bluez-midi = disabled
+    monitor.v4l2 = disabled
+    monitor.libcamera = disabled
+    support.logind = disabled
+  }
+}

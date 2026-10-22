@@ -1,0 +1,53 @@
+# Weekly pin bump: apt snapshots, base image digests and the Firefox ESR release, as a pull request.
+# Needs no secrets beyond GITHUB_TOKEN. Pull requests opened with GITHUB_TOKEN do not start other
+# workflows (a GitHub rule): close and reopen the PR, or push to its branch, to run pr.yml on it.
+name: weekly
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true  # the job pushes one branch with GITHUB_TOKEN
+      - name: Bump pins
+        run: python3 -I scripts/bump_pins.py
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if git diff --quiet; then
+            echo 'pins are current'
+            exit 0
+          fi
+          branch="bump-pins-$(date -u +%Y%m%d)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add -- pins.env '*/pins.env'
+          git commit -m 'Bump apt snapshots, base image digests and Firefox ESR'
+          git push --force origin "$branch"
+          body="$(printf 'Automated weekly bump (scripts/bump_pins.py).\n\nPins changed:\n\n```\n%s\n```\n\nReview the pin diff, then merge to publish new images.' "$(git diff --stat HEAD~1 HEAD; git diff -U0 HEAD~1 HEAD | grep -E '^[+-][A-Z0-9_]+=' )")"
+          if gh pr view "$branch" --repo "$REPO" >/dev/null 2>&1; then
+            gh pr edit "$branch" --repo "$REPO" --body "$body"
+          else
+            gh pr create --repo "$REPO" --base main --head "$branch" \
+              --title 'Bump apt snapshots, base image digests and Firefox ESR' --body "$body"
+          fi
