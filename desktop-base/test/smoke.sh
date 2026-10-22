@@ -10,7 +10,7 @@ pin() { grep -h "^$1=" "$here/../pins.env" "$here/../../pins.env" | head -1 | cu
 firefox_version="$(pin FIREFOX_ESR_VERSION)"
 firefox_sha256="$(pin FIREFOX_ESR_SHA256)"
 [ -n "$firefox_version" ] && [ -n "$firefox_sha256" ] || fail 'pins missing'
-run() { docker run --rm --entrypoint '' "$image" "$@"; }
+run() { timeout -k 10 300 docker run --rm --entrypoint '' "$image" "$@"; }
 
 echo '== firefox --version equals the pin'
 out="$(run /opt/malrunar/firefox/firefox --version)"

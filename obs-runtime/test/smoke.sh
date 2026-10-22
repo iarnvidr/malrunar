@@ -9,16 +9,12 @@ obs_version="$(pin OBS_VERSION)"
 upstream="$(pin OBS_UPSTREAM_VERSION)"
 cef_version="$(grep '^CEF_VERSION=' "$here/../cef-version.env" | cut -d= -f2-)"
 [ -n "$obs_version" ] && [ -n "$upstream" ] && [ -n "$cef_version" ] || fail 'pins missing'
-run() { docker run --rm --entrypoint '' "$image" "$@"; }
+# Every container run is bounded so a hung GUI process can never stall CI.
+run() { timeout -k 10 300 docker run --rm --entrypoint '' "$image" "$@"; }
 
 echo '== dpkg version string is exactly the pinned deb version'
 test "$(run dpkg-query -W -f='${Version}' obs-studio)" = "$obs_version" || fail 'dpkg-query obs-studio version'
 run test -s /usr/share/doc/obs-studio/copyright || fail 'obs-studio copyright file is missing'
-
-echo '== obs --version equals the pin'
-out="$(run xvfb-run -a obs --version 2>&1 | tail -1)"
-echo "$out"
-case "$out" in *"$upstream"*) ;; *) fail "obs --version '$out' does not contain $upstream" ;; esac
 
 echo '== obs-browser.so and libcef.so are present; the plugin and CEF helpers have no unresolved libraries'
 run bash -c '
@@ -64,7 +60,7 @@ echo '== still a desktop-base: no runtime user, no policies, unmodified firefox,
 run bash -c '
     set -e
     test -z "$(awk -F: "\$3 >= 1000 && \$3 != 65534 {print \$1}" /etc/passwd)"
-    test ! -e /opt/malrunar/firefox/distribution
+    test "$(cd /opt/malrunar/firefox/distribution && find . -mindepth 1 | sort)" = "./distribution.ini"
     cd /opt/malrunar/firefox
     LC_ALL=C sha256sum -c --quiet /usr/local/share/malrunar/desktop-base/firefox.sha256
     if grep -rqi "Verify-Peer\|Verify-Host" /etc/apt; then exit 1; fi
@@ -74,11 +70,13 @@ if printf '%s\n' "$env_names" | grep -Eqx 'HOME|DISPLAY|XDG_RUNTIME_DIR|PULSE_SE
     fail "image sets a user- or product-bound environment variable: $(printf '%s\n' "$env_names" | tr '\n' ' ')"
 fi
 
-echo '== OBS starts on a virtual display and loads obs-browser'
-log="$(docker run --rm --entrypoint '' "$image" bash -c '
+# OBS has no headless --version (it starts the GUI), so the version is checked in its startup log.
+echo '== OBS starts on a virtual display, reports the pinned version and loads obs-browser'
+log="$(timeout -k 10 300 docker run --rm --entrypoint '' "$image" bash -c '
     export HOME="$(mktemp -d)"
-    xvfb-run -a -s "-screen 0 1280x720x24" timeout -s INT 25 obs --disable-shutdown-check --disable-updater --verbose 2>&1 || true
+    xvfb-run -a -s "-screen 0 1280x720x24" timeout -s INT -k 10 25 obs --disable-shutdown-check --disable-updater --verbose 2>&1 || true
 ')"
 printf '%s\n' "$log" | grep -q 'OBS 32\|OBS Studio\|obs_init\|Using EGL\|Loading module' || { printf '%s\n' "$log" | tail -30 >&2; fail 'OBS produced no startup log'; }
+printf '%s\n' "$log" | grep -qF "OBS $upstream" || { printf '%s\n' "$log" | grep -m3 'OBS ' >&2 || true; fail "startup log does not report OBS $upstream"; }
 if printf '%s\n' "$log" | grep -E "Failed to load.*(obs-browser|obs-ffmpeg|obs-x264|linux-capture)|Module '.*(obs-browser|obs-ffmpeg|obs-x264|linux-capture).*' not loaded"; then fail 'a core or browser plugin failed to load'; fi
 echo 'obs-runtime smoke passed'
