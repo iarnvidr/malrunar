@@ -35,6 +35,6 @@ RUN chmod 0755 /opt/malrunar/obs-control/entrypoint.sh /opt/malrunar/obs-control
     command -v pdftoppm pdfinfo >/dev/null
 USER 1000:1000
 EXPOSE 18095
-HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=8 \\
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=8 \
     CMD ["/opt/malrunar/obs-control/healthcheck.sh"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/malrunar/obs-control/entrypoint.sh"]
