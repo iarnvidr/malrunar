@@ -6,6 +6,9 @@
   * tail-browser-mcp/pins.env: NODE_IMAGE digest and DEBIAN_SNAPSHOT;
   * node/pins.env: NODE_VERSION and NODE_SHA256 (newest LTS release of the pinned major line, sha256
     from the release's SHASUMS256.txt on nodejs.org; FETCH_IMAGE only unpacks it and is moved by hand);
+  * thunderbird/pins.env: THUNDERBIRD_VERSION and THUNDERBIRD_SHA256 (latest stable release from Mozilla's
+    product-details, sha256 from the release's SHA256SUMS; Mozilla's distribution policy asks for the latest
+    release, and the image build verifies the signature of that file);
   * desktop-base/pins.env: FIREFOX_ESR_VERSION and FIREFOX_ESR_SHA256 (current ESR from Mozilla's
     product-details, sha256 from the release's SHA256SUMS on archive.mozilla.org).
 
@@ -97,6 +100,20 @@ def firefox_esr():
     raise SystemExit(f"{wanted} not in SHA256SUMS")
 
 
+def thunderbird_latest():
+    versions = json.loads(fetch("https://product-details.mozilla.org/1.0/thunderbird_versions.json")[0])
+    version = versions["LATEST_THUNDERBIRD_VERSION"]
+    if not re.fullmatch(r"\d+(\.\d+)+", version):
+        raise SystemExit(f"unexpected Thunderbird version {version!r}")
+    sums = fetch(f"https://archive.mozilla.org/pub/thunderbird/releases/{version}/SHA256SUMS")[0].decode()
+    wanted = f"linux-x86_64/en-US/thunderbird-{version}.tar.xz"
+    for line in sums.splitlines():
+        digest, _, name = line.partition("  ")
+        if name == wanted:
+            return version, digest
+    raise SystemExit(f"{wanted} not in SHA256SUMS")
+
+
 def node_lts(current_version):
     """Newest LTS release of the major line of `current_version` and the sha256 of its linux-x64 tarball."""
     major = current_version.split(".")[0]
@@ -132,6 +149,12 @@ def main():
         set_pin(node, "NODE_VERSION", version, dry_run)
         set_pin(node, "NODE_SHA256", digest, dry_run)
         set_pin(node, "VERSION", version, dry_run)
+    thunderbird = ROOT / "thunderbird/pins.env"
+    if thunderbird.exists():
+        version, digest = thunderbird_latest()
+        set_pin(thunderbird, "THUNDERBIRD_VERSION", version, dry_run)
+        set_pin(thunderbird, "THUNDERBIRD_SHA256", digest, dry_run)
+        set_pin(thunderbird, "VERSION", version, dry_run)
     desktop = ROOT / "desktop-base/pins.env"
     if desktop.exists():
         version, digest = firefox_esr()
