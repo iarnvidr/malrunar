@@ -18,7 +18,7 @@
 # environment) in their own layers. OBS lives at /usr/bin/obs, plugins in
 # /usr/lib/x86_64-linux-gnu/obs-plugins (the .deb's own layout).
 ARG DESKTOP_BASE
-FROM ${DESKTOP_BASE}
+FROM ${DESKTOP_BASE} AS runtime-base
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG APT_SNAPSHOT
 ARG OBS_VERSION
@@ -50,3 +50,37 @@ RUN . /usr/local/share/malrunar/lib/apt-snapshot.sh; \
     mkdir -p /usr/local/share/malrunar/obs-runtime; \
     printf '%s\n' "OBS_VERSION=${OBS_VERSION}" "OBS_DEB_SHA256=${OBS_DEB_SHA256}" "APT_SNAPSHOT=${APT_SNAPSHOT}" \
         > /usr/local/share/malrunar/obs-runtime/build-info.env
+
+# Rebuild only obs-ffmpeg to fix its raw-capture shutdown race. The original
+# source archive is already pinned and mirrored by fetch-source.sh.
+FROM runtime-base AS ffmpeg-build
+ARG APT_SNAPSHOT
+ARG OBS_VERSION
+ARG OBS_UPSTREAM_VERSION
+ARG OBS_PPA_URL
+ARG OBS_ORIG_TARBALL_SHA256
+COPY patches/ /patches/
+COPY ffmpeg-build/ /recipe/
+RUN . /usr/local/share/malrunar/lib/apt-snapshot.sh; \
+    malrunar_snapshot_enable; \
+    malrunar_retry malrunar_apt install -y --no-install-recommends \
+        build-essential cmake ninja-build pkg-config patch libsimde-dev \
+        libavcodec-dev libavfilter-dev libavdevice-dev libavutil-dev libswscale-dev \
+        libavformat-dev libswresample-dev libva-dev libpci-dev libdrm-dev libsrt-gnutls-dev librist-dev; \
+    malrunar_snapshot_disable; \
+    malrunar_retry curl -fsSL --connect-timeout 30 \
+        "${OBS_PPA_URL}/+sourcefiles/obs-studio/${OBS_VERSION}/obs-studio_${OBS_UPSTREAM_VERSION}.orig.tar.gz" \
+        -o /tmp/obs-source.tar.gz; \
+    echo "${OBS_ORIG_TARBALL_SHA256}  /tmp/obs-source.tar.gz" | sha256sum -c -; \
+    mkdir /src; tar -xzf /tmp/obs-source.tar.gz --strip-components=1 -C /src; \
+    patch -d /src -p1 < /patches/ffmpeg-capture-teardown.patch; \
+    cmake -S /recipe -B /build -G Ninja -DOBS_SOURCE=/src -DCMAKE_BUILD_TYPE=Release; \
+    cmake --build /build --parallel 2
+
+FROM runtime-base
+COPY --from=ffmpeg-build /build/obs-ffmpeg.so /usr/lib/x86_64-linux-gnu/obs-plugins/obs-ffmpeg.so
+COPY patches/ /usr/local/share/malrunar/obs-runtime/patches/
+COPY ffmpeg-build/ /usr/local/share/malrunar/obs-runtime/ffmpeg-build/
+RUN printf '%s\n' 'OBS_FFMPEG_PATCH=ffmpeg-capture-teardown' >> /usr/local/share/malrunar/obs-runtime/build-info.env; \
+    ldd /usr/lib/x86_64-linux-gnu/obs-plugins/obs-ffmpeg.so > /tmp/ffmpeg-linked; \
+    ! grep -q 'not found' /tmp/ffmpeg-linked; rm /tmp/ffmpeg-linked
