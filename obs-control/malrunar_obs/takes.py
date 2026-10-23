@@ -458,7 +458,7 @@ class Takes:
         return False
 
     async def _stop_stream_and_wait(self) -> None:
-        """Wait for OBS's authoritative STOPPED event before touching the canvas."""
+        """Wait until the native take encoder is inactive before touching the canvas."""
         await self.ctl.obs_client.stop_stream_and_wait()
 
     async def current_canvas(self) -> dict[str, tuple]:
@@ -944,7 +944,7 @@ class Takes:
 
     async def _finish_recording(self, from_watchdog: bool = False) -> dict[str, Any]:
         """Stop the stream output and finalize the take. The caller holds ``self.lock``."""
-        recording, self.recording = self.recording, None
+        recording = self.recording
         assert recording is not None
         if not from_watchdog and recording.get("watchdog"):
             recording["watchdog"].cancel()
@@ -952,6 +952,7 @@ class Takes:
         # Subscribe before issuing the stop: a second stop can miss the event or
         # return OutputNotRunning after the first one already completed.
         await self._stop_stream_and_wait()
+        self.recording = None
         try:
             await asyncio.wait_for(process.wait(), timeout=20)
         except asyncio.TimeoutError:

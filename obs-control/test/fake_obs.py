@@ -37,6 +37,7 @@ class FakeObs:
         self.streaming = False
         self.delayed_stream_stop = False
         self.delayed_record_stop = False
+        self.suppress_stop_events = False
         self.streaming_at_canvas_changes: list[bool] = []
         self.recording_at_canvas_changes: list[bool] = []
         self.stream_service: dict = {}
@@ -106,21 +107,22 @@ class FakeObs:
             if response is not None:
                 reply["responseData"] = response
             await socket.send(json.dumps({"op": 7, "d": reply}))
-            if kind in ("StopStream", "StopRecord") and result and subscriptions & 64:
-                async def stopped_event():
+            if kind in ("StopStream", "StopRecord") and result and subscriptions & 64 and not self.suppress_stop_events:
+                async def stopped_event(kind=kind):
                     import asyncio
                     stream = kind == "StopStream"
+                    await socket.send(json.dumps({"op": 5, "d": {
+                        "eventType": "StreamStateChanged" if stream else "RecordStateChanged",
+                        "eventIntent": 64,
+                        "eventData": {"outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED"},
+                    }}))
+                    # Like libobs: the stop notification precedes encoder cleanup.
                     if self.delayed_stream_stop if stream else self.delayed_record_stop:
                         await asyncio.sleep(0.15)
                     if stream:
                         self.streaming = False
                     else:
                         self.recording = False
-                    await socket.send(json.dumps({"op": 5, "d": {
-                        "eventType": "StreamStateChanged" if stream else "RecordStateChanged",
-                        "eventIntent": 64,
-                        "eventData": {"outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED"},
-                    }}))
                 import asyncio
                 asyncio.create_task(stopped_event())
 

@@ -84,27 +84,28 @@ class ObsClient:
         return response["d"].get("responseData") or {}
 
     async def stop_stream_and_wait(self) -> None:
-        """Stop streaming and wait for OBS's authoritative STOPPED output event.
+        """Stop the take encoder and wait for libobs to finish disconnecting it.
 
-        OUTPUTS (64) enables StreamStateChanged. GetStreamStatus is diagnostic
-        only: outputActive=False can describe STOPPING and is not a barrier.
-        Consequently this always sends StopStream and waits for both its
-        successful response and the STOPPED event, in either arrival order.
+        libobs signals stop before end_data_capture_thread finishes. The websocket
+        STOPPED event alone is therefore insufficient: GetStreamStatus.outputActive
+        reads obs_output_active(), cleared after stop_video/audio_encoders complete.
+        See libobs/obs-output.c: obs_output_end_data_capture_internal and
+        end_data_capture_thread in OBS 32.2.0.
         """
         await self._stop_output_and_wait("StopStream", "StreamStateChanged")
 
     async def stop_record_and_wait(self) -> None:
         """Wait for the program encoder to finish before changing video settings."""
-        await self._stop_output_and_wait("StopRecord", "RecordStateChanged", allow_inactive=True)
+        await self._stop_output_and_wait("StopRecord", "RecordStateChanged")
 
-    async def _stop_output_and_wait(self, request_type: str, event_type: str, *, allow_inactive: bool = False) -> None:
+    async def _stop_output_and_wait(self, request_type: str, event_type: str) -> None:
         try:
             async with asyncio.timeout(30):
-                await self._stop_output(request_type, event_type, allow_inactive=allow_inactive)
+                await self._stop_output(request_type, event_type)
         except TimeoutError as exc:
-            raise ObsError(f"{request_type} did not receive its STOPPED event within 30s") from exc
+            raise ObsError(f"{request_type} did not finish encoder teardown within 30s") from exc
 
-    async def _stop_output(self, request_type: str, event_type: str, *, allow_inactive: bool) -> None:
+    async def _stop_output(self, request_type: str, event_type: str) -> None:
         async with self.session(event_subscriptions=64) as socket:
             request_id = str(uuid.uuid4())
             await socket.send(json.dumps({"op": 6, "d": {
@@ -122,10 +123,19 @@ class ObsClient:
                 elif message.get("op") == 7 and message.get("d", {}).get("requestId") == request_id:
                     status = message["d"]["requestStatus"]
                     if not status.get("result"):
-                        if allow_inactive and status.get("code") == 501:
-                            return
-                        raise ObsError(f"{request_type}: {status.get('comment', 'failed')}")
+                        if status.get("code") == 501:
+                            # No new stop event is emitted for an inactive output.
+                            # Still verify its native state rather than treating 501
+                            # itself as proof of completed teardown.
+                            stopped = True
+                        else:
+                            raise ObsError(f"{request_type}: {status.get('comment', 'failed')}")
                     response_ok = True
+            status_type = "GetStreamStatus" if request_type == "StopStream" else "GetRecordStatus"
+            while (await self.ask(socket, status_type)).get("outputActive") is not False:
+                # State polling, bounded by the outer deadline; never a guessed
+                # teardown delay or a retry of StopStream/StopRecord.
+                await asyncio.sleep(0.05)
 
     async def request(self, *requests: tuple[str, dict[str, Any]]) -> list[dict[str, Any]]:
         """Send requests in order over one connection; the responses' data, in order."""
