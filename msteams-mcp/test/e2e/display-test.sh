@@ -42,19 +42,27 @@ export MALRUNAR_WORK_BROWSER_RETRY_SECONDS=2
 /opt/malrunar/work-browser/bin/malrunar-work-browser > "$site/wb.log" 2>&1 &
 wb_pid=$!
 
+has_window() { LC_ALL=C.UTF-8 xwininfo -root -tree 2>/dev/null | grep -q "$1"; }
 echo '== the work browser shows a window with the first page'
 for _ in $(seq 1 120); do
-    xd search --name 'Fixture page one' >/dev/null 2>&1 && break
+    has_window 'Fixture page one' && break
     sleep 1
 done
-xd search --name 'Fixture page one' >/dev/null 2>&1 || { echo 'no browser window with the first page'; LC_ALL=C.UTF-8 xwininfo -root -tree | head -30; cat "$site/web.log"; exit 1; }
+has_window 'Fixture page one' || { echo 'no browser window with the first page'; LC_ALL=C.UTF-8 xwininfo -root -tree | head -30; cat "$site/web.log"; exit 1; }
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/9222) 2>/dev/null && break; sleep 1; done
 (exec 3<>/dev/tcp/127.0.0.1/9222) 2>/dev/null || { echo 'the BiDi port 9222 is not listening'; exit 1; }
+echo '-- what the X tools see (for the log)'
+command -v xdotool xprop xclip import pdftotext
+for query in '--classname Navigator' '--class firefox' '--name Fixture'; do
+    # shellcheck disable=SC2086
+    echo "xdotool search $query -> $(xd search $query 2>&1 | tr '\n' ' ')"
+done
+for id in $(xd search --classname Navigator 2>/dev/null); do echo "window $id: $(xd getwindowname "$id" 2>&1) role: $(xprop -id "$id" WM_WINDOW_ROLE 2>&1)"; done
 
 echo '== malrunar-msteams-mcp open hands a page to the running browser (work-browser helper)'
 "$tool" open 'http://127.0.0.1:18765/two.html'
-for _ in $(seq 1 30); do xd search --name 'Fixture page two' >/dev/null 2>&1 && break; sleep 1; done
-xd search --name 'Fixture page two' >/dev/null 2>&1 || { echo 'the page opened with `open` never appeared'; exit 1; }
+for _ in $(seq 1 30); do has_window 'Fixture page two' && break; sleep 1; done
+has_window 'Fixture page two' || { echo 'the page opened with `open` never appeared'; LC_ALL=C.UTF-8 xwininfo -root -tree | head -30; exit 1; }
 
 echo '== browser-mcp lists windows and tabs, reads through BiDi, takes a screenshot and navigates'
 # Both pages are open now (two tabs); the active one is the second.
