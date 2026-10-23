@@ -246,3 +246,16 @@ api /api/stop-output -X POST | grep -q '"ok": true' || fail 'stop-output'
 api_any /health 2>/dev/null | grep -q '"healthy": false' || fail 'output still active after stop-output'
 api /api/start-output -X POST | grep -q '"ok": true' || fail 'start-output'
 echo 'obs-control smoke passed'
+
+echo '== relay healthcheck detects command mode without an override'
+relay_name="${name}-relay"
+created+=("$relay_name")
+docker create --name "$relay_name" -e MALRUNAR_OBS_RELAY_TARGET_HOST=127.0.0.1 \
+    -e MALRUNAR_OBS_RELAY_CONTROL_HOST=0.0.0.0 "$image" relay >/dev/null
+docker start "$relay_name" >/dev/null
+relay_ready=false
+for _ in $(seq 1 30); do
+    if docker exec "$relay_name" /opt/malrunar/obs-control/healthcheck.sh; then relay_ready=true; break; fi
+    sleep 1
+done
+[ "$relay_ready" = true ] || fail 'relay healthcheck did not detect the relay process'

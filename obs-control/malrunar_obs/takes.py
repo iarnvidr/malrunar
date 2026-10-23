@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import traceback
 import json
 import math
 import os
@@ -491,14 +490,11 @@ class Takes:
         current = await self.current_canvas()
         if current["base"] == tuple(size) and current["output"] == output:
             return
+        # StopRecord's response acknowledges the request, not encoder teardown.
+        # The program recording and the take stream both own video encoders.
+        await self.ctl.obs_client.stop_record_and_wait()
         last_error: Exception | None = None
         for _attempt in range(3):
-            try:
-                logger.info("take canvas stage=StopRecord attempt=%d", _attempt + 1)
-                await self.ctl.obs(("StopRecord", {}))
-            except Exception:
-                pass  # already stopped
-            await self._wait_record(False, attempts=50)
             try:
                 logger.info("take canvas stage=SetVideoSettings attempt=%d", _attempt + 1)
                 await self.ctl.obs(
@@ -623,9 +619,6 @@ class Takes:
         stage = "select_restore_scene"
         logger.info("take restore begin previous=%r", previous)
         try:
-            # Every restoration path (including arm rollback) must cross the encoder barrier.
-            stage = "stop_stream_and_wait"
-            await self._stop_stream_and_wait()
             target = None
             if previous and previous != self.s.scene:
                 cameras = {camera.scene for camera in ctl.config.cameras}
@@ -652,8 +645,6 @@ class Takes:
                     await ctl.set_program_audio_muted(True, strict=False)
         except Exception:
             logger.exception("take restore failed stage=%s; traceback follows", stage)
-            # Do not restore the canvas unless STOPPED was confirmed; the encoder
-            # may still own it. Scene restoration above is likewise skipped on errors.
             raise
         else:
             stage = "restore_canvas"
@@ -672,8 +663,8 @@ class Takes:
             if self.armed:
                 async with self.ctl.video_lock:
                     previous = None if neutral else self.previous_scene
-                    self.armed, self.armed_by, self.previous_scene = False, None, None
                     await self._restore_program(previous)
+                    self.armed, self.armed_by, self.previous_scene = False, None, None
         return finished
 
     async def disarm(self, request: web.Request) -> web.Response:
@@ -958,11 +949,8 @@ class Takes:
         if not from_watchdog and recording.get("watchdog"):
             recording["watchdog"].cancel()
         take_id, process, partial, user = recording["take_id"], recording["process"], recording["partial"], recording["owner"]
-        try:
-            await self.ctl.obs(("StopStream", {}))
-        except Exception:
-            pass
-        # An inactive status can precede encoder shutdown. The STOPPED event is the barrier.
+        # Subscribe before issuing the stop: a second stop can miss the event or
+        # return OutputNotRunning after the first one already completed.
         await self._stop_stream_and_wait()
         try:
             await asyncio.wait_for(process.wait(), timeout=20)
@@ -1021,16 +1009,14 @@ class Takes:
         _, _, source = self._take_file(request)
         target = source.with_suffix(".mp3")
         if not target.is_file():
-            partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
+            partial = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.partial.mp3")
             try:
-                process = await asyncio.create_subprocess_exec(
+                code, _, stderr = await run_tool(
                     "nice", "-n", "10", "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
                     "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-codec:a", "libmp3lame",
-                    "-q:a", "4", "-y", str(partial), stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.PIPE,
+                    "-q:a", "4", "-y", str(partial), timeout=120,
                 )
-                _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-                if process.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
+                if code != 0 or not partial.is_file() or partial.stat().st_size == 0:
                     raise RuntimeError(stderr.decode("utf-8", "replace")[-400:] or "ffmpeg failed")
                 os.replace(partial, target)
             except (OSError, asyncio.TimeoutError, RuntimeError) as exc:
@@ -1044,6 +1030,7 @@ class Takes:
             return _error("This take is recording", 409)
         path.unlink(missing_ok=True)
         path.with_suffix(".json").unlink(missing_ok=True)
+        path.with_suffix(".mp3").unlink(missing_ok=True)
         return web.json_response({"ok": True, "deleted": take_id})
 
     # ------------------------------------------------------------------ assembling a video
@@ -1213,9 +1200,12 @@ class Takes:
                     if scene.get("currentProgramSceneName") == self.s.scene:
                         async with self.ctl.video_lock:
                             try:
-                                await self._stop_stream_and_wait()
+                                (stream,) = await self.ctl.obs(("GetStreamStatus", {}))
+                                if stream.get("outputActive"):
+                                    await self._stop_stream_and_wait()
                             except Exception:
                                 logger.exception("could not confirm stream STOPPED during startup recovery")
+                                return
                             self.restore_canvas = None
                             await self._restore_program(None)
                     return

@@ -151,6 +151,16 @@ class FileTests(TempDir, unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "permission denied"):
                 load_config(env={}, path=config)
 
+    def test_inaccessible_config_directory_is_not_treated_as_missing(self):
+        from unittest import mock
+        from pathlib import Path
+
+        with mock.patch.object(Path, "stat", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(ConfigError, "permission denied"):
+                load_config(env={}, path="/private/config.toml")
+            with self.assertRaisesRegex(ConfigError, "permission denied"):
+                load_config(env={})
+
 
 class EnvTests(TempDir, unittest.TestCase):
     def load(self, env, **sections):

@@ -91,17 +91,24 @@ class ObsClient:
         Consequently this always sends StopStream and waits for both its
         successful response and the STOPPED event, in either arrival order.
         """
-        try:
-            async with asyncio.timeout(self.open_timeout):
-                await self._stop_stream_and_wait()
-        except TimeoutError as exc:
-            raise ObsError(f"StopStream did not receive its STOPPED event within {self.open_timeout:g}s") from exc
+        await self._stop_output_and_wait("StopStream", "StreamStateChanged")
 
-    async def _stop_stream_and_wait(self) -> None:
+    async def stop_record_and_wait(self) -> None:
+        """Wait for the program encoder to finish before changing video settings."""
+        await self._stop_output_and_wait("StopRecord", "RecordStateChanged", allow_inactive=True)
+
+    async def _stop_output_and_wait(self, request_type: str, event_type: str, *, allow_inactive: bool = False) -> None:
+        try:
+            async with asyncio.timeout(30):
+                await self._stop_output(request_type, event_type, allow_inactive=allow_inactive)
+        except TimeoutError as exc:
+            raise ObsError(f"{request_type} did not receive its STOPPED event within 30s") from exc
+
+    async def _stop_output(self, request_type: str, event_type: str, *, allow_inactive: bool) -> None:
         async with self.session(event_subscriptions=64) as socket:
             request_id = str(uuid.uuid4())
             await socket.send(json.dumps({"op": 6, "d": {
-                "requestType": "StopStream", "requestId": request_id, "requestData": {}
+                "requestType": request_type, "requestId": request_id, "requestData": {}
             }}))
             response_ok = False
             stopped = False
@@ -109,16 +116,15 @@ class ObsClient:
                 message = json.loads(await socket.recv())
                 if message.get("op") == 5:
                     event = message.get("d", {})
-                    if (event.get("eventType") == "StreamStateChanged"
+                    if (event.get("eventType") == event_type
                             and event.get("eventData", {}).get("outputState") == "OBS_WEBSOCKET_OUTPUT_STOPPED"):
                         stopped = True
                 elif message.get("op") == 7 and message.get("d", {}).get("requestId") == request_id:
                     status = message["d"]["requestStatus"]
                     if not status.get("result"):
-                        # OBS returns code 501 when the output was already inactive. There is
-                        # no event barrier in that case; fail conservatively rather than claim
-                        # STOPPED or let a caller restore the canvas without proof.
-                        raise ObsError(f"StopStream: {status.get('comment', 'failed')}")
+                        if allow_inactive and status.get("code") == 501:
+                            return
+                        raise ObsError(f"{request_type}: {status.get('comment', 'failed')}")
                     response_ok = True
 
     async def request(self, *requests: tuple[str, dict[str, Any]]) -> list[dict[str, Any]]:

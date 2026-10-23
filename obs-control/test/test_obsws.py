@@ -82,8 +82,10 @@ class StopBarrierTests(unittest.IsolatedAsyncioTestCase):
                 socket.incoming = iter([response(rid)])
                 socket.default_message = {"op": 5, "d": {"eventType": "OtherEvent"}}
             socket.send = send
-            with self.assertRaisesRegex(ObsError, "STOPPED event"):
-                await asyncio.wait_for(client.stop_stream_and_wait(), 0.2)
+            deadline = asyncio.timeout(0.02)
+            with mock.patch("malrunar_obs.obsws.asyncio.timeout", return_value=deadline):
+                with self.assertRaisesRegex(ObsError, "STOPPED event"):
+                    await asyncio.wait_for(client.stop_stream_and_wait(), 0.2)
 
     async def test_stop_error_501_is_not_mistaken_for_stopped(self):
         socket = FakeSocket([])

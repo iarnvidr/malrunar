@@ -246,6 +246,13 @@ for cycle in $(seq 1 10); do
     sleep 2
     take="$(api /api/takes/stop -X POST)" || fail "POST /api/takes/stop ($take_id)"
     printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail "take has no audio ($take_id)"; }
+    if [ "$cycle" -eq 1 ]; then
+        timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 "${trusted[@]}" \
+            -o /tmp/take-audio.mp3 "http://127.0.0.1:18095/api/takes/$take_id/audio.mp3" || fail 'take audio MP3 route'
+        docker exec "$id-obs" ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 /tmp/take-audio.mp3 \
+            | grep -qx 'mp3,16000,1' || fail 'take audio is not a mono 16 kHz MP3'
+    fi
     job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take $cycle\", \"items\": [{\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}, {\"type\": \"take\", \"take_id\": \"$take_id\", \"start\": 0, \"end\": 4}]}")" || fail "POST /api/takes/assemble ($take_id)"
     job_id="$(printf '%s' "$job" | field 'd["job"]["job_id"]')"
     state=running

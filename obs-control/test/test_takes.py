@@ -260,6 +260,38 @@ class ClassificationTests(TakesCase):
 
 
 class ArmingTests(TakesCase):
+    async def test_canvas_change_waits_for_program_encoder_stop(self):
+        client = await self.start_takes()
+        self.obs.recording = True
+        self.obs.delayed_record_stop = True
+        response = await client.post("/api/takes/arm", json={})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.obs.recording_at_canvas_changes, [False])
+        response = await client.post("/api/takes/disarm")
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.obs.recording_at_canvas_changes, [False, False])
+
+    async def test_failed_encoder_stop_does_not_change_canvas(self):
+        client = await self.start_takes()
+        self.obs.recording = True
+        self.obs.fail["StopRecord"] = "encoder failed"
+        response = await client.post("/api/takes/arm", json={})
+        self.assertEqual(response.status, 503)
+        self.assertEqual(self.obs.recording_at_canvas_changes, [])
+
+    async def test_failed_disarm_keeps_take_mode_reserved(self):
+        client = await self.start_takes()
+        await client.post("/api/takes/arm", json={})
+        self.obs.fail["StopRecord"] = "encoder failed"
+        response = await client.post("/api/takes/disarm")
+        self.assertEqual(response.status, 503)
+        self.assertTrue(self.takes.armed)
+        self.assertEqual(self.obs.video["baseWidth"], 1920)
+        self.obs.fail.clear()
+        response = await client.post("/api/takes/disarm")
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertFalse(self.takes.armed)
+
     async def test_arm_switches_canvas_and_scene_and_disarm_restores_them(self):
         client = await self.start_takes()
         self.obs.current = "B-roll Video"
@@ -597,6 +629,7 @@ class RecordingTests(TakesCase):
         await client.post("/api/takes/start", json={"take_id": "kept-take"})
         response = await client.post("/api/takes/disarm")
         self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(len(self.obs.names("StopStream")), 1, "subscribe and stop once, so STOPPED is not lost")
         payload = await response.json()
         self.assertFalse(self.obs.streaming)
         self.assertEqual(self.obs.video["baseWidth"], 640)

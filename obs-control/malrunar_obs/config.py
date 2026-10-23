@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -267,8 +268,21 @@ def setattr_obj(obj: object, name: str, value: Any) -> None:
 
 
 # -- loading ----------------------------------------------------------------------------------
+def _config_file_exists(path: Path) -> bool:
+    # Path.is_file() suppresses filesystem errors on newer Python versions.
+    # Inaccessible configuration must not silently become an absent configuration.
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+    except PermissionError as exc:
+        raise ConfigError(f"config file {path}: permission denied (cannot read configuration)") from exc
+    except OSError as exc:
+        raise ConfigError(f"config file {path}: {exc}") from exc
+
+
 def _read_file(path: Path) -> dict[str, Any]:
-    if not path.is_file():
+    if not _config_file_exists(path):
         raise ConfigError(f"config file {path} not found (set by {ENV_CONFIG})")
     try:
         if path.suffix.lower() == ".json":
@@ -538,7 +552,7 @@ def load_config(
     file_data: dict[str, Any] = {}
     if chosen:
         file_data = _read_file(Path(chosen))
-    elif Path(DEFAULT_CONFIG_PATH).is_file():
+    elif _config_file_exists(Path(DEFAULT_CONFIG_PATH)):
         file_data = _read_file(Path(DEFAULT_CONFIG_PATH))
     data = merge_file_data(file_data)
     apply_env(data, env)

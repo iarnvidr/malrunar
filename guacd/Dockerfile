@@ -103,7 +103,10 @@ RUN set -eu; \
         test -s "/usr/share/doc/${package%%:*}/copyright"; \
     done < /usr/local/share/malrunar/guacd-linked-packages
 RUN set -eu; \
-    useradd --create-home --uid 1000 --user-group --shell /usr/sbin/nologin guacd; \
+    if getent passwd ubuntu >/dev/null; then userdel -r ubuntu; fi; \
+    if getent group ubuntu >/dev/null; then groupdel ubuntu; fi; \
+    groupadd --gid 1000 guacd; \
+    useradd --create-home --uid 1000 --gid 1000 --shell /usr/sbin/nologin guacd; \
     chown guacd:guacd /home/guacd
 USER guacd:guacd
 ENV HOME=/home/guacd

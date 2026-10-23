@@ -36,7 +36,9 @@ class FakeObs:
         self.video = {"baseWidth": 640, "baseHeight": 360, "outputWidth": 640, "outputHeight": 360}
         self.streaming = False
         self.delayed_stream_stop = False
+        self.delayed_record_stop = False
         self.streaming_at_canvas_changes: list[bool] = []
+        self.recording_at_canvas_changes: list[bool] = []
         self.stream_service: dict = {}
         self.camera_luma = 200  # brightness of the BMP GetSourceScreenshot returns
         self.scene_items: dict[str, list[dict]] = {}  # scene -> [{"sourceName", "sceneItemId"}]
@@ -87,27 +89,35 @@ class FakeObs:
             data = message["d"]
             kind, request_data = data["requestType"], data.get("requestData", {})
             self.calls.append((kind, request_data))
-            if kind in self.fail:
+            inactive = ((kind == "StopStream" and not self.streaming)
+                        or (kind == "StopRecord" and not self.recording))
+            if inactive:
+                result, response, comment = False, None, "Output not running"
+            elif kind in self.fail:
                 result, response = False, None
                 comment = self.fail[kind]
             else:
                 result, response = True, self.respond(kind, request_data)
                 comment = ""
-            status = {"result": result, "code": 100 if result else 600}
+            status = {"result": result, "code": 100 if result else (501 if inactive else 600)}
             if comment:
                 status["comment"] = comment
             reply = {"requestType": kind, "requestId": data["requestId"], "requestStatus": status}
             if response is not None:
                 reply["responseData"] = response
             await socket.send(json.dumps({"op": 7, "d": reply}))
-            if kind == "StopStream" and result and subscriptions & 64:
+            if kind in ("StopStream", "StopRecord") and result and subscriptions & 64:
                 async def stopped_event():
                     import asyncio
-                    if self.delayed_stream_stop:
+                    stream = kind == "StopStream"
+                    if self.delayed_stream_stop if stream else self.delayed_record_stop:
                         await asyncio.sleep(0.15)
-                    self.streaming = False
+                    if stream:
+                        self.streaming = False
+                    else:
+                        self.recording = False
                     await socket.send(json.dumps({"op": 5, "d": {
-                        "eventType": "StreamStateChanged",
+                        "eventType": "StreamStateChanged" if stream else "RecordStateChanged",
                         "eventIntent": 64,
                         "eventData": {"outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED"},
                     }}))
@@ -122,7 +132,8 @@ class FakeObs:
         if kind == "StartRecord":
             self.recording = True
         elif kind == "StopRecord":
-            self.recording = False
+            if not self.delayed_record_stop:
+                self.recording = False
         elif kind == "GetCurrentProgramScene":
             return {"currentProgramSceneName": self.current}
         elif kind == "SetCurrentProgramScene":
@@ -154,6 +165,7 @@ class FakeObs:
             return dict(self.video)
         elif kind == "SetVideoSettings":
             self.streaming_at_canvas_changes.append(self.streaming)
+            self.recording_at_canvas_changes.append(self.recording)
             self.video.update(data)
         elif kind == "SetStreamServiceSettings":
             self.stream_service = data
