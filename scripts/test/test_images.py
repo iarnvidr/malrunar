@@ -139,6 +139,21 @@ class PlanTest(CopyCase):
         self.assertEqual(json.loads(none["groups"]), [])
         self.assertEqual({none["work_browser"], none["media_bridge"], none["obs_control_e2e"]}, {"false"})
 
+    def test_levels_keep_only_their_jobs(self):
+        images = ["obs-control", "media-bridge", "node"]
+        unit = ci.plan(images, "unit")
+        self.assertEqual(json.loads(unit["groups"]), [])
+        self.assertEqual({v for k, v in unit.items() if k not in ("images", "groups")}, {"false"})
+        smoke = ci.plan(images, "smoke")
+        self.assertEqual((smoke["media_bridge"], smoke["obs_control_e2e"]), ("true", "false"))
+        self.assertEqual(json.loads(smoke["groups"]), ["node", "desktop-base obs-runtime obs-control"])
+        e2e = ci.plan(images, "e2e")
+        self.assertEqual((e2e["media_bridge"], e2e["obs_control_e2e"]), ("false", "true"))
+        self.assertEqual(json.loads(e2e["groups"]), [])
+        self.assertEqual(ci.plan(images, "all"), ci.plan(images))
+        with self.assertRaises(ValueError):
+            ci.plan(images, "everything")
+
     def test_every_image_is_in_a_build_group_or_has_a_job(self):
         grouped = {image for group in ci.BUILD_GROUPS for image in group}
         has_job = {"media-bridge", "work-browser", "session-kit", "thunderbird", "thunderbird-mcp", "msteams-mcp", "teams-service"}

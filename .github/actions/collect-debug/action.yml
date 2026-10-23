@@ -1,0 +1,47 @@
+# Collect what is needed to debug a failed image job and upload it (3 days). Used with `if: failure()`.
+# Collected: the smoke/e2e output (scripts/smoke.sh and the e2e step tee into $MALRUNAR_CI_LOG_DIR),
+# the logs and state of every container still on the runner, and the image ids and digests.
+# Never collected: environment dumps or `docker inspect` of containers (their environment), and any
+# line that looks like a token is masked before upload. The jobs have no secrets and a read-only token.
+name: Collect debugging artifacts
+description: Container logs, smoke/e2e output and image digests of a failed job, uploaded for 3 days
+inputs:
+  name:
+    description: Artifact name (unique per job and matrix entry)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Gather container logs and image digests
+      shell: bash
+      run: |
+        set -u
+        dir="${MALRUNAR_CI_LOG_DIR:-/tmp/malrunar-ci-debug}"
+        mkdir -p "$dir"
+        {
+          echo "job: ${GITHUB_JOB:-?} (run ${GITHUB_RUN_ID:-?}, attempt ${GITHUB_RUN_ATTEMPT:-?}), commit ${GITHUB_SHA:-?}"
+          date -u +%FT%TZ
+        } > "$dir/job.txt"
+        docker ps -a --no-trunc --format 'table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}' > "$dir/containers.txt" 2>&1 || true
+        for id in $(docker ps -aq 2>/dev/null); do
+          name="$(docker ps -a --filter "id=$id" --format '{{.Names}}' | head -n 1)"
+          docker logs --timestamps "$id" > "$dir/container-${name:-$id}.log" 2>&1 || true
+        done
+        # image ids and registry digests (the h-<hash> tags are content hashes: the inputs of the build)
+        docker image ls --digests --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Digest}} {{.Size}}' > "$dir/images.txt" 2>&1 || true
+        docker system df > "$dir/docker-disk.txt" 2>&1 || true
+        df -h / >> "$dir/docker-disk.txt" 2>&1 || true
+        cp "${RUNNER_TEMP:-/tmp}/v4l2loopback.log" "$dir/" 2>/dev/null || true
+        # mask anything that looks like a credential
+        find "$dir" -type f -exec sed -i -E \
+          -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/\1***/g' \
+          -e 's/([Aa]uthorization: *(Bearer|Basic|token) +)[^ "]+/\1***/g' \
+          -e 's/((TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Z_]*=)[^ ]+/\1***/g' {} +
+        ls -l "$dir"
+    - name: Upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.name }}
+        path: /tmp/malrunar-ci-debug
+        retention-days: 3
+        if-no-files-found: ignore

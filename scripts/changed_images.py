@@ -14,6 +14,13 @@ Usage:
   changed_images.py <base-revision> [--plan]    changed images, one per line (all of them when <base> is "all")
   changed_images.py <base-revision> --republish  the images whose content hash differs: what publish.yml
                                                  would build and push after merging (no test-only reasons)
+  changed_images.py --only <a,b,...> [--level L] --plan
+                                                 exactly the named images (a manual dispatch of pr.yml, see
+                                                 scripts/ci-try.sh): no TESTED_WITH expansion. The build chain
+                                                 of a named image includes its parents (desktop-base,
+                                                 obs-runtime, obs-control); the dedicated jobs pull their
+                                                 parents from the registry by hash and build only what is missing.
+                                                 --level unit|smoke|e2e|all keeps only the matching jobs.
 With --plan, prints GitHub Actions outputs (key=value): `images` (JSON list), `groups` (JSON list of
 space-separated build chains for the `build` job), and one true/false per dedicated job.
 """
@@ -80,15 +87,31 @@ def republished_images(base_root, head_root):
     return out
 
 
-def plan(images):
+LEVELS = ("unit", "smoke", "e2e", "all")
+
+
+def plan(images, level="all"):
+    """Job switches for `images`. level: unit = no image job (the `scripts` job only), smoke = every job
+    but the end-to-end one, e2e = the end-to-end job only, all = everything."""
+    if level not in LEVELS:
+        raise ValueError(f"level must be one of {', '.join(LEVELS)}")
     chosen = set(images)
+    if level == "unit":
+        chosen = set()
     groups = [" ".join(group) for group in BUILD_GROUPS if chosen & set(group)]
+    if level == "e2e":
+        groups = []
     out = {
         "images": json.dumps(sorted(chosen)),
         "groups": json.dumps(groups),
     }
     for job, triggers in DEDICATED.items():
-        out[job.replace("-", "_")] = "true" if chosen & set(triggers) else "false"
+        wanted = bool(chosen & set(triggers))
+        if level == "smoke" and job == "obs-control-e2e":
+            wanted = False
+        if level == "e2e" and job != "obs-control-e2e":
+            wanted = False
+        out[job.replace("-", "_")] = "true" if wanted else "false"
     return out
 
 
@@ -96,16 +119,30 @@ def git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True).stdout
 
 
+def option(argv, name):
+    """The value after `name` in argv, or None."""
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
+
+
 def main(argv):
-    args = [a for a in argv[1:] if not a.startswith("--")]
-    if len(args) != 1:
+    only, level = option(argv, "--only"), option(argv, "--level") or "all"
+    values = {only, level} - {None}
+    args = [a for a in argv[1:] if not a.startswith("--") and a not in values]
+    if level not in LEVELS or (only is not None and args) or (only is None and len(args) != 1):
         print(__doc__, file=sys.stderr)
         return 2
-    base = args[0]
     head_root = mi.ROOT
-    if base == "all":
+    if only is not None:
+        images = [name for name in only.replace(" ", ",").split(",") if name]
+        unknown = [name for name in images if name not in mi.IMAGES]
+        if unknown or not images:
+            print(f"unknown component(s): {', '.join(unknown) or '(none given)'}; known: {', '.join(mi.IMAGES)}", file=sys.stderr)
+            return 2
+        images = [image for image in mi.IMAGES if image in images]
+    elif args[0] == "all":
         images = changed_images(None, head_root, [])
     else:
+        base = args[0]
         paths = set(git("diff", "--name-only", base, cwd=head_root).decode().splitlines())
         paths |= set(git("ls-files", "--others", "--exclude-standard", cwd=head_root).decode().splitlines())
         with tempfile.TemporaryDirectory() as tmp:
@@ -116,8 +153,11 @@ def main(argv):
             else:
                 images = changed_images(Path(tmp), head_root, paths)
     if "--plan" in argv:
-        for key, value in plan(images).items():
+        for key, value in plan(images, level).items():
             print(f"{key}={value}")
+        # Named images of a manual dispatch: the `build` job builds and tests only these, and takes the
+        # other members of their chain (the parents) from the registry. Empty for a pull request.
+        print(f"requested={' '.join(images) if only is not None else ''}")
     else:
         print("\n".join(images))
     return 0

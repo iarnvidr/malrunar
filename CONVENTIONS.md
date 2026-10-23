@@ -128,3 +128,36 @@ commit and sha256 (or image digest) in the script that runs them and verified be
 tests are `tools/test/` (stdlib `unittest`), run by the `scripts` job through
 `scripts/test/test_tools.py`; a test that needs a real Docker daemon skips without one. Every container
 a tool runs is bounded by `timeout`.
+
+### No local Docker? Use `scripts/ci-try.sh`
+
+The image tests need Docker. Without it, run them on GitHub Actions:
+
+```sh
+scripts/ci-try.sh obs-control                  # one component, build + smoke + (for obs-control) end-to-end
+scripts/ci-try.sh obs-control --level unit     # static checks and unit tests only, no image is built
+scripts/ci-try.sh media-bridge,node --level smoke
+scripts/ci-try.sh changed                      # every image that differs from main
+scripts/ci-try.sh all                          # everything (rarely needed)
+scripts/ci-try.sh obs-control --ref my-branch  # test a branch that is already pushed, as it is
+```
+
+It pushes your committed `HEAD` to a scratch branch `ci-try/<name>-<shortsha>`, dispatches `pr.yml`
+(`workflow_dispatch` with the inputs `components` and `level`) on it, finds that exact run, waits for it
+and deletes the branch again (`--keep` keeps it). The exit status is 0 (passed), 1 (a test failed) or 2
+(usage or infrastructure problem, a cancelled run, a timeout). A failure prints, per failed job, the
+failing step and the last 80 log lines; the run's artifacts (container logs, smoke and e2e output, image
+digests, kept 3 days) are downloaded to `.ci-try/<run-id>/` (git-ignored). Uncommitted changes are not
+tested. It needs `gh` logged in with push access to this repository.
+
+The run builds only the components you name; their parents (`desktop-base`, `obs-runtime`, and the
+images a smoke test runs inside of) come from the registry by content hash and are built only when that
+hash is not published. A manual run never publishes anything: `pr.yml` has no registry login, no push
+and a read-only token, and `publish.yml` refuses to run on any ref but `main`.
+
+Cost: hosted minutes are free for this public repository, but the same workflow counts against the
+2,000 minutes a month of a private fork or copy. A build of the whole chain takes tens of minutes, so
+name only the components you changed, and use `--level unit` while you are still iterating.
+
+A workflow can only be dispatched on a ref that contains it with these inputs: a branch cut before
+`components` and `level` existed fails at the dispatch with exit status 2; rebase it on `main`.

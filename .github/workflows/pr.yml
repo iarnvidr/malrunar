@@ -1,13 +1,33 @@
 # Build and smoke-test the images a pull request changes (scripts/changed_images.py: content hash,
 # files, tested-with images; a change to the build scripts or this workflow rebuilds all of them).
-# Hosted runners only, no secrets, read-only token.
+# Hosted runners only, no secrets, read-only token. Nothing here publishes anything (no registry login,
+# no push, no write permission): publish.yml does that, on main only.
+#
+# A manual run (scripts/ci-try.sh, or "Run workflow") tests exactly what it is asked to, for people
+# without a local Docker: `components` names the images (or `changed`: those that differ from main, or
+# `all`) and `level` says how far to go. The dispatch must target a ref whose pr.yml has these inputs.
 name: pr
 
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      components:
+        description: 'Images to test: comma-separated names (for example obs-control,media-bridge), "changed" (differs from main) or "all"'
+        required: false
+        default: changed
+        type: string
+      level:
+        description: 'How far to go: unit (static checks and unit tests only), smoke (build + smoke tests), e2e (end-to-end only) or all'
+        required: false
+        default: all
+        type: choice
+        options: [unit, smoke, e2e, all]
 
 permissions: {}
+
+env:
+  MALRUNAR_CI_LOG_DIR: /tmp/malrunar-ci-debug   # smoke/e2e output is kept here; collect-debug uploads it when a job fails
 
 concurrency:
   group: pr-${{ github.event.pull_request.number || github.ref }}
@@ -90,6 +110,7 @@ jobs:
       msteams_mcp: ${{ steps.plan.outputs.msteams_mcp }}
       teams_service: ${{ steps.plan.outputs.teams_service }}
       obs_control_e2e: ${{ steps.plan.outputs.obs_control_e2e }}
+      requested: ${{ steps.plan.outputs.requested }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,14 +119,40 @@ jobs:
       - name: Plan
         id: plan
         env:
-          BASE: ${{ github.event.pull_request.base.sha || 'all' }}
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          COMPONENTS: ${{ inputs.components }}
+          LEVEL: ${{ inputs.level }}
         run: |
           set -eu
-          python3 scripts/changed_images.py "$BASE" --plan | tee -a "$GITHUB_OUTPUT"
+          only=''
+          level=all
+          base="$BASE_SHA"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            level="${LEVEL:-all}"
+            case "${COMPONENTS:-changed}" in
+              all) base=all ;;
+              changed) base=origin/main ;;
+              *) only="$COMPONENTS" ;;
+            esac
+          fi
+          if [ -n "$only" ]; then
+            python3 scripts/changed_images.py --only "$only" --level "$level" --plan | tee -a "$GITHUB_OUTPUT"
+            summary="Manual run, components: $only; level: $level"
+            changed="$(python3 scripts/changed_images.py --only "$only" | tr '\n' ' ')"
+          else
+            python3 scripts/changed_images.py "$base" --level "$level" --plan | tee -a "$GITHUB_OUTPUT"
+            summary="level: $level"
+            changed="$(python3 scripts/changed_images.py "$base" | tr '\n' ' ')"
+          fi
           {
-            echo "Changed images (built and tested here): $(python3 scripts/changed_images.py "$BASE" | tr '\n' ' ')"
+            echo "$summary"
             echo
-            echo "Images this change would publish after merging (content hash differs): $(python3 scripts/changed_images.py "$BASE" --republish | tr '\n' ' ')"
+            echo "Changed images (built and tested here): $changed"
+            if [ "$EVENT" = pull_request ]; then
+              echo
+              echo "Images this change would publish after merging (content hash differs): $(python3 scripts/changed_images.py "$base" --republish | tr '\n' ' ')"
+            fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -132,15 +179,33 @@ jobs:
       - name: Build and smoke-test
         env:
           IMAGES: ${{ matrix.images }}
+          REQUESTED: ${{ needs.plan.outputs.requested }}   # manual run only: the other members of the chain are its parents
         run: |
           set -eu
           for image in $IMAGES; do
+            if [ -n "$REQUESTED" ] && ! printf ' %s ' "$REQUESTED" | grep -q " $image "; then
+              hash="$(python3 scripts/malrunar_image.py hash "$image")"
+              ref="ghcr.io/iarnvidr/$image:h-$hash"
+              if docker pull --quiet "$ref" >/dev/null; then
+                echo "parent $image: using published $ref"
+                docker tag "$ref" "malrunar/$image:h-$hash"
+                continue
+              fi
+              echo "parent $image: $ref is not published; building it from this checkout"
+              scripts/build.sh "$image" --load
+              continue
+            fi
             start="$(date +%s)"
             scripts/build.sh "$image" --load
             echo "build $image: $(( $(date +%s) - start )) s"
             scripts/smoke.sh "$image"
             docker image ls "malrunar/$image"
           done
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-build-${{ strategy.job-index }}
 
   # media-bridge is a FROM scratch component; it is tested inside a desktop built on desktop-base
   # (test/consumer). The published desktop-base with the current content hash is pulled when it
@@ -211,6 +276,11 @@ jobs:
           set -eu
           if [ "$V4L2_OK" = true ]; then export MALRUNAR_SMOKE_V4L2_DEVICE=/dev/video10; fi
           scripts/smoke.sh media-bridge
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-media-bridge
 
   # work-browser is a FROM scratch component that runs the Firefox of desktop-base; it is tested inside
   # a desktop built on desktop-base (test/consumer), under supervisord, with the real Firefox headless.
@@ -248,6 +318,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh work-browser
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-work-browser
 
   # session-kit is a FROM scratch component for desktop-base. Its smoke test also needs the work-browser
   # component (the optional half of its gating test) and xdotool/Xvfb (added in the test image). The
@@ -287,6 +362,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh session-kit
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-session-kit
 
   # thunderbird is a FROM scratch component holding Mozilla's unmodified Thunderbird; it is tested inside a
   # desktop built on desktop-base (test/consumer), under supervisord, and the consumer-side changes
@@ -327,6 +407,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh thunderbird
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-thunderbird
 
   # thunderbird-mcp is a FROM scratch component. Its smoke test needs the node component (its declared
   # dependency) and, for the end-to-end part only, desktop-base and the thunderbird component.
@@ -365,6 +450,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh thunderbird-mcp
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-thunderbird-mcp
 
   # msteams-mcp is a FROM scratch component for desktop-base; it declares the node and work-browser components as
   # its dependencies. Its smoke test builds consumers with each of them missing (status 78 and a message that
@@ -404,6 +494,11 @@ jobs:
           done
       - name: Smoke-test
         run: scripts/smoke.sh msteams-mcp
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-msteams-mcp
 
   # teams-service is a FROM scratch component for the node and msteams-mcp components (not for desktop-base:
   # it is tested in a bare Ubuntu image with exactly those two, and once on desktop-base under supervisord).
@@ -440,6 +535,11 @@ jobs:
           done
       - name: Smoke-test
         run: scripts/smoke.sh teams-service
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-teams-service
 
   # obs-control -> UDP -> media-bridge in a desktop-base container, with audio (and video) checked at
   # the virtual microphone and camera. The published images with the current content hashes are pulled when they exist and built from this
@@ -518,8 +618,15 @@ jobs:
           set -eu
           device=''
           if [ "$V4L2_OK" = true ]; then device=/dev/video10; fi
+          set -o pipefail
+          mkdir -p "$MALRUNAR_CI_LOG_DIR"
           obs-control/test/e2e/e2e.sh \
             "malrunar/obs-control:h-$(python3 scripts/malrunar_image.py hash obs-control)" \
             "$BRIDGE_REF" \
             "malrunar/desktop-base:h-$(python3 scripts/malrunar_image.py hash desktop-base)" \
-            $device
+            $device 2>&1 | tee "$MALRUNAR_CI_LOG_DIR/e2e.log"
+      - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
+        if: failure()
+        uses: ./.github/actions/collect-debug
+        with:
+          name: debug-obs-control-e2e
