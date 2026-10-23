@@ -86,6 +86,7 @@ out="$(run "$consumer" /opt/malrunar/thunderbird/app/thunderbird --version)"
 echo "$out"
 grep -q "Thunderbird ${version}\$" <<< "$out" || fail "thunderbird --version printed '$out', pinned ${version}"
 run "$consumer" bash -c '
+    export LD_LIBRARY_PATH=/opt/malrunar/thunderbird/app   # Thunderbird brings its own NSS, sqlite and friends
     missing="$(ldd /opt/malrunar/thunderbird/app/libxul.so /opt/malrunar/thunderbird/app/thunderbird-bin | grep "not found" || true)"
     [ -z "$missing" ] || { echo "$missing"; exit 1; }
 ' || fail 'Thunderbird links against libraries that desktop-base does not provide'
