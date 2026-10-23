@@ -14,8 +14,8 @@ x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
 x11.XDefaultRootWindow.restype = ctypes.c_ulong
 x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
 x11.XCreateSimpleWindow.restype = ctypes.c_ulong
-x11.XCreateSimpleWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong] + [ctypes.c_int] * 4 + \
-    [ctypes.c_uint] * 2 + [ctypes.c_ulong] * 2
+x11.XCreateSimpleWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_ulong, ctypes.c_ulong]
 x11.XInternAtom.restype = ctypes.c_ulong
 x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
 x11.XChangeProperty.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int,
