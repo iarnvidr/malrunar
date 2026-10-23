@@ -6,10 +6,14 @@ import base64
 import contextlib
 import hashlib
 import json
+import logging
 import uuid
 from typing import Any, AsyncIterator
 
 import websockets
+
+
+logger = logging.getLogger(__name__)
 
 
 class ObsError(RuntimeError):
@@ -36,9 +40,11 @@ class ObsClient:
     @contextlib.asynccontextmanager
     async def session(self, event_subscriptions: int = 0) -> AsyncIterator[Any]:
         """An identified WebSocket. Yields the raw socket after the Hello/Identify exchange."""
+        logger.info("OBS websocket stage=open_handshake url=%s", self.url)
         async with websockets.connect(
             self.url, open_timeout=self.open_timeout, close_timeout=1, max_size=self.max_size
         ) as socket:
+            logger.info("OBS websocket stage=receive_hello")
             hello = json.loads(await socket.recv())
             if hello.get("op") != 0:
                 raise ObsError("OBS WebSocket did not send Hello")
@@ -51,7 +57,9 @@ class ObsClient:
                 identify["authentication"] = auth_string(
                     password, authentication["salt"], authentication["challenge"]
                 )
+            logger.info("OBS websocket stage=identify")
             await socket.send(json.dumps({"op": 1, "d": identify}))
+            logger.info("OBS websocket stage=receive_identified")
             identified = json.loads(await socket.recv())
             if identified.get("op") != 2:
                 raise ObsError("OBS WebSocket identification failed")
@@ -77,4 +85,8 @@ class ObsClient:
     async def request(self, *requests: tuple[str, dict[str, Any]]) -> list[dict[str, Any]]:
         """Send requests in order over one connection; the responses' data, in order."""
         async with self.session() as socket:
-            return [await self.ask(socket, request_type, data) for request_type, data in requests]
+            results = []
+            for request_type, data in requests:
+                logger.info("OBS websocket stage=request request=%s", request_type)
+                results.append(await self.ask(socket, request_type, data))
+            return results

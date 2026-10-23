@@ -22,6 +22,8 @@ belong to the caller's identity user when identities are configured (shared othe
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 import json
 import math
 import os
@@ -339,6 +341,9 @@ async def probe(path: Path) -> dict[str, Any]:
     }
 
 
+logger = logging.getLogger(__name__)
+
+
 class TakeModeBusy(Exception):
     """Take mode is held by another user."""
 
@@ -487,17 +492,20 @@ class Takes:
     async def _set_canvas(self, size: tuple[int, int], output: tuple[int, int] | None = None) -> None:
         """Switch the OBS canvas (the caller holds ``video_lock``). The program output restarts briefly."""
         output = tuple(output or size)
+        logger.info("take canvas restore stage=current_canvas target=%s/%s", size, output)
         current = await self.current_canvas()
         if current["base"] == tuple(size) and current["output"] == output:
             return
         last_error: Exception | None = None
         for _attempt in range(3):
             try:
+                logger.info("take canvas stage=StopRecord attempt=%d", _attempt + 1)
                 await self.ctl.obs(("StopRecord", {}))
             except Exception:
                 pass  # already stopped
             await self._wait_record(False, attempts=50)
             try:
+                logger.info("take canvas stage=SetVideoSettings attempt=%d", _attempt + 1)
                 await self.ctl.obs(
                     (
                         "SetVideoSettings",
@@ -509,6 +517,7 @@ class Takes:
             except Exception as exc:
                 last_error = exc
                 await asyncio.sleep(0.3)
+        logger.info("take canvas stage=restart_program_output")
         started = await self._start_program_output()
         if last_error:
             raise last_error
@@ -616,24 +625,39 @@ class Takes:
         """Leave take mode (the caller holds ``video_lock``): the previous scene when it is safe, else the
         stopped scene, then the canvas found when take mode started."""
         ctl = self.ctl
+        stage = "select_restore_scene"
+        logger.info("take restore begin previous=%r", previous)
         try:
             target = None
             if previous and previous != self.s.scene:
                 cameras = {camera.scene for camera in ctl.config.cameras}
                 if not ctl.program_control or (previous in cameras and ctl.sender_alive()):
+                    stage = "GetSceneList"
+                    logger.info("take restore stage=%s", stage)
                     (scene_list,) = await ctl.obs(("GetSceneList", {}))
                     if previous in {scene["sceneName"] for scene in scene_list.get("scenes", [])}:
                         target = previous
             if target:
+                stage = "SetCurrentProgramScene(previous)"
+                logger.info("take restore stage=%s scene=%r", stage, target)
                 await ctl.obs(("SetCurrentProgramScene", {"sceneName": target}))
                 if ctl.program_control:
                     await ctl.set_program_audio_muted(ctl.program_audio_muted, strict=False)
             else:
+                stage = "ensure_stopped_scene"
+                logger.info("take restore stage=%s", stage)
                 await ctl.ensure_stopped_scene()
+                stage = "SetCurrentProgramScene(stopped)"
+                logger.info("take restore stage=%s", stage)
                 await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.stopped_scene}))
                 if ctl.program_control:
                     await ctl.set_program_audio_muted(True, strict=False)
+        except Exception:
+            logger.exception("take restore failed stage=%s; traceback follows", stage)
+            raise
         finally:
+            stage = "restore_canvas"
+            logger.info("take restore stage=%s", stage)
             width, height = ctl.canvas_size()
             restore = self.restore_canvas or {"base": (width, height), "output": (width, height)}
             await self._set_canvas(tuple(restore["base"]), tuple(restore["output"]))
@@ -661,6 +685,7 @@ class Takes:
         try:
             finished = await self.release()
         except Exception as exc:
+            logger.exception("take disarm failed; armed=%s previous=%r restore_canvas=%r", self.armed, self.previous_scene, self.restore_canvas)
             return _error(f"Could not leave take mode cleanly: {exc}", 503)
         return web.json_response({**self.status_payload(user), "finished_take": finished})
 
