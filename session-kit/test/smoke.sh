@@ -179,6 +179,7 @@ Xvfb :77 -screen 0 1280x800x24 -ac -nolisten tcp > /tmp/xvfb.out 2>&1 &
 cat > /tmp/session.sh <<'SESSION'
 #!/usr/bin/env bash
 set -euo pipefail
+kit=/opt/malrunar/session-kit/bin/malrunar-session
 xfwm4 --compositor=off > /tmp/xfwm4.out 2>&1 &
 for _ in $(seq 1 60); do xdotool get_desktop >/dev/null 2>&1 && break; sleep 1; done
 xdotool get_desktop >/dev/null || { echo 'no window manager'; cat /tmp/xfwm4.out; exit 1; }
