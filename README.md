@@ -123,6 +123,13 @@ preferences. Customise it in your own image, for example with
 [Mozilla's trademark policy](https://www.mozilla.org/foundation/trademarks/distribution-policy/),
 and that applies to your image, not this one.
 
+## Apps
+
+Not everything here is an image. [`apps/desktop-wrapper`](apps/desktop-wrapper/) is a macOS desktop
+app (Tauri) that wraps one website in a window of its own, with native notifications; its name,
+address, bundle id and icon come from a configuration file. It is built by its own workflow
+(`.github/workflows/desktop-wrapper.yml`) and is not published as an image.
+
 ## Composing a desktop
 
 A product image is `desktop-base` plus an explicit list of components. Every component is opt-in:
@@ -164,6 +171,15 @@ Add `node` next to anything that runs JavaScript, such as `tail-browser-mcp`:
 COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
 ENV PATH=/opt/malrunar/node/bin:$PATH
 ```
+
+## Build and deploy tools
+
+[`tools/`](tools/README.md) holds the generic tooling used to build and ship composed images:
+parent-chained content hashing for any Dockerfile build graph (`scripts/malrunar_image.py graph`),
+delivery of an image to a Docker host that already has most of its layers (pinned `docker pussh`
+with a `save`/`load` fallback), assembly of a base plus an explicit component list, and an image
+equivalence comparison. Each tool is opt-in and works on its own; registries, hosts and image lists
+come from arguments or a manifest. They are not images, so they are not in the table above.
 
 ## Reviewed and not included
 
@@ -213,7 +229,7 @@ scripts/build.sh office-convert --load && scripts/smoke.sh office-convert
 scripts/build.sh guacamole-tunnel --load && scripts/smoke.sh guacamole-tunnel
 scripts/build.sh node --load && scripts/smoke.sh node
 scripts/build.sh work-browser --load && scripts/smoke.sh work-browser   # the smoke test needs desktop-base built
-python3 -m unittest discover -s scripts/test    # hashes and pull request planning
+python3 -m unittest discover -s scripts/test    # hashes and pull request planning, and the tests of tools/
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
 

@@ -1,0 +1,19 @@
+{
+  "hide_on_close": true,
+  "id": "example-app",
+  "identifier": "io.github.iarnvidr.example-app",
+  "internal_hosts": [
+    "*.idp.example.net",
+    "login.example.com"
+  ],
+  "name": "Example App",
+  "notifications": true,
+  "url": "https://app.example.com/",
+  "version": "0.1.0",
+  "window": {
+    "height": 860,
+    "min_height": 600,
+    "min_width": 480,
+    "width": 1280
+  }
+}
