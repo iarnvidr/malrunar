@@ -1,0 +1,17 @@
+{
+  "name": "desktop-wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A native desktop window around one website, with native notifications",
+  "license": "Apache-2.0",
+  "scripts": {
+    "tauri": "tauri",
+    "configure": "python3 scripts/configure.py",
+    "dev": "python3 scripts/configure.py && tauri dev --config src-tauri/generated/tauri.overlay.json",
+    "build": "python3 scripts/configure.py && tauri build --config src-tauri/generated/tauri.overlay.json",
+    "test": "node --test tests/js/*.test.mjs && python3 -m unittest discover -s scripts -p 'test_*.py'"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

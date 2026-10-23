@@ -1,0 +1,7 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+# written by scripts/configure.py
+src-tauri/generated/
+src-tauri/Info.plist
+dist/

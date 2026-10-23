@@ -1,0 +1,173 @@
+# Test the desktop-wrapper app and build it for macOS on GitHub-hosted runners.
+#  * pull requests that touch apps/desktop-wrapper (or this file): unit tests on Linux, then a macOS
+#    build of the example configuration pointed at a local stand-in site, launched and checked
+#  * workflow_dispatch: the macOS release build with the name, address and bundle id you give it,
+#    uploaded as an artifact (unsigned, ad-hoc signed; see apps/desktop-wrapper/README.md)
+# Hosted runners only, no secrets, read-only token. macOS standard runners are free for public repositories.
+name: desktop-wrapper
+
+on:
+  pull_request:
+    paths:
+      - apps/desktop-wrapper/**
+      - .github/workflows/desktop-wrapper.yml
+  workflow_dispatch:
+    inputs:
+      name:
+        description: App name (shown in the Dock and menus); empty uses the configuration file
+        required: false
+        default: ''
+      id:
+        description: Short id, lower case (the bundle id is io.github.iarnvidr.<id>); empty uses the configuration file
+        required: false
+        default: ''
+      url:
+        description: Address of the site the app opens (https)
+        required: true
+      version:
+        description: Version, like 1.2.3; empty uses the configuration file
+        required: false
+        default: ''
+      icon:
+        description: Icon path relative to apps/desktop-wrapper (a 1024 px PNG or an SVG); empty uses the configuration file
+        required: false
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: desktop-wrapper-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: apps/desktop-wrapper
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+      - name: Install the pinned Rust toolchain and the Tauri CLI
+        run: |
+          set -eu
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          npm ci
+      - name: Configuration validation, shims and stand-in site tests
+        run: npm test
+      - name: The example configuration builds the generated files, and an icon becomes the icon set
+        env:
+          WRAPPER_ICON: default-icon.svg
+        run: |
+          set -eu
+          python3 scripts/configure.py
+          test -s src-tauri/generated/app.json
+          python3 - <<'PY'
+          import json
+          overlay = json.load(open("src-tauri/generated/tauri.overlay.json"))
+          assert overlay["identifier"] == "io.github.iarnvidr.example-app", overlay
+          assert len(overlay["bundle"]["icon"]) == 6, overlay
+          PY
+          for f in 32x32.png 128x128.png 128x128@2x.png icon.png icon.icns icon.ico; do test -s "src-tauri/generated/icons/$f"; done
+      - name: A bad configuration is refused with the setting named
+        run: |
+          set -u
+          out="$(WRAPPER_URL=http://remote.example.com/ python3 scripts/configure.py --check 2>&1)" && { echo "accepted an insecure address"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q '^configuration error: url:'
+      - name: Rust tests of the configuration, navigation policy and notification limits
+        working-directory: apps/desktop-wrapper/src-tauri
+        run: cargo test --locked -p desktop-wrapper-core
+
+  macos:
+    needs: test
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      # Pull requests build against a local stand-in site so the app can be launched and checked;
+      # a manual run builds for the address given.
+      WRAPPER_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.url || 'http://127.0.0.1:18080/' }}
+      WRAPPER_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.name || '' }}
+      WRAPPER_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.id || '' }}
+      WRAPPER_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      WRAPPER_ICON: ${{ github.event_name == 'workflow_dispatch' && inputs.icon || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+      - name: Install the pinned Rust toolchain (both macOS targets) and the Tauri CLI
+        run: |
+          set -eu
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --no-self-update --target aarch64-apple-darwin --target x86_64-apple-darwin
+          npm ci
+      - name: Build the universal app and disk image
+        run: npm run build -- --target universal-apple-darwin --bundles app,dmg
+      - name: Locate the bundle
+        id: bundle
+        run: |
+          set -eu
+          dir=src-tauri/target/universal-apple-darwin/release/bundle
+          ls -R "$dir" | head -40
+          app="$(find "$dir/macos" -maxdepth 1 -name '*.app' | head -n 1)"
+          dmg="$(find "$dir/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
+          test -d "$app" && test -f "$dmg"
+          {
+            echo "app=$PWD/$app"
+            echo "dmg=$PWD/$dmg"
+            echo "identifier=$(python3 -c 'import json; print(json.load(open("src-tauri/generated/app.json"))["identifier"])')"
+            echo "name=$(python3 -c 'import json; print(json.load(open("src-tauri/generated/app.json"))["name"])')"
+          } >> "$GITHUB_OUTPUT"
+      - name: Verify identity, architectures, usage descriptions and the ad-hoc signature
+        env:
+          APP: ${{ steps.bundle.outputs.app }}
+          DMG: ${{ steps.bundle.outputs.dmg }}
+          IDENTIFIER: ${{ steps.bundle.outputs.identifier }}
+          NAME: ${{ steps.bundle.outputs.name }}
+        run: tests/e2e/verify-macos.sh "$APP" "$DMG" "$IDENTIFIER" "$NAME" "arm64 x86_64"
+      - name: Launch the app against the stand-in site (notification and badge reach the app)
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          APP: ${{ steps.bundle.outputs.app }}
+        run: tests/e2e/e2e-macos.sh "$APP" 18080 "$RUNNER_TEMP/e2e"
+      - name: Upload the end-to-end evidence
+        if: always() && github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-wrapper-e2e
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Package (zip keeps the signature; checksums)
+        env:
+          APP: ${{ steps.bundle.outputs.app }}
+          DMG: ${{ steps.bundle.outputs.dmg }}
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/dist"
+          mkdir -p "$out"
+          base="$(basename "$APP" .app | tr ' ' '-')"
+          ditto -c -k --keepParent "$APP" "$out/$base-macos-universal.zip"
+          cp "$DMG" "$out/$base-macos-universal.dmg"
+          (cd "$out" && shasum -a 256 ./*.zip ./*.dmg | tee SHA256SUMS)
+      - name: Upload the app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ github.event_name == 'workflow_dispatch' && 'desktop-wrapper-macos' || 'desktop-wrapper-macos-pr-example' }}
+          path: ${{ runner.temp }}/dist
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'workflow_dispatch' && 30 || 3 }}

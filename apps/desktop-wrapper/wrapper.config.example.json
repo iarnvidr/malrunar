@@ -1,0 +1,10 @@
+{
+  "name": "Example App",
+  "id": "example-app",
+  "url": "https://app.example.com/",
+  "version": "0.1.0",
+  "internal_hosts": ["login.example.com", "*.idp.example.net"],
+  "window": { "width": 1280, "height": 860, "min_width": 480, "min_height": 600 },
+  "notifications": true,
+  "hide_on_close": true
+}
