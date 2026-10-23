@@ -1,22 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """OBS output-stop event barrier tests."""
+import asyncio
 import json
 import unittest
 from unittest import mock
 
-from malrunar_obs.obsws import ObsClient
+from malrunar_obs.obsws import ObsClient, ObsError
 
 
 class FakeSocket:
     def __init__(self, incoming):
         self.incoming = iter(incoming)
+        self.default_message = None
         self.sent = []
 
     async def send(self, value):
         self.sent.append(json.loads(value))
 
     async def recv(self):
-        return json.dumps(next(self.incoming))
+        try:
+            return json.dumps(next(self.incoming))
+        except StopIteration:
+            if self.default_message is None:
+                raise
+            await asyncio.sleep(10)
+            return json.dumps(self.default_message)
 
 
 def event(state):
@@ -30,7 +38,7 @@ def response(request_id, result=True):
 class StopBarrierTests(unittest.IsolatedAsyncioTestCase):
     async def invoke(self, incoming):
         socket = FakeSocket(incoming)
-        client = ObsClient("ws://unused")
+        client = ObsClient("ws://unused", open_timeout=0.05)
 
         class Session:
             async def __aenter__(self): return socket
@@ -60,6 +68,37 @@ class StopBarrierTests(unittest.IsolatedAsyncioTestCase):
             socket.send = send
             await client.stop_stream_and_wait()
         self.assertEqual(socket.sent[0]["d"]["requestType"], "StopStream")
+
+    async def test_missing_stopped_event_times_out(self):
+        socket = FakeSocket([])
+        client = ObsClient("ws://unused", open_timeout=0.02)
+        class Session:
+            async def __aenter__(self): return socket
+            async def __aexit__(self, *args): return False
+        with mock.patch.object(client, "session", return_value=Session()):
+            async def send(value):
+                await FakeSocket.send(socket, value)
+                rid = socket.sent[-1]["d"]["requestId"]
+                socket.incoming = iter([response(rid)])
+                socket.default_message = {"op": 5, "d": {"eventType": "OtherEvent"}}
+            socket.send = send
+            with self.assertRaisesRegex(ObsError, "STOPPED event"):
+                await asyncio.wait_for(client.stop_stream_and_wait(), 0.2)
+
+    async def test_stop_error_501_is_not_mistaken_for_stopped(self):
+        socket = FakeSocket([])
+        client = ObsClient("ws://unused", open_timeout=0.05)
+        class Session:
+            async def __aenter__(self): return socket
+            async def __aexit__(self, *args): return False
+        with mock.patch.object(client, "session", return_value=Session()):
+            async def send(value):
+                await FakeSocket.send(socket, value)
+                rid = socket.sent[-1]["d"]["requestId"]
+                socket.incoming = iter([{"op": 7, "d": {"requestId": rid, "requestStatus": {"result": False, "code": 501, "comment": "Output not active"}}}])
+            socket.send = send
+            with self.assertRaisesRegex(ObsError, "StopStream: Output not active"):
+                await asyncio.wait_for(client.stop_stream_and_wait(), 0.2)
 
     async def test_output_active_false_is_not_a_stop_barrier(self):
         # A stopped event is still required even if status-like data says inactive.

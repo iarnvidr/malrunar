@@ -652,8 +652,10 @@ class Takes:
                     await ctl.set_program_audio_muted(True, strict=False)
         except Exception:
             logger.exception("take restore failed stage=%s; traceback follows", stage)
+            # Do not restore the canvas unless STOPPED was confirmed; the encoder
+            # may still own it. Scene restoration above is likewise skipped on errors.
             raise
-        finally:
+        else:
             stage = "restore_canvas"
             logger.info("take restore stage=%s", stage)
             width, height = ctl.canvas_size()

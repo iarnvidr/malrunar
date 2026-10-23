@@ -2,6 +2,7 @@
 """A small obs-websocket (protocol v5) client: one connection per batch of requests."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -90,6 +91,13 @@ class ObsClient:
         Consequently this always sends StopStream and waits for both its
         successful response and the STOPPED event, in either arrival order.
         """
+        try:
+            async with asyncio.timeout(self.open_timeout):
+                await self._stop_stream_and_wait()
+        except TimeoutError as exc:
+            raise ObsError(f"StopStream did not receive its STOPPED event within {self.open_timeout:g}s") from exc
+
+    async def _stop_stream_and_wait(self) -> None:
         async with self.session(event_subscriptions=64) as socket:
             request_id = str(uuid.uuid4())
             await socket.send(json.dumps({"op": 6, "d": {
@@ -107,6 +115,9 @@ class ObsClient:
                 elif message.get("op") == 7 and message.get("d", {}).get("requestId") == request_id:
                     status = message["d"]["requestStatus"]
                     if not status.get("result"):
+                        # OBS returns code 501 when the output was already inactive. There is
+                        # no event barrier in that case; fail conservatively rather than claim
+                        # STOPPED or let a caller restore the canvas without proof.
                         raise ObsError(f"StopStream: {status.get('comment', 'failed')}")
                     response_ok = True
 
