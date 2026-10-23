@@ -148,6 +148,8 @@ case "$command_name" in
             ms_die "$MS_EX_CONFIG" 'MALRUNAR_MSTEAMS_MCP_BROWSER_MCP_BACKEND=tail needs the tail-browser-mcp component (COPY --link --from=ghcr.io/iarnvidr/tail-browser-mcp:<tag> / /) or MALRUNAR_MSTEAMS_MCP_TAIL_CLIENT'
         fi
         display_or_note || true
+        # Window titles are UTF-8 (they contain an em dash): the X tools cannot convert them in the POSIX locale.
+        case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LC_ALL=C.UTF-8 ;; esac
         exec "$MS_NODE" "$MS_ROOT/libexec/work-browser-mcp.mjs"
         ;;
 esac
