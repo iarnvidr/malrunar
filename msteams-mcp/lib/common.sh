@@ -105,6 +105,12 @@ ms_missing_browser_mcp_tools() {
     done
 }
 
+# Settings that cannot have a wrong value silently: reported by name before anything runs.
+ms_validate_settings() {
+    case "${MALRUNAR_MSTEAMS_MCP_BROWSER_CONTROL:-auto}" in auto|supervisor|kill|none) ;; *) ms_die "$MS_EX_CONFIG" "MALRUNAR_MSTEAMS_MCP_BROWSER_CONTROL must be auto, supervisor, kill or none, not '$MALRUNAR_MSTEAMS_MCP_BROWSER_CONTROL'";; esac
+    case "${MALRUNAR_MSTEAMS_MCP_BROWSER_MCP_BACKEND:-bidi}" in bidi|tail) ;; *) ms_die "$MS_EX_CONFIG" "MALRUNAR_MSTEAMS_MCP_BROWSER_MCP_BACKEND must be bidi or tail, not '$MALRUNAR_MSTEAMS_MCP_BROWSER_MCP_BACKEND'";; esac
+}
+
 # --- environment of the package ------------------------------------------------------------------
 
 # Map the component's MALRUNAR_MSTEAMS_MCP_* settings onto the variables the patched package reads.

@@ -152,7 +152,7 @@ echo '== the MCP server speaks only JSON on stdout, even when asked for info log
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
     printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 } > "$work/rpc.jsonl"
-timeout -k 10 120 docker run --rm -i --entrypoint '' --user 1000:1000 -e HOME=/home/tester -e MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=info "$full" \
+timeout -k 10 60 docker run --rm -i --entrypoint '' --user 1000:1000 -e HOME=/home/tester -e MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=info "$full" \
     /opt/malrunar/msteams-mcp/bin/malrunar-msteams-mcp serve < "$work/rpc.jsonl" > "$work/rpc.out" 2> "$work/rpc.err" || true
 python3 -I - "$work/rpc.out" <<'PY' || fail 'the MCP server output is not clean JSON-RPC'
 import json, sys

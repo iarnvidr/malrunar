@@ -30,6 +30,7 @@ esac
 # `check` and the other commands need the dependencies; they run as the session's user.
 ms_drop_privileges "$self" "$command_name" "$@"
 ms_require_all
+ms_validate_settings
 ms_home
 ms_export_package_env
 node_dir="$(dirname "$MS_NODE")"

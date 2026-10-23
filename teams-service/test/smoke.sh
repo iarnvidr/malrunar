@@ -109,7 +109,7 @@ grep -q 'shorter than 32' "$work/short.txt" || fail "a short token is not reject
 echo '== unit tests inside the image: the node component runs them, the real PocketBase backs the store tests'
 run -v "$here:/opt/malrunar/teams-service/test:ro" -e MALRUNAR_TEAMS_SERVICE_TEST_PB_BIN=/opt/malrunar/teams-service/bin/malrunar-teams-pocketbase "$bare" \
     bash -c 'cd /tmp && node --test /opt/malrunar/teams-service/test/*.test.mjs' | tee "$work/unit.txt" || fail 'unit tests'
-grep -q '^# skipped 0' "$work/unit.txt" || fail 'a unit test was skipped (the PocketBase or msteams-mcp package is not found)'
+grep -Eq '(#|ℹ) skipped 0' "$work/unit.txt" || fail 'a unit test was skipped (the PocketBase or msteams-mcp package is not found)'
 
 echo '== PocketBase and the service start, the API and the schema behave, and both stop together'
 run -v "$here:/test:ro" "$bare" /test/e2e/service-test.sh || fail 'service test'

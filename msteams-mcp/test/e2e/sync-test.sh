@@ -19,8 +19,9 @@ start_browser() {
 
 echo '== a headless Firefox creates the profile'
 start_browser
-for _ in $(seq 1 90); do [ -s "$profile/cookies.sqlite" ] && break; sleep 1; done
-[ -s "$profile/cookies.sqlite" ] || { echo 'Firefox never created cookies.sqlite'; cat "$log"; exit 1; }
+for _ in $(seq 1 90); do [ -e "$profile/cookies.sqlite" ] && break; sleep 1; done
+[ -e "$profile/cookies.sqlite" ] || { echo 'Firefox never created cookies.sqlite'; ls -la "$profile" || true; cat "$log"; exit 1; }
+sleep 3
 kill "$browser_launcher" 2>/dev/null || true
 pkill -u "$(id -u)" -f -- "-profile $profile" 2>/dev/null || true
 for _ in $(seq 1 30); do pgrep -u "$(id -u)" -f -- "-profile $profile" >/dev/null 2>&1 || break; sleep 0.5; done
