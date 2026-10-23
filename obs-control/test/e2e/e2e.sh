@@ -7,8 +7,10 @@
 # component copied in, built with media-bridge/test/consumer/Dockerfile) running PipeWire and the
 # bridge, and obs-control sending its program to the bridge. Then it checks, through the virtual
 # microphone and the video sink, that what OBS has on air arrives, that scene switches made through
-# the HTTP API change it (camera page, an uploaded clip), and that the bridge restarts the output by itself after the stream stops
-# (the bridge calls obs-control's /api/start-output).
+# the HTTP API change it (camera page, an uploaded clip), that the bridge restarts the output by itself after the stream stops
+# (the bridge calls obs-control's /api/start-output), and that a take prepared with the takes plugin (recorded from
+# its own camera page with a 660 Hz tone, assembled with a slide) arrives at the virtual microphone when it is played
+# into the program, while the program stays silent as the take is recorded.
 #
 # The video sink is a file; with a v4l2loopback device given as the fourth argument it is that
 # device (mapped into the desktop container), so the whole chain including the virtual camera runs.
@@ -43,6 +45,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+field() { python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
 desk() { timeout -k 10 150 docker exec --user 1000:1000 "$id-desktop" /e2e/desktop.sh "$@"; }
 api() { timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
 api_any() { timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
@@ -75,7 +78,8 @@ timeout -k 10 120 docker run -d --name "$id-desktop" --network "$id" --network-a
 
 step 'start obs-control, sending to the bridge'
 timeout -k 10 120 docker run -d --name "$id-obs" --network "$id" --network-alias obs --shm-size 512m \
-    -v "$id-media:/media:ro" \
+    -v "$id-media:/media:ro" -v "$here:/e2e:ro" \
+    -e MALRUNAR_OBS_CONFIG=/e2e/obs-e2e.toml -e MALRUNAR_OBS_FEATURES_TAKES=true \
     -e MALRUNAR_OBS_CAMERA_URL=file:///usr/local/share/malrunar/obs-control/examples/test-card.html \
     -e MALRUNAR_OBS_MEDIA_FILE=/media/e2e.mp4 -e MALRUNAR_OBS_START_SCENE=video \
     -e MALRUNAR_OBS_BROLL_ENABLED=false \
@@ -120,6 +124,49 @@ for _ in $(seq 1 60); do
 done
 [ "$healthy" = true ] || fail 'the bridge did not restart the output'
 desk tone 1000 90 || fail 'no tone after the bridge restarted the output'
+
+step 'takes: slide upload, arm, record a take from its own camera page (660 Hz)'
+api /api/takes/status | grep -q '"armed": false' || fail 'the takes plugin is not loaded'
+timeout -k 10 60 docker exec "$id-obs" ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
+    -i color=c=0x2060a0:size=800x450 -frames:v 1 -y /tmp/slide.png || fail 'could not make a slide picture'
+slides="$(timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 -F name=Slide -F file=@/tmp/slide.png \
+    http://127.0.0.1:18095/api/takes/slides)" || fail 'POST /api/takes/slides'
+deck="$(printf '%s' "$slides" | field 'd["slides"]["id"]')" || fail "unexpected upload response: $slides"
+api /api/takes/arm -X POST -H 'Content-Type: application/json' \
+    -d "{\"layout\": \"pip\", \"slide\": {\"deck_id\": \"$deck\", \"page\": 1}}" | grep -q '"armed": true' || fail 'POST /api/takes/arm'
+started=false
+for _ in $(seq 1 30); do   # the camera page needs a moment before its picture is not black
+    if api_any /api/takes/start -X POST -H 'Content-Type: application/json' -d '{"take_id": "e2e-take"}' | grep -q '"take_id": "e2e-take"'; then
+        started=true
+        break
+    fi
+    sleep 2
+done
+[ "$started" = true ] || fail 'the take did not start'
+echo 'while recording, the program must stay silent (the take camera feeds audio track 2 only)'
+if desk tone 660 8 >/dev/null 2>&1; then fail 'the take camera tone leaked into the program audio'; fi
+sleep 4
+take="$(api /api/takes/stop -X POST)" || fail 'POST /api/takes/stop'
+printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail 'the take has no audio'; }
+
+step 'assemble the take (trimmed) with the slide, leave take mode and play the result into the program'
+job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take\", \"items\": [
+    {\"type\": \"take\", \"take_id\": \"e2e-take\", \"start\": 1, \"end\": 9},
+    {\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}]}")" || fail 'POST /api/takes/assemble'
+job_id="$(printf '%s' "$job" | field 'd["job"]["job_id"]')"
+state=running
+for _ in $(seq 1 60); do
+    result="$(api "/api/takes/jobs/$job_id")"
+    state="$(printf '%s' "$result" | field 'd["job"]["state"]')"
+    [ "$state" = running ] || break
+    sleep 2
+done
+[ "$state" = done ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
+take_clip="$(printf '%s' "$result" | field 'd["job"]["clip"]["id"]')"
+api /api/takes/disarm -X POST | grep -q '"armed": false' || fail 'POST /api/takes/disarm'
+api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
+desk tone 660 120 || fail 'the prepared take did not reach the virtual microphone with its 660 Hz tone'
+api_any /health | grep -q '"healthy": true' || fail 'the output is not healthy after the take'
 
 step 'logs are clean'
 if docker logs "$id-obs" 2>&1 | grep -E 'Traceback|Error in plugin'; then fail 'obs-control logged a traceback'; fi

@@ -29,6 +29,7 @@ a consumer add routes and scenes in its own layer.
 - [HTTP API and compatibility table](#http-api-and-compatibility-table)
 - [Identity and security](#identity-and-security)
 - [Plugins](#plugins)
+- [Takes (built-in plugin)](#takes-built-in-plugin)
 - [The UDP relay](#the-udp-relay)
 - [Files, state and restarts](#files-state-and-restarts)
 - [Migrating from the previous in-product controller](#migrating-from-the-previous-in-product-controller)
@@ -156,6 +157,7 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 | `video_profiles` | `false` | `MALRUNAR_OBS_FEATURES_VIDEO_PROFILES` | Enable `POST /api/call/video-profile` and apply a profile at start (needs `program_control`) |
 | `sender_lease` | `true` | `MALRUNAR_OBS_FEATURES_SENDER_LEASE` | Require sender heartbeats. Off: the sender is always considered present |
 | `mode_label` | `"program-control"` | `MALRUNAR_OBS_FEATURES_MODE_LABEL` | The `mode` value `/ready` reports in program control |
+| `takes` | `false` | `MALRUNAR_OBS_FEATURES_TAKES` | Load the built-in [takes plugin](#takes-built-in-plugin) (same as `plugins.modules = ["malrunar_obs.takes"]`). Off: its routes, scenes and profile settings do not exist |
 
 #### `[sender]`
 
@@ -374,7 +376,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `POST /api/restart-output` | stop (if running), start | same | none | none |
 | `POST /api/stop-output` | stop if running | same | none | none |
 | `POST /api/start-output` | start if not running (idempotent) | same | none | none |
-| `/api/take-studio/*`, `GET /take-studio/takes/<id>.mp4` | product mode only | not part of obs-control | moved out: a private plugin can register them | see [Plugins](#plugins) |
+| `/api/take-studio/*`, `GET /take-studio/takes/<id>.mp4` | product mode only | **built-in plugin** `malrunar_obs.takes`, off by default, under `/api/takes/*` | renamed and made generic: slides are uploaded files instead of an external materials service; takes and slides are per identity; see the [route mapping](#from-the-previous-take-studio-routes) | enable it with `features.takes = true` and follow the mapping |
 
 Error responses keep the old shapes: `{"ok": false, "error": "..."}` with 400 (bad input), 404
 (unknown id or a route disabled by a feature flag), 409 (not allowed now), 422 (unreadable clip),
@@ -425,7 +427,7 @@ a plugin registered) is refused when access checks are on, until the plugin decl
 |---|---|
 | open | `GET /health`, `GET /ready` |
 | `viewer` | `GET /` (console), `GET /api/whoami`, `GET /api/scenes`, `GET /api/program-preview.jpg`, `GET /api/program-live.mjpg`, `GET /api/input-levels`, `GET /api/recording/status`, `GET /api/daily-fallback/status` |
-| `operator` | `GET /api/clips`, `GET /clips/<id>.mp4`, `GET /api/daily-fallback/preview`, `GET /media/3-minute-video.mp4`, `POST /api/clips/upload`, `POST /api/clips/<id>/trim`, `DELETE /api/clips/<id>`, `POST /api/scene/<key>`, `POST /api/clip/<id>/scene`, `POST /api/clip/<id>/play`, `POST /api/call/*` (`live`, `stop`, `microphone`, `clip-audio`, `video-profile`), `POST /api/recording/start`, `POST /api/recording/stop`, `POST /api/daily-fallback/play`, `POST /api/daily-fallback/cancel`, `POST /api/daily-fallback/ensure`, `POST /api/sender-heartbeat`, `POST /api/restart-live`, `POST /api/restart-output`, `POST /api/stop-output`, `POST /api/start-output` |
+| `operator` | `GET /api/clips`, `GET /clips/<id>.mp4`, `GET /api/daily-fallback/preview`, `GET /media/3-minute-video.mp4`, `POST /api/clips/upload`, `POST /api/clips/<id>/trim`, `DELETE /api/clips/<id>`, `POST /api/scene/<key>`, `POST /api/clip/<id>/scene`, `POST /api/clip/<id>/play`, `POST /api/call/*` (`live`, `stop`, `microphone`, `clip-audio`, `video-profile`), `POST /api/recording/start`, `POST /api/recording/stop`, `POST /api/daily-fallback/play`, `POST /api/daily-fallback/cancel`, `POST /api/daily-fallback/ensure`, `POST /api/sender-heartbeat`, `POST /api/restart-live`, `POST /api/restart-output`, `POST /api/stop-output`, `POST /api/start-output`; with the takes plugin enabled every `/api/takes/*` route (below) |
 
 A refused request gets `403 {"ok": false, "error": ...}`.
 
@@ -507,7 +509,8 @@ and is not published by the image. The relay's control API is unauthenticated an
 
 ## Plugins
 
-A plugin is a Python module loaded by the controller (and by the config generator). Point at them with
+A plugin is a Python module loaded by the controller (and by the config generator). One is built in and
+optional: [takes](#takes-built-in-plugin). Point at them with
 `plugins.modules` / `MALRUNAR_OBS_PLUGINS` (module names or `.py` paths, comma-separated) and
 `plugins.dir` / `MALRUNAR_OBS_PLUGINS_DIR` (every `*.py` in the directory, in name order, files starting
 with `_` skipped; the directory is added to `sys.path`). A plugin that fails to load stops the start
@@ -574,6 +577,141 @@ members of `controller` (`_sender_last_seen` to `sender_alive()`, `_clip_playbac
 `RECORDINGS_DIR` to `recordings_dir`, `clip_metadata`/`ensure_clip_scene` to
 `clips.metadata`/`clips.ensure_scene`).
 
+## Takes (built-in plugin)
+
+Takes let someone prepare and record videos ahead of time and play them into the program later, so they go out
+through the same output (and the virtual camera and microphone behind it) as the live camera. It is an optional
+plugin that ships in the image and is **off by default**: nothing below exists (no routes, no scene, no profile
+settings) until it is enabled with `features.takes = true` (`MALRUNAR_OBS_FEATURES_TAKES=true`) or by listing
+`malrunar_obs.takes` in `plugins.modules`.
+
+The workflow:
+
+1. **Upload slides** (optional): `POST /api/takes/slides` with an image (PNG or JPEG) or a PDF. A PDF is rendered
+   to one picture per page. Every upload is a *deck* with an id; a slide is `{"deck_id", "page"}`.
+2. **Arm**: `POST /api/takes/arm` puts the take scene on the program and claims it (a [program holder](#plugins):
+   going live, clip playback and video-profile changes answer `409` meanwhile; `POST /api/call/stop` always wins).
+   The OBS canvas switches to the take size (1920x1080 by default); the program output keeps its configured size
+   (it is rescaled), so the receiver does not notice. The scene holds a slide and the take camera in one of three
+   layouts: `camera`, `pip` (camera in a corner over the slide) or `slide` (the camera stays on for its sound but is
+   moved out of view).
+3. **Record**: `POST /api/takes/start`, then `POST /api/takes/stop`. OBS's stream output sends the take scene to a
+   local RTMP listener (ffmpeg, `127.0.0.1` only): a separate, full-size encode carrying audio track 2, which only
+   the take camera feeds, so the program never carries the take's sound while you prepare. The result is an MP4 in
+   your library (`GET /api/takes/library`). Recording is refused while the take camera picture is black (set
+   `check_camera = false` for a source that really is).
+4. **Assemble**: `POST /api/takes/assemble` trims takes and joins them with stills of slides into one 1080p MP4 in
+   the background (`GET /api/takes/jobs/<job_id>`). The result is an ordinary clip (`GET /api/clips`, prefix
+   `take-`, `"source": "takes"`).
+5. **Play**: leave take mode (`POST /api/takes/disarm`: the previous scene and canvas come back, a running take is
+   kept) and put the clip on the program with the existing clip routes: `POST /api/clip/<id>/play` in program
+   control, `POST /api/clip/<id>/scene` otherwise.
+
+```toml
+[features]
+takes = true
+
+[plugin.takes]
+camera_url = "https://camera.example.invalid/view?id=take"   # optional: defaults to the first camera's URL
+```
+
+### Settings: `[plugin.takes]`
+
+Every key is optional. There are no environment variables for these (plugin tables are file-only); the on switch
+is `features.takes`. Unknown keys and wrong types stop the start with a message naming the setting.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `scene` | `"Take Studio"` | Name of the take scene (must be unused) |
+| `slide_source` | `"Take Slide"` | Name of its image source |
+| `camera_source` | `"Take Camera"` | Name of its browser source (audio track 2 only; it loads only while the take scene is on air) |
+| `camera_url` | (empty) | Page the take camera shows; empty: the first `[[cameras]]` URL. Use a separate stream or page if the live camera allows a single viewer |
+| `camera_url_file` | (empty) | File holding that URL, read when the config is generated (not with `camera_url`) |
+| `width` | `1920` | Take canvas and recording width (even) |
+| `height` | `1080` | Take canvas and recording height (even) |
+| `max_take_seconds` | `1800` | A take is stopped and kept after this long |
+| `max_upload_mb` | `25` | Largest slide upload (`413` above it) |
+| `max_pdf_pages` | `100` | Most pages of an uploaded PDF |
+| `rtmp_port` | `1935` | Port of the local RTMP listener used while recording (loopback only) |
+| `data_dir` | (empty) | Where takes and slides are kept; empty: `<storage.recordings_dir>/takes` |
+| `check_camera` | `true` | Refuse to record while the take camera picture is black |
+
+Generating the configuration also sets, in the OBS profile, the stream output (x264, CRF 20, audio track 2, a
+local RTMP service) and, unless `output.rescale` is set, the program output's size to `video.width` x
+`video.height`. The image needs `ffmpeg` and, for PDFs, `pdftoppm` and `pdfinfo` (`poppler-utils`, part of the
+image).
+
+### Routes
+
+All of them need the `operator` capability and are classified that way (`GET` too: a take is private work).
+Errors use the usual `{"ok": false, "error": ...}` shape. `<deck_id>` is `deck-` and 12 hex digits, `<take_id>` is
+3-64 characters of `a-z`, `0-9` and `-`, a page is 1-999.
+
+| Method and path | Request | Response and notes |
+|---|---|---|
+| `GET /api/takes/status` | | `{armed, mine, canvas, layout, slide, recording, jobs}`. When another user holds take mode: `armed: true, mine: false` and nothing else of theirs |
+| `GET /api/takes/library` | | `{takes: [...], slides: [...]}` of the caller |
+| `POST /api/takes/arm` | `{"layout": "camera"\|"pip"\|"slide", "slide": {"deck_id", "page"} \| null}` (both optional; default `pip`) | Enter take mode (or change layout and slide when you are in it). `404` unknown slide, `409` another user holds it, `503` OBS could not switch (take mode is left again) |
+| `POST /api/takes/disarm` | | Stop a running take (kept), restore the previous scene and canvas. The previous scene is restored only if it is safe: in program control a live camera with a live sender, otherwise the stopped scene (muted) |
+| `POST /api/takes/layout` | `{"layout": ...}` | `409` when not armed |
+| `POST /api/takes/slide` | `{"slide": {"deck_id", "page"} \| null}` | Put a slide on the scene; no waiting for other take operations (cue-friendly) |
+| `POST /api/takes/slides` | multipart `name` (optional), `file` | Upload an image or PDF: `201 {"slides": {id, name, kind, pages, extension, created_at}}`. The type is decided by the file's signature (PNG, JPEG, PDF), never by its name; `415` other types, `413` over `max_upload_mb`, `400` unreadable or too long a PDF, `503` without poppler |
+| `GET /api/takes/slides/<deck_id>/<page>` | | The page picture |
+| `DELETE /api/takes/slides/<deck_id>` | | `409` while one of its pages is on the take scene |
+| `POST /api/takes/start` | `{"take_id": "..."}` (optional; generated as `take-<12 hex>`) | Start recording: `409` when not armed, already recording, a render is running, the id exists or the camera picture is black; `503` OBS refused |
+| `POST /api/takes/stop` | | `{"ok": true, "take": {take_id, created_at, duration, width, height, has_audio, bytes, auto_stopped}}` |
+| `GET /api/takes/<take_id>.mp4` | | The take file |
+| `DELETE /api/takes/<take_id>` | | `409` while it is recording |
+| `POST /api/takes/assemble` | `{"name": "...", "items": [...]}`, 1-60 items: `{"type": "take", "take_id", "start": 0, "end": null}` (seconds; `end` omitted: to the end) or `{"type": "still", "deck_id", "page", "seconds": 0.5-120}` | `202 {"job": {job_id, state, progress, total_seconds, clip_id, ...}}`; `400` for any invalid item, `409` while recording or another render runs |
+| `GET /api/takes/jobs/<job_id>` | | `state` is `running`, `done` (with `clip`, the same fields as `GET /api/clips`) or `error` |
+
+### Per-user state
+
+When identities are configured (`access.trusted_proxies` and/or `access.proxy_secret_header`, or an
+`access.identity_header`) every request needs a user (`403` without one) and slides, takes, recordings and
+assembly jobs belong to that user: `<data_dir>/users/<owner>/{slides,takes}`, where `<owner>` is the user name
+encoded with the same path-safe function as the b-roll directories (`.` and `..` and path separators can never
+reach the file system). Another user cannot list, read, delete or assemble them (`404`). Without identities
+everything is shared under `<data_dir>/shared`. There is one take scene and one program, so one user at a time
+holds take mode; the others get `409 Take mode is in use by another user`. Assembled clips are ordinary clips in
+`storage.recordings_dir` (the clip library is shared in obs-control); their `<id>.json` records the `owner`.
+
+### From the previous take-studio routes
+
+| Old | New | Change |
+|---|---|---|
+| `GET /api/take-studio/status` | `GET /api/takes/status` | adds `mine`, `canvas`; `slide` is `{deck_id, page}` |
+| `POST /api/take-studio/arm` | `POST /api/takes/arm` | `slide.material_id` became `slide.deck_id` |
+| `POST /api/take-studio/disarm` | `POST /api/takes/disarm` | none |
+| `POST /api/take-studio/layout` | `POST /api/takes/layout` | none |
+| `POST /api/take-studio/slide` | `POST /api/takes/slide` | `material_id` became `deck_id` |
+| `POST /api/take-studio/slides/missing` | removed | slides are no longer pushed from an external materials service; list yours with `GET /api/takes/library` |
+| `PUT /api/take-studio/slides/<material>/<page>` (PNG body) | `POST /api/takes/slides` (multipart image or PDF) | the server creates the deck id and renders PDF pages itself |
+| `DELETE /api/take-studio/slides/<material>` | `DELETE /api/takes/slides/<deck_id>` | `404` for an unknown deck |
+| `POST /api/take-studio/takes/start` | `POST /api/takes/start` | `take_id` optional |
+| `POST /api/take-studio/takes/stop` | `POST /api/takes/stop` | none |
+| `GET /take-studio/takes/<id>.mp4` | `GET /api/takes/<take_id>.mp4` | moved under `/api/` |
+| `GET /api/take-studio/takes/<id>/audio.mp3` | removed | the transcription helper was product-specific |
+| `DELETE /api/take-studio/takes/<id>` | `DELETE /api/takes/<take_id>` | none |
+| `POST /api/take-studio/assemble` | `POST /api/takes/assemble` | still items use `deck_id`; `segment_id` was dropped; clip ids start with `take-` instead of `studio-` |
+| `GET /api/take-studio/jobs/<id>` | `GET /api/takes/jobs/<job_id>` | none |
+| (not present) | `GET /api/takes/library`, `GET /api/takes/slides/<deck_id>/<page>` | **new** |
+
+Old settings: `OBS_TAKE_STUDIO_DIR` is `plugin.takes.data_dir`, `OBS_TAKE_MAX_SECONDS` is
+`plugin.takes.max_take_seconds`, `OBS_TAKE_CAMERA_URL` is `plugin.takes.camera_url`. The scene names and the 1080p
+size were fixed in code and are settings now (set `scene`, `slide_source` and `camera_source` to keep old names).
+
+### Things to know
+
+- Take mode switches the canvas and restarts the program output for a moment (receivers reconnect), so arm
+  before the call, not during it. Entering and leaving take mode are the only times that happens.
+- While take mode is on, clip routes that do not check program holders (`POST /api/clip/<id>/scene`, `POST
+  /api/scene/<key>` outside program control) can still change the scene: leave take mode before playing a clip.
+- Uploaded images are checked by signature and size, not decoded here; OBS and ffmpeg decode them. A PDF is
+  rendered by `pdftoppm` with a time limit.
+- A controller restart forgets take mode: if the take scene is still on air it is replaced by the stopped scene and
+  the canvas is restored; a take being recorded at that moment is lost.
+
 ## The UDP relay
 
 `entrypoint.sh relay` (run it as a second container from the same image, usually on the host's
@@ -600,7 +738,7 @@ The capture queue is bounded (2 MiB): a slow disk stops the capture, never the f
 |---|---|
 | `/config` (the `obs` user's home) | OBS configuration and everything below |
 | `/config/.config/obs-studio` | generated profile, scene collection, obs-websocket settings, browser profile |
-| `storage.recordings_dir` (`/config/recordings`) | clips (`<id>.mp4` and `<id>.json`), b-roll under `daily-fallback/` |
+| `storage.recordings_dir` (`/config/recordings`) | clips (`<id>.mp4` and `<id>.json`), b-roll under `daily-fallback/`, takes and slides under `takes/` (takes plugin) |
 | `storage.state_dir` (`/config/state`) | `video-profile.json` |
 | `/opt/malrunar/obs-control/lib/malrunar_obs` | the code |
 | `/usr/local/share/malrunar/obs-control/examples` | example configuration and test card |
@@ -636,7 +774,7 @@ Environment variables:
 | the product mode switch | `MALRUNAR_OBS_FEATURES_PROGRAM_CONTROL=true` and `MALRUNAR_OBS_FEATURES_VIDEO_PROFILES=true` |
 | the video-profile file variable | `MALRUNAR_OBS_STATE_DIR` (the file is `video-profile.json` in it) |
 | the controller-restore variable | `MALRUNAR_OBS_RESTORE` |
-| take-studio variables | belong to the take plugin |
+| take-studio variables | `[plugin.takes]` settings of the built-in [takes plugin](#takes-built-in-plugin) (`features.takes = true`) |
 
 Names that were fixed in code are configuration now. To keep the old scene and source names on an
 existing OBS volume, set them: `cameras[0].scene`, `cameras[0].source`, `media.scene`, `media.source`,

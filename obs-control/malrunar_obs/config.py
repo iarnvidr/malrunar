@@ -76,6 +76,7 @@ DEFAULTS: dict[str, Any] = {
         "video_profiles": False,
         "sender_lease": True,
         "mode_label": "program-control",
+        "takes": False,
     },
     "sender": {"lease_seconds": 12.0},
     "broll": {

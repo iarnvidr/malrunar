@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import struct
 
 import websockets
 
@@ -11,6 +12,15 @@ TINY_JPEG = base64.b64decode(
     "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////"
     "wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
 )
+
+
+def bmp_image(width=64, height=36, luma=200):
+    """An uncompressed 24 bit BMP of one grey level."""
+    row = (width * 3 + 3) & ~3
+    pixels = bytes([luma]) * (width * 3) + b"\0" * (row - width * 3)
+    header = b"BM" + struct.pack("<IHHI", 54 + row * height, 0, 0, 54)
+    header += struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, row * height, 2835, 2835, 0, 0)
+    return header + pixels * height
 
 
 class FakeObs:
@@ -23,6 +33,11 @@ class FakeObs:
         self.calls: list[tuple[str, dict]] = []
         self.muted: dict[str, bool] = {}
         self.profile_parameters: dict[str, str] = {}
+        self.video = {"baseWidth": 640, "baseHeight": 360, "outputWidth": 640, "outputHeight": 360}
+        self.streaming = False
+        self.stream_service: dict = {}
+        self.camera_luma = 200  # brightness of the BMP GetSourceScreenshot returns
+        self.scene_items: dict[str, list[dict]] = {}  # scene -> [{"sourceName", "sceneItemId"}]
         self.fail: dict[str, str] = {}  # request type -> comment: make that request fail
         self.server = None
         self.port = 0
@@ -118,7 +133,21 @@ class FakeObs:
         elif kind == "SetProfileParameter":
             self.profile_parameters[data["parameterName"]] = data["parameterValue"]
         elif kind == "GetSceneItemList":
-            return {"sceneItems": [{"sceneItemId": 1}]}
+            return {"sceneItems": self.scene_items.get(data["sceneName"], [{"sceneItemId": 1}])}
+        elif kind == "GetVideoSettings":
+            return dict(self.video)
+        elif kind == "SetVideoSettings":
+            self.video.update(data)
+        elif kind == "SetStreamServiceSettings":
+            self.stream_service = data
+        elif kind == "StartStream":
+            self.streaming = True
+        elif kind == "StopStream":
+            self.streaming = False
+        elif kind == "GetStreamStatus":
+            return {"outputActive": self.streaming}
+        elif kind == "GetSourceScreenshot" and data.get("imageFormat") == "bmp":
+            return {"imageData": "data:image/bmp;base64," + base64.b64encode(bmp_image(luma=self.camera_luma)).decode()}
         elif kind == "GetSourceScreenshot":
             return {"imageData": "data:image/jpeg;base64," + base64.b64encode(TINY_JPEG).decode()}
         return {}
