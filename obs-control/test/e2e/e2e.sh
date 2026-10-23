@@ -202,7 +202,7 @@ for cycle in $(seq 1 10); do
         [ "$state" = running ] || break
         sleep 2
     done
-    [ "$state" = done ] || { echo "$result" >&2; fail "assembly failed ($take_id)"; }
+    [ "$state" = "done" ] || { echo "$result" >&2; fail "assembly failed ($take_id)"; }
     take_clip="$(printf '%s' "$result" | field 'd[\"job\"][\"clip\"][\"id\"]')"
     api /api/takes/disarm -X POST | grep -q '"armed": false' || fail "POST /api/takes/disarm ($take_id)"
     api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
