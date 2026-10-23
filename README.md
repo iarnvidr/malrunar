@@ -25,6 +25,7 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`media-bridge`](media-bridge/) | An OBS-driven virtual camera and microphone for any call app in the desktop | A receiver that turns an MPEG-TS/UDP stream into a v4l2loopback camera and a PipeWire microphone, plus host setup, supervisord/systemd examples and audio/browser helpers in `/opt/malrunar/media-bridge`. A `FROM scratch` layer you copy into your image |
 | [`node`](node/) | A Node.js runtime in any image | Node.js 24 LTS, the unmodified nodejs.org release, in `/opt/malrunar/node`. A `FROM scratch` layer you copy into your image; it depends on nothing |
 | [`work-browser`](work-browser/) | A persistent Firefox for the desktop user | A launcher, an open-URL helper and a supervisord program for the unmodified Firefox of `desktop-base`, with the profile, preferences and policies supplied by you. A `FROM scratch` layer; it needs `desktop-base` only |
+| [`session-kit`](session-kit/) | Desktop session tools: workspaces, window placement, session check, default-browser launchers | `malrunar-session` and a supervisord program in `/opt/malrunar/session-kit`: names the XFCE workspaces and places windows on them, restores a Firefox profile's tabs, checks the session and registers the desktop's web browser. A `FROM scratch` layer; it needs `desktop-base` (and `xdotool`, installed by you) and uses the work browser only when that component is present |
 
 ## Using them
 
@@ -147,6 +148,7 @@ examples of how the parts combine (no product is implied; take the rows you need
 | [`node`](node/) | component (`COPY --from`) | nothing | optional | optional |
 | [`tail-browser-mcp`](tail-browser-mcp/) | component (`COPY --from`) | `node` at run time | optional | optional |
 | [`work-browser`](work-browser/) | component (`COPY --from`, with a supervisord program) | `desktop-base` | optional | yes |
+| [`session-kit`](session-kit/) | component (`COPY --from`, with a supervisord program) | `desktop-base`, `xdotool` for window tools; `work-browser` optional | yes (workspaces, session check) | yes (with `work-browser`: reopen tabs, default browser) |
 
 ```dockerfile
 # a calls desktop: it receives the stream OBS (in its own container) sends, for a call app to use

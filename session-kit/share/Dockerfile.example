@@ -1,0 +1,18 @@
+# A desktop with named workspaces and the optional work browser: desktop-base + session-kit
+# (+ work-browser), each added explicitly. Example only; pin the tags by digest in anything you deploy.
+FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
+COPY --link --from=ghcr.io/iarnvidr/session-kit:0.1.0 / /
+# optional: the persistent browser. Without it, the kit's work-browser tools say they need it.
+COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
+
+# the kit's workspace and window tools need xdotool (desktop-base does not ship it)
+RUN apt-get update && apt-get install -y --no-install-recommends xdotool && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 1000 --shell /bin/bash me
+
+ENV MALRUNAR_SESSION_KIT_USER=me \
+    MALRUNAR_WORK_BROWSER_USER=me \
+    MALRUNAR_SESSION_KIT_WORKSPACES="Work,Chat,Scratch" \
+    MALRUNAR_SESSION_KIT_PLACE="classname=Navigator,role=browser@Work"
+# The supervisord program "session-kit" (/etc/supervisor/conf.d/malrunar-session-kit.conf) is part of the
+# image now and acts on the two settings above.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/bin/supervisord", "-n"]

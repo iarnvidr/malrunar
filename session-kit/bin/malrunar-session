@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The session kit: small tools for an XFCE desktop session. One command, several subcommands:
+#   malrunar-session workspaces              name the XFCE workspaces and keep placing windows on them
+#   malrunar-session restore-tabs [dir]      print the tab URLs of a Firefox profile's last session (NUL separated)
+#   malrunar-session open-tabs [dir]         open those tabs in the running work-browser (needs that component)
+#   malrunar-session check                   check the session: display, workspaces, windows, work browser
+#   malrunar-session launchers               register a command as the desktop's web browser (menu, panel, links)
+#   malrunar-session clear-super-shortcuts   remove Xfce's <Super> application shortcuts for the user
+# Settings are MALRUNAR_SESSION_KIT_* environment variables; see ../README.md.
+# Exit status 78: the image or the settings cannot run this (a message says what is missing).
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "$here/../lib/common.sh"
+
+sk_require_python
+exec python3 -I "$here/../lib/session_kit.py" "$@"
