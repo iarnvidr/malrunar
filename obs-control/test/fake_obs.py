@@ -72,6 +72,7 @@ class FakeObs:
             hello["authentication"] = {"challenge": "challenge-value", "salt": "salt-value"}
         await socket.send(json.dumps({"op": 0, "d": hello}))
         identify = json.loads(await socket.recv())
+        subscriptions = identify.get("d", {}).get("eventSubscriptions", 0)
         if self.password:
             secret = base64.b64encode(hashlib.sha256((self.password + "salt-value").encode()).digest()).decode()
             expected = base64.b64encode(hashlib.sha256((secret + "challenge-value").encode()).digest()).decode()
@@ -99,6 +100,19 @@ class FakeObs:
             if response is not None:
                 reply["responseData"] = response
             await socket.send(json.dumps({"op": 7, "d": reply}))
+            if kind == "StopStream" and result and subscriptions & 64:
+                async def stopped_event():
+                    import asyncio
+                    if self.delayed_stream_stop:
+                        await asyncio.sleep(0.15)
+                    self.streaming = False
+                    await socket.send(json.dumps({"op": 5, "d": {
+                        "eventType": "StreamStateChanged",
+                        "eventIntent": 64,
+                        "eventData": {"outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED"},
+                    }}))
+                import asyncio
+                asyncio.create_task(stopped_event())
 
     def respond(self, kind, data):
         if kind == "GetVersion":
@@ -146,10 +160,7 @@ class FakeObs:
         elif kind == "StartStream":
             self.streaming = True
         elif kind == "StopStream":
-            if self.delayed_stream_stop:
-                import asyncio
-                asyncio.get_running_loop().call_later(0.15, setattr, self, "streaming", False)
-            else:
+            if not self.delayed_stream_stop:
                 self.streaming = False
         elif kind == "GetStreamStatus":
             return {"outputActive": self.streaming}

@@ -458,14 +458,9 @@ class Takes:
             await asyncio.sleep(0.1)
         return False
 
-    async def _wait_stream(self, active: bool, attempts: int = 100) -> bool:
-        """Wait for OBS's output state, rather than assuming a StopStream reply is completion."""
-        for _ in range(attempts):
-            (status,) = await self.ctl.obs(("GetStreamStatus", {}))
-            if bool(status.get("outputActive")) == active:
-                return True
-            await asyncio.sleep(0.1)
-        return False
+    async def _stop_stream_and_wait(self) -> None:
+        """Wait for OBS's authoritative STOPPED event before touching the canvas."""
+        await self.ctl.obs_client.stop_stream_and_wait()
 
     async def current_canvas(self) -> dict[str, tuple]:
         (video,) = await self.ctl.obs(("GetVideoSettings", {}))
@@ -628,6 +623,9 @@ class Takes:
         stage = "select_restore_scene"
         logger.info("take restore begin previous=%r", previous)
         try:
+            # Every restoration path (including arm rollback) must cross the encoder barrier.
+            stage = "stop_stream_and_wait"
+            await self._stop_stream_and_wait()
             target = None
             if previous and previous != self.s.scene:
                 cameras = {camera.scene for camera in ctl.config.cameras}
@@ -962,10 +960,8 @@ class Takes:
             await self.ctl.obs(("StopStream", {}))
         except Exception:
             pass
-        # StopStream returning only means OBS accepted the request. Do not hand control
-        # back to disarm/canvas restoration until the websocket reports stream inactive.
-        if not await self._wait_stream(False):
-            raise RuntimeError("OBS did not stop the take stream")
+        # An inactive status can precede encoder shutdown. The STOPPED event is the barrier.
+        await self._stop_stream_and_wait()
         try:
             await asyncio.wait_for(process.wait(), timeout=20)
         except asyncio.TimeoutError:
@@ -1215,9 +1211,9 @@ class Takes:
                     if scene.get("currentProgramSceneName") == self.s.scene:
                         async with self.ctl.video_lock:
                             try:
-                                await self.ctl.obs(("StopStream", {}))
+                                await self._stop_stream_and_wait()
                             except Exception:
-                                pass
+                                logger.exception("could not confirm stream STOPPED during startup recovery")
                             self.restore_canvas = None
                             await self._restore_program(None)
                     return

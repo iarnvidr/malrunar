@@ -82,6 +82,34 @@ class ObsClient:
             raise ObsError(f"{request_type}: {status.get('comment', 'failed')}")
         return response["d"].get("responseData") or {}
 
+    async def stop_stream_and_wait(self) -> None:
+        """Stop streaming and wait for OBS's authoritative STOPPED output event.
+
+        OUTPUTS (64) enables StreamStateChanged. GetStreamStatus is diagnostic
+        only: outputActive=False can describe STOPPING and is not a barrier.
+        Consequently this always sends StopStream and waits for both its
+        successful response and the STOPPED event, in either arrival order.
+        """
+        async with self.session(event_subscriptions=64) as socket:
+            request_id = str(uuid.uuid4())
+            await socket.send(json.dumps({"op": 6, "d": {
+                "requestType": "StopStream", "requestId": request_id, "requestData": {}
+            }}))
+            response_ok = False
+            stopped = False
+            while not (response_ok and stopped):
+                message = json.loads(await socket.recv())
+                if message.get("op") == 5:
+                    event = message.get("d", {})
+                    if (event.get("eventType") == "StreamStateChanged"
+                            and event.get("eventData", {}).get("outputState") == "OBS_WEBSOCKET_OUTPUT_STOPPED"):
+                        stopped = True
+                elif message.get("op") == 7 and message.get("d", {}).get("requestId") == request_id:
+                    status = message["d"]["requestStatus"]
+                    if not status.get("result"):
+                        raise ObsError(f"StopStream: {status.get('comment', 'failed')}")
+                    response_ok = True
+
     async def request(self, *requests: tuple[str, dict[str, Any]]) -> list[dict[str, Any]]:
         """Send requests in order over one connection; the responses' data, in order."""
         async with self.session() as socket:
