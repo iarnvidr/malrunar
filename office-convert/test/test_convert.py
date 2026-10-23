@@ -3,8 +3,10 @@
 Run: PYTHONPATH=<dir containing convert.py> python3 -m unittest discover -s office-convert/test
 (the image smoke test runs them inside the image, against /opt/malrunar/office-convert).
 """
+import contextlib
 import http.client
 import io
+import json
 import os
 import socket
 import stat
@@ -127,7 +129,7 @@ class ConfigTests(unittest.TestCase):
             self.assertIn(name, str(caught.exception))
 
 
-class ServerTests(unittest.TestCase):
+class ServerCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         tmp = Path(self.tmp.name)
@@ -169,6 +171,8 @@ class ServerTests(unittest.TestCase):
         connection.close()
         return response.status, response.getheader("Content-Type"), data
 
+
+class ServerTests(ServerCase):
     def test_health_and_not_found(self):
         port = self.start()
         self.assertEqual(self.request(port, "GET", "/health")[::2], (200, b"ok"))
@@ -273,3 +277,116 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SECRET_A = "first-secret-0123456789"
+SECRET_B = "second-secret-0123456789"
+IDENTITY_HEADERS = {"Remote-User": "ada", "Remote-Groups": "admins"}
+
+
+class IdentityServerTests(ServerCase):
+    """The same server with an identity configuration: the user is resolved and logged, never enforced."""
+
+    def identity_port(self, env):
+        config = convert.load_config({"MALRUNAR_OFFICE_PORT": "9", **env})
+        return self.start(identity=config.identity)
+
+    def logged(self, port, headers, path="/convert", body=b"x"):
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            status = self.request(port, "POST", path, body=body,
+                                  headers={"X-Filename": "secret-name.docx", **headers})[0]
+            time.sleep(0.1)
+        return status, log.getvalue()
+
+    def test_nothing_configured_ignores_headers_and_warns(self):
+        config = convert.load_config({})
+        self.assertIn("anonymous", config.identity.startup_warning())
+        status, log = self.logged(self.start(), IDENTITY_HEADERS)
+        self.assertEqual(status, 200)
+        self.assertIn("user=- ", log)
+        self.assertNotIn("ada", log)
+
+    def test_spoofed_headers_from_an_untrusted_peer_are_ignored(self):
+        port = self.identity_port({"MALRUNAR_OFFICE_TRUSTED_PROXIES": "192.0.2.0/24"})
+        status, log = self.logged(port, IDENTITY_HEADERS)
+        self.assertEqual(status, 200)  # not rejected, just anonymous
+        self.assertIn("user=- ", log)
+
+    def test_trusted_peer_user_is_logged_and_visible_to_the_handler(self):
+        seen = []
+        original = convert.Handler.identity
+        convert.Handler.identity = lambda handler: seen.append(original(handler)) or seen[-1]
+        self.addCleanup(setattr, convert.Handler, "identity", original)
+        port = self.identity_port({"MALRUNAR_OFFICE_TRUSTED_PROXIES": "127.0.0.0/8"})
+        status, log = self.logged(port, {**IDENTITY_HEADERS, "Remote-Email": "ada@example.invalid"})
+        self.assertEqual(status, 200)
+        self.assertIn("user=ada ", log)
+        self.assertEqual(seen[0].user, "ada")
+        self.assertEqual(seen[0].groups, ("admins",))
+        for private in ("secret-name", "ada@example.invalid", "admins"):
+            self.assertNotIn(private, log)
+
+    def test_health_and_conversion_behave_as_before_for_any_identity(self):
+        port = self.identity_port({"MALRUNAR_OFFICE_TRUSTED_PROXIES": "192.0.2.0/24"})
+        self.assertEqual(self.request(port, "GET", "/health")[::2], (200, b"ok"))
+        self.assertEqual(self.logged(port, {}, body=b"")[0], 400)
+
+    def test_secret_header_wrong_secret_ignored_and_rotation(self):
+        path = Path(self.tmp.name) / "proxy-secrets"
+        path.write_text(f"# old\n{SECRET_A}\n")
+        port = self.identity_port({"MALRUNAR_OFFICE_PROXY_SECRET_HEADER": "X-Proxy-Secret",
+                                   "MALRUNAR_OFFICE_PROXY_SECRET_FILE": str(path)})
+        def user_for(secret):
+            _, log = self.logged(port, {**IDENTITY_HEADERS, "X-Proxy-Secret": secret})
+            self.assertNotIn(secret, log)
+            return log.split("user=")[1].split()[0]
+        self.assertEqual(user_for(SECRET_A), "ada")
+        self.assertEqual(user_for("wrong-secret-0123456789"), "-")
+        self.assertEqual(user_for(SECRET_B), "-")
+        path.write_text(f"{SECRET_A}\n{SECRET_B}\n")  # rotation: both accepted
+        os.utime(path, ns=(time.time_ns() + 5_000_000_000,) * 2)
+        self.assertEqual(user_for(SECRET_B), "ada")
+        self.assertEqual(user_for(SECRET_A), "ada")
+        path.write_text(f"{SECRET_B}\n")  # old one retired
+        os.utime(path, ns=(time.time_ns() + 10_000_000_000,) * 2)
+        self.assertEqual(user_for(SECRET_A), "-")
+        self.assertEqual(user_for(SECRET_B), "ada")
+
+    def test_both_configured_both_required(self):
+        path = Path(self.tmp.name) / "proxy-secrets"
+        path.write_text(SECRET_A + "\n")
+        port = self.identity_port({"MALRUNAR_OFFICE_TRUSTED_PROXIES": "192.0.2.0/24",
+                                   "MALRUNAR_OFFICE_PROXY_SECRET_HEADER": "X-Proxy-Secret",
+                                   "MALRUNAR_OFFICE_PROXY_SECRET_FILE": str(path)})
+        _, log = self.logged(port, {**IDENTITY_HEADERS, "X-Proxy-Secret": SECRET_A})  # right secret, wrong peer
+        self.assertIn("user=- ", log)
+
+    def test_bad_identity_setting_is_a_config_error(self):
+        with self.assertRaises(convert.ConfigError) as caught:
+            convert.load_config({"MALRUNAR_OFFICE_TRUSTED_PROXIES": "not-a-cidr"})
+        self.assertIn("MALRUNAR_OFFICE_TRUSTED_PROXIES", str(caught.exception))
+
+
+class VendoredVectorTests(unittest.TestCase):
+    """The shared vectors (identical in every component) against the vendored forward_auth.py."""
+
+    def test_vectors(self):
+        doc = json.loads((Path(__file__).resolve().parent / "forward-auth-vectors.json").read_text(encoding="utf-8"))
+        fa = convert.forward_auth
+        self.assertGreaterEqual(len(doc["cases"]), 30)
+        for case in doc["cases"]:
+            with self.subTest(case["name"]), tempfile.TemporaryDirectory() as tmp:
+                env = dict(case["config"])
+                if "secret_file_contents" in case:
+                    secrets = Path(tmp, "secrets")
+                    secrets.write_text(case["secret_file_contents"], encoding="utf-8")
+                    env[doc["prefix"] + "PROXY_SECRET_FILE"] = str(secrets)
+                table = case.get("expand", {})
+                def expand(value):
+                    return "a" * table[value] if isinstance(value, str) and value in table else value
+                headers = {k: expand(v) for k, v in case["request"]["headers"].items()}
+                expected = {k: v if isinstance(v, list) else expand(v) for k, v in case["expected"].items()}
+                got = fa.IdentityConfig.from_env(env, doc["prefix"]).resolve(case["request"]["peer"], headers)
+                self.assertEqual({"user": got.user, "name": got.name, "email": got.email,
+                                  "groups": list(got.groups), "trusted": got.trusted}, expected)

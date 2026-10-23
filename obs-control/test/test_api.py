@@ -64,7 +64,7 @@ class RouteTests(ApiCase):
             if route.method != "HEAD"
         }
         self.assertEqual(LEGACY_ROUTES - served, set())
-        self.assertEqual(served - LEGACY_ROUTES, {("GET", "/api/scenes")})
+        self.assertEqual(served - LEGACY_ROUTES, {("GET", "/api/scenes"), ("GET", "/api/whoami")})
 
 
 class HealthTests(ApiCase):
@@ -522,17 +522,17 @@ class ProgramHolderTests(ApiCase):
 
 
 class AccessTests(ApiCase):
-    ACCESS = {"identity_header": "X-Forwarded-User"}
+    ACCESS = {"identity_header": "X-Forwarded-User", "trusted_proxies": ["127.0.0.0/8"]}
 
     async def test_no_request_is_rejected_for_its_identity(self):
         client = await self.start(access=self.ACCESS)
-        for headers in ({}, {"X-Forwarded-User": "mallory"}):
-            self.assertEqual((await client.get("/api/clips", headers=headers)).status, 200)
+        self.assertEqual((await client.get("/api/clips", headers={"X-Forwarded-User": "mallory"})).status, 200)
+        self.assertEqual((await client.get("/api/clips")).status, 403, "trust is configured: anonymous is refused")
 
     async def test_per_identity_broll_uses_the_trusted_header(self):
         client = await self.start(access=self.ACCESS, features={"program_control": True})
-        self.assertEqual((await client.get("/api/daily-fallback/status")).status, 400)
-        self.assertEqual((await client.get("/api/daily-fallback/status?user=ann")).status, 400)
+        self.assertEqual((await client.get("/api/daily-fallback/status")).status, 403)
+        self.assertEqual((await client.get("/api/daily-fallback/status?user=ann")).status, 403)
         ok = await client.get("/api/daily-fallback/status", headers={"X-Forwarded-User": "ann"})
         self.assertEqual((ok.status, (await ok.json())["state"]), (200, "idle"))
         path = self.controller.broll.path(user="bob")
@@ -565,7 +565,7 @@ class AccessTests(ApiCase):
 
     async def test_simple_mode_has_no_per_identity_broll(self):
         client = await self.start(access=self.ACCESS)
-        self.assertEqual((await client.get("/api/daily-fallback/status")).status, 200)
+        self.assertEqual((await client.get("/api/daily-fallback/status", headers={"X-Forwarded-User": "eve"})).status, 200)
         self.assertEqual((await client.get("/api/daily-fallback/status", headers={"X-Forwarded-User": "eve"})).status, 200)
         self.assertEqual(self.controller.broll.path(), self.controller.broll.path(user=None))
 
@@ -574,7 +574,7 @@ class AccessTests(ApiCase):
         self.assertEqual((await client.get("/api/daily-fallback/status")).status, 200)
 
     async def test_ensure_in_program_control_needs_the_live_scene(self):
-        client = await self.start(features={"program_control": True}, access={"identity_header": "X-Forwarded-User"})
+        client = await self.start(features={"program_control": True}, access=self.ACCESS)
         response = await client.post("/api/daily-fallback/ensure", headers={"X-Forwarded-User": "ann"})
         self.assertEqual(response.status, 409)
         self.assertIn("select Live", (await response.json())["error"])

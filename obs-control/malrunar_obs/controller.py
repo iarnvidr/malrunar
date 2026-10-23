@@ -21,12 +21,57 @@ from . import console as console_module
 from . import levels as levels_module
 from . import preview as preview_module
 from .config import ENV_RESTORE, Config, Section, load_config
+from .forward_auth import ANONYMOUS, Identity
 from .obsws import ObsClient, ObsError
 from .plugins import call_hook, load_plugins
 from .scenes import color_value, websocket_password
 
 log = logging.getLogger("malrunar_obs")
 CONTROLLER_KEY = web.AppKey("controller", object)
+
+
+OPEN, VIEWER, OPERATOR = "open", "viewer", "operator"
+
+# Route classification: (method, route path as registered) -> the capability it needs. Anything not
+# listed is refused when access control is on (fail closed); plugins add theirs with
+# Controller.classify_route(). HEAD follows GET.
+ROUTE_CAPABILITIES: dict[tuple[str, str], str] = {
+    ("GET", "/health"): OPEN,
+    ("GET", "/ready"): OPEN,
+    ("GET", "/"): VIEWER,
+    ("GET", "/api/whoami"): VIEWER,
+    ("GET", "/api/scenes"): VIEWER,
+    ("GET", "/api/program-preview.jpg"): VIEWER,
+    ("GET", "/api/program-live.mjpg"): VIEWER,
+    ("GET", "/api/input-levels"): VIEWER,
+    ("GET", "/api/recording/status"): VIEWER,
+    ("GET", "/api/daily-fallback/status"): VIEWER,
+    ("GET", "/api/daily-fallback/preview"): OPERATOR,
+    ("GET", "/media/3-minute-video.mp4"): OPERATOR,
+    ("GET", "/api/clips"): OPERATOR,
+    ("GET", "/clips/{clip_id}.mp4"): OPERATOR,
+    ("POST", "/api/clips/upload"): OPERATOR,
+    ("POST", "/api/clips/{clip_id}/trim"): OPERATOR,
+    ("DELETE", "/api/clips/{clip_id}"): OPERATOR,
+    ("POST", "/api/daily-fallback/play"): OPERATOR,
+    ("POST", "/api/daily-fallback/cancel"): OPERATOR,
+    ("POST", "/api/daily-fallback/ensure"): OPERATOR,
+    ("POST", "/api/scene/{key}"): OPERATOR,
+    ("POST", "/api/clip/{clip_id}/scene"): OPERATOR,
+    ("POST", "/api/clip/{clip_id}/play"): OPERATOR,
+    ("POST", "/api/call/live"): OPERATOR,
+    ("POST", "/api/call/stop"): OPERATOR,
+    ("POST", "/api/call/microphone"): OPERATOR,
+    ("POST", "/api/call/clip-audio"): OPERATOR,
+    ("POST", "/api/call/video-profile"): OPERATOR,
+    ("POST", "/api/recording/start"): OPERATOR,
+    ("POST", "/api/recording/stop"): OPERATOR,
+    ("POST", "/api/sender-heartbeat"): OPERATOR,
+    ("POST", "/api/restart-live"): OPERATOR,
+    ("POST", "/api/restart-output"): OPERATOR,
+    ("POST", "/api/stop-output"): OPERATOR,
+    ("POST", "/api/start-output"): OPERATOR,
+}
 
 
 class ProgramBusy(Exception):
@@ -90,13 +135,19 @@ class Controller:
         self.clip_lock = asyncio.Lock()
         self.video_lock = asyncio.Lock()
         # -- components
+        self.forward_auth = config.identity_config()
+        self.route_capabilities = dict(ROUTE_CAPABILITIES)
+        self.group_capabilities = {cap: set(groups) for cap, groups in config.access.groups.items()}
+        warning = self.forward_auth.startup_warning()
+        if warning:
+            log.warning("%s; the HTTP API enforces nothing (the proxy in front must restrict access)", warning)
         self.broll = broll_module.Broll(self)
         self.clips = clips_module.Clips(self)
         self.preview = preview_module.Preview(self)
         self.levels = levels_module.Levels(self)
         self.app = web.Application(
             client_max_size=1024 * 1024 * 1024,
-            middlewares=[self._errors],
+            middlewares=[self._errors, self._access],
         )
         self.app[CONTROLLER_KEY] = self
         self._add_routes()
@@ -154,12 +205,62 @@ class Controller:
     def clean_display_name(self, value: str) -> str:
         return clips_module.clean_display_name(value)
 
-    def identity(self, request: web.Request) -> str | None:
-        """The identity the reverse proxy put in the configured header (None: no header configured or sent).
+    def resolve_identity(self, request: web.Request) -> Identity:
+        """Who the trusted proxy says the caller is (ANONYMOUS if the request is not trusted).
 
-        Only used to keep per-user state apart; authentication and authorization are external."""
-        header = self.config.access.identity_header
-        return (request.headers.get(header) or None) if header else None
+        The peer address is the socket's, never X-Forwarded-For."""
+        peername = request.transport.get_extra_info("peername") if request.transport is not None else None
+        peer = peername[0] if isinstance(peername, (tuple, list)) and peername else None
+        return self.forward_auth.resolve(peer, request.headers)
+
+    def identity(self, request: web.Request) -> str | None:
+        """The user name of the request's trusted identity (None: anonymous).
+
+        Keeps per-user state (b-roll, heartbeat user) apart; see ``capabilities``."""
+        found = request.get("identity")
+        if found is None:
+            found = request["identity"] = self.resolve_identity(request)
+        return found.user
+
+    @property
+    def enforcing(self) -> bool:
+        """Access control applies only when a trusted proxy address or secret is configured."""
+        return self.config.trust_configured
+
+    def capabilities(self, identity: Identity) -> set[str]:
+        """The capabilities of an identity ({} when anonymous and enforcing); operator implies viewer."""
+        if not self.enforcing:
+            return {VIEWER, OPERATOR}
+        if identity.user is None:
+            return set()
+        if not self.group_capabilities:
+            return {VIEWER, OPERATOR}
+        granted = {cap for cap, groups in self.group_capabilities.items() if groups & set(identity.groups)}
+        if OPERATOR in granted:
+            granted.add(VIEWER)
+        return granted
+
+    def classify_route(self, method: str, path: str, capability: str) -> None:
+        """Plugins: declare the capability (``viewer`` or ``operator``) of a route they registered."""
+        if capability not in (VIEWER, OPERATOR):
+            raise ValueError("capability must be 'viewer' or 'operator'")
+        self.route_capabilities[(method.upper(), path)] = capability
+
+    def route_capability(self, request: web.Request) -> str | None:
+        resource = getattr(request.match_info.route, "resource", None)
+        if resource is None:
+            return None  # no such route: let the router answer 404/405
+        method = "GET" if request.method == "HEAD" else request.method
+        return self.route_capabilities.get((method, resource.canonical))
+
+    def unclassified_routes(self) -> list[tuple[str, str]]:
+        missing = []
+        for route in self.app.router.routes():
+            method = "GET" if route.method == "HEAD" else route.method
+            path = route.resource.canonical if route.resource is not None else ""
+            if (method, path) not in self.route_capabilities and (method, path) not in missing:
+                missing.append((method, path))
+        return missing
 
     # ------------------------------------------------------------------ middleware
     @web.middleware
@@ -170,6 +271,23 @@ class Controller:
             # OBS is down, restarting or refused the request.
             return web.json_response({"ok": False, "error": str(exc) or type(exc).__name__}, status=503)
 
+    @web.middleware
+    async def _access(self, request: web.Request, handler):
+        identity = request["identity"] = self.resolve_identity(request)
+        if not self.enforcing:
+            return await handler(request)
+        needed = self.route_capability(request)
+        if needed is None and request.match_info.route.resource is None:
+            return await handler(request)
+        if needed == OPEN:
+            return await handler(request)
+        if needed is None:  # unclassified route: fail closed
+            return web.json_response({"ok": False, "error": "This route is not open to anyone"}, status=403)
+        if needed not in self.capabilities(identity):
+            who = "Not authenticated" if identity.user is None else "Not permitted"
+            return web.json_response({"ok": False, "error": f"{who}: this needs the {needed} capability"}, status=403)
+        return await handler(request)
+
     # ------------------------------------------------------------------ routes
     def _add_routes(self) -> None:
         r = self.app.router
@@ -177,6 +295,7 @@ class Controller:
             r.add_get("/", console_module.index(self))
         r.add_get("/health", self.health)
         r.add_get("/ready", self.ready)
+        r.add_get("/api/whoami", self.whoami)
         r.add_get("/api/scenes", self.scenes)
         r.add_get("/api/program-preview.jpg", self.preview.program_preview)
         r.add_get("/api/program-live.mjpg", self.preview.program_live)
@@ -208,6 +327,19 @@ class Controller:
         r.add_post("/api/restart-output", self.restart_output)
         r.add_post("/api/stop-output", self.stop_output)
         r.add_post("/api/start-output", self.start_output)
+
+    async def whoami(self, request: web.Request) -> web.Response:
+        self.identity(request)
+        who: Identity = request["identity"]
+        return web.json_response(
+            {
+                "user": who.user,
+                "name": who.name,
+                "email": who.email,
+                "groups": list(who.groups),
+                "capabilities": sorted(self.capabilities(who)),
+            }
+        )
 
     # ------------------------------------------------------------------ health
     async def health(self, _: web.Request) -> web.Response:
@@ -574,8 +706,13 @@ class Controller:
         try:
             body = await request.json()
             healthy = body.get("healthy", not program_control)
-            if healthy and self.config.access.identity_header:
-                self.sender_user = self.identity(request)
+            if healthy and self.config.identity_active:
+                user = self.identity(request)
+                if user is None and program_control:
+                    raise web.HTTPForbidden(text="An authenticated sender is required")
+                self.sender_user = user
+        except web.HTTPException:
+            raise
         except Exception:
             healthy = not program_control
         self.sender_last_seen = datetime.now().timestamp() if healthy else 0

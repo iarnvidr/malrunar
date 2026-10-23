@@ -77,12 +77,12 @@ class Broll:
         return path if path.is_file() else None
 
     def user(self, request: web.Request | None) -> str | None:
-        """The b-roll owner. Only in program control, with an identity header configured, is b-roll per identity."""
+        """The b-roll owner. Only in program control, with identities configured (config.identity_active), is b-roll per identity."""
         if not self.ctl.config.per_identity_broll or not self.ctl.program_control:
             return None
         identity = self.ctl.identity(request) if request is not None else None
         if not identity:
-            raise web.HTTPBadRequest(text="An authenticated b-roll owner is required")
+            raise web.HTTPForbidden(text="An authenticated b-roll owner is required")
         return identity
 
     # ------------------------------------------------------------------ OBS
