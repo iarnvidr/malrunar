@@ -133,16 +133,16 @@ status=0; run -e MALRUNAR_MSTEAMS_MCP_BROWSER_CONTROL=bogus "$full" /opt/malruna
 [ "$status" = 78 ] || fail "a bad MALRUNAR_MSTEAMS_MCP_BROWSER_CONTROL should exit 78"
 
 echo '== unit tests inside the image: cookie mirror, device-code flow, expired-token refresh, protocol (node component, as the desktop user)'
-run -v "$here:/test:ro" "$full" bash -c 'cd /tmp && node --test /test/unit/*.test.mjs' || fail 'unit tests'
-run -v "$here:/test:ro" "$full" /test/unit/common.test.sh /opt/malrunar/msteams-mcp || fail 'common.sh tests'
+run -v "$here:/opt/malrunar/msteams-mcp/test:ro" "$full" bash -c 'cd /tmp && node --test /opt/malrunar/msteams-mcp/test/unit/*.test.mjs' || fail 'unit tests'
+run -v "$here:/opt/malrunar/msteams-mcp/test:ro" "$full" /opt/malrunar/msteams-mcp/test/unit/common.test.sh /opt/malrunar/msteams-mcp || fail 'common.sh tests'
 
 echo '== the patched package launches the real Playwright Firefox (headless, persistent profile)'
-run -v "$here:/test:ro" "$full" bash -c '
+run -v "$here:/opt/malrunar/msteams-mcp/test:ro" "$full" bash -c '
     set -e
     . /opt/malrunar/msteams-mcp/lib/common.sh
     ms_find_node; ms_find_playwright_firefox; ms_export_package_env
     export LOG_LEVEL=warn
-    node /test/e2e/playwright-launch.mjs
+    node /opt/malrunar/msteams-mcp/test/e2e/playwright-launch.mjs
 ' | tee "$work/pw.txt" || fail 'the Playwright Firefox did not start through the patched package'
 grep -q '"title":"patched firefox"' "$work/pw.txt" || fail 'the launched browser did not load the page'
 
@@ -168,14 +168,14 @@ echo "status exit $status: $(head -c 300 "$work/status.txt")"
 grep -qi 'session' "$work/status.txt" || fail 'status printed nothing about the session'
 
 echo '== sync-browser against a real Firefox profile (cookies.sqlite of the stock Firefox)'
-run -v "$here:/test:ro" "$full" /test/e2e/sync-test.sh || fail 'sync-browser test'
+run -v "$here:/opt/malrunar/msteams-mcp/test:ro" "$full" /opt/malrunar/msteams-mcp/test/e2e/sync-test.sh || fail 'sync-browser test'
 
 echo '== the visual browser MCP and `open`, with a virtual display and the real work browser'
 tools="malrunar-test/msteams-mcp-tools:$suffix"
 docker build --quiet --tag "$tools" --build-arg "CONSUMER=$full" --build-arg "APT_SNAPSHOT=$apt_snapshot" \
     --file "$here/consumer/tools.Dockerfile" "$here/consumer" >/dev/null
 variants+=("$tools")
-timeout -k 10 300 docker run --rm --entrypoint '' --user 1000:1000 -e HOME=/home/tester --shm-size 512m -v "$here:/test:ro" "$tools" /test/e2e/display-test.sh \
+timeout -k 10 300 docker run --rm --entrypoint '' --user 1000:1000 -e HOME=/home/tester --shm-size 512m -v "$here:/opt/malrunar/msteams-mcp/test:ro" "$tools" /opt/malrunar/msteams-mcp/test/e2e/display-test.sh \
     || fail 'browser-mcp / open test'
 run "$tools" /opt/malrunar/msteams-mcp/bin/malrunar-msteams-mcp check | grep -q 'browser-mcp tools: present' || fail 'check does not see the tools'
 echo 'msteams-mcp smoke passed'

@@ -27,7 +27,7 @@ pkill -u "$(id -u)" -f -- "-profile $profile" 2>/dev/null || true
 for _ in $(seq 1 30); do pgrep -u "$(id -u)" -f -- "-profile $profile" >/dev/null 2>&1 || break; sleep 0.5; done
 
 echo '== a session with a Microsoft cookie jar, written by the package itself'
-node - <<'NODE'
+node --input-type=module - <<'NODE'
 const PKG = process.env.MALRUNAR_MSTEAMS_MCP_PKG || '/opt/malrunar/msteams-mcp/app/dist';
 const { writeSessionState } = await import(`${PKG}/auth/session-store.js`);
 const exp = Math.floor(Date.now() / 1000) + 86400;
@@ -49,7 +49,7 @@ case "$out" in *'Mirroring 3 Microsoft cookies'*'DRY_RUN'*) ;; *) echo 'unexpect
 echo '== sync-browser writes the Microsoft cookies into the profile'
 out="$("$tool" sync-browser)"; echo "$out"
 case "$out" in *'SYNC_DONE wrote 3 Microsoft cookies'*) ;; *) echo 'unexpected sync output'; exit 1 ;; esac
-node - "$profile/cookies.sqlite" <<'NODE'
+node --input-type=module - "$profile/cookies.sqlite" <<'NODE'
 import { DatabaseSync } from 'node:sqlite';
 const db = new DatabaseSync(process.argv[2], { readOnly: true });
 const rows = db.prepare('SELECT name, value, host, expiry, isSecure, isHttpOnly, sameSite FROM moz_cookies ORDER BY name').all();
