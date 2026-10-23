@@ -74,9 +74,61 @@ program, so `docker run -e`, compose `environment:` or `ENV` are all that is nee
 | `MALRUNAR_TEAMS_SERVICE_REQUEST_GAP_MS` | `250` | Minimum gap between requests to Microsoft (one request at a time; interactive work goes first) |
 | `MALRUNAR_TEAMS_SERVICE_BACKUP_CRON` | `20 3 * * *` | PocketBase's backup schedule (the last two zips are kept); `off` leaves PocketBase's setting alone |
 | `MALRUNAR_TEAMS_SERVICE_LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` (JSON lines on stdout) |
+| `MALRUNAR_TEAMS_SERVICE_USER_HEADER`, `GROUPS_HEADER`, `NAME_HEADER`, `EMAIL_HEADER` | `Remote-User`, `Remote-Groups`, `Remote-Name`, `Remote-Email` | Names of the headers an authenticating proxy sets ("Behind an authenticating proxy") |
+| `MALRUNAR_TEAMS_SERVICE_TRUSTED_PROXIES` | none | Comma-separated addresses or CIDRs (IPv4 and IPv6) the proxy connects from |
+| `MALRUNAR_TEAMS_SERVICE_PROXY_SECRET_HEADER`, `MALRUNAR_TEAMS_SERVICE_PROXY_SECRET_FILE` | none | A header the proxy sets to a shared secret, and the file holding the secret (one per line, two at most). Set both or neither |
 | `MALRUNAR_TEAMS_SERVICE_NODE` | see Dependencies | The Node to run |
 | `MALRUNAR_TEAMS_SERVICE_MCP_DIST` | `/opt/malrunar/msteams-mcp/app/dist` | The `msteams-mcp` package's `dist/` |
 | `MALRUNAR_TEAMS_SERVICE_MCP_STATE_DIR` | `$HOME/.teams-mcp-server` | The directory the guard protects: where the package keeps its session (it is not configurable in the package, so leave it) |
+
+## Behind an authenticating proxy
+
+Authentication is external: put a reverse proxy that signs users in (Authelia, for example) in front of the
+service. The service reads who the user is from headers the proxy sets (names configurable, defaults are
+Authelia's): `Remote-User`, `Remote-Groups` (comma-separated), `Remote-Name`, `Remote-Email`. The bearer
+token stays required; the identity is additional.
+
+Today the identity is used for one thing: `GET /whoami` returns it (`user`, `name`, `email`, `groups`,
+`trusted`, `anonymous`) and the debug log names the user on each request line. The service holds one
+Teams account and has no per-user state, so there are no allow-lists and no request is rejected because of
+who made it. Richer use of the groups can be added later.
+
+Headers sent by anyone can say anything, so they count only from a trusted source:
+
+- `MALRUNAR_TEAMS_SERVICE_TRUSTED_PROXIES`: the connecting peer address (never `X-Forwarded-For`) must be in the list.
+- `MALRUNAR_TEAMS_SERVICE_PROXY_SECRET_HEADER` with `MALRUNAR_TEAMS_SERVICE_PROXY_SECRET_FILE`: the proxy must send the secret in that header. The file
+  has one secret per line (at least 16 characters; `#` comments and blank lines ignored). Two secrets are
+  accepted at once for a rotation: add the new one, change the proxy, then remove the old one. The file is
+  read again when it changes.
+- Both set: both must pass. Neither set: nothing is trusted, every request is anonymous and the service logs a
+  warning at start. A request that fails the check is not rejected, only anonymous.
+
+The secret and identity headers are never logged. A bad setting makes the service exit with status 78.
+
+Authelia with Traefik, with generic names: the `forwardAuth` middleware copies the identity headers from
+Authelia's reply, then a second `headers` middleware sets the secret after it (so a client cannot supply
+it and the identity headers are only ever Authelia's):
+
+```yaml
+http:
+  middlewares:
+    teams-authelia:
+      forwardAuth:
+        address: http://authelia:9091/api/authz/forward-auth
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Name, Remote-Email]
+    teams-proxy-secret:
+      headers:
+        customRequestHeaders:
+          X-Proxy-Secret: "<the secret in the file>"
+  routers:
+    teams:
+      rule: Host(`teams.example.org`)
+      middlewares: [teams-authelia, teams-proxy-secret]   # order matters
+      service: teams-service
+```
+
+with `MALRUNAR_TEAMS_SERVICE_PROXY_SECRET_HEADER=X-Proxy-Secret`, `MALRUNAR_TEAMS_SERVICE_PROXY_SECRET_FILE=/run/secrets/teams-proxy-secret` and, if
+the proxy has a fixed address, `MALRUNAR_TEAMS_SERVICE_TRUSTED_PROXIES=<its address or network>`.
 
 ## The HTTP API
 
@@ -85,6 +137,7 @@ Every route but `GET /health` needs `Authorization: Bearer <token>`. JSON in and
 | Route | What it does |
 |---|---|
 | `GET /health` | `{"ok": true}` |
+| `GET /whoami` | The proxy-supplied identity (see above); anonymous when nothing is trusted |
 | `GET /status` | Sign-in state (`auth.state`: `ok`, `signed-out`, ...), sync progress and counts |
 | `GET /chats`, `GET /chats/<id>`, `GET /chats/<id>/messages` | The local copy of chats and their messages (rendered to safe HTML, media and files resolved to cached copies) |
 | `GET /search` | Full-text search of the copy |
@@ -121,7 +174,7 @@ code needs to talk to Microsoft.
 ## Tests
 
 `test/` holds the unit tests (`node --test`): the sync, the PocketBase store (against the real binary
-the image ships), the HTTP server, the message renderer, the media cache, the calendar and the session
+the image ships), the HTTP server, the forward-auth identity (with the shared vectors), the message renderer, the media cache, the calendar and the session
 guard (against the real `msteams-mcp` package). The smoke test runs them inside the image with the `node`
 component. To run them from a checkout of this repository:
 `MALRUNAR_TEAMS_SERVICE_MCP_DIST=<a built msteams-mcp dist> MALRUNAR_TEAMS_SERVICE_TEST_PB_BIN=<binary> node --test teams-service/test/*.test.mjs`.

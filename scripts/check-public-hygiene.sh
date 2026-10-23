@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-names='g[i]nnungagap|rod[e]kors|r[e]d[ _-]?cross|[e]stho|[e]sben|\b[a]lice\b|t[a]ilscale|[a]uthelia|c[a]ll studio|v[d]o\.[n]inja'
+names='g[i]nnungagap|rod[e]kors|r[e]d[ _-]?cross|[e]stho|[e]sben|\b[a]lice\b|t[a]ilscale|c[a]ll studio'
 # Private network ranges and the carrier-grade NAT range VPNs use (the 100.64/10 block).
 addresses='\b192\.168\.[0-9]+\.[0-9]+|\b10\.[0-9]+\.[0-9]+\.[0-9]+|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+'
 status=0

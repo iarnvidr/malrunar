@@ -21,7 +21,7 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`guacd`](guacd/) | The Guacamole proxy daemon, as a container | guacd 1.6.0 built against FreeRDP 3, with an RDP GDI fix, listening on port 4822 |
 | [`guacamole-tunnel`](guacamole-tunnel/) | Several viewers in ONE remote desktop session | A small proxy in front of the Guacamole tunnel endpoints: a user's second viewer joins their running session instead of evicting the first. Its own container; it does not touch `guacd` |
 | [`tail-browser-mcp`](tail-browser-mcp/) | Letting an AI agent drive Firefox | The [Tail](https://github.com/rtf6x/tail-browser-mcp) MCP server, client and Firefox extension in `/opt/malrunar/tail-browser-mcp`. A `FROM scratch` layer you copy into your image |
-| [`office-convert`](office-convert/) | Turning Office documents into PDF | A small HTTP service around LibreOffice headless (Impress and Writer filters only, Liberation and Carlito fonts): `POST /convert` takes a .pptx, .ppt, .odp, .key, .docx, .doc or .odt and returns a PDF. One conversion at a time, no state, runs as uid 65534. It has no authentication: keep it on a trusted network. See [office-convert/README.md](office-convert/README.md) |
+| [`office-convert`](office-convert/) | Turning Office documents into PDF | A small HTTP service around LibreOffice headless (Impress and Writer filters only, Liberation and Carlito fonts): `POST /convert` takes a .pptx, .ppt, .odp, .key, .docx, .doc or .odt and returns a PDF. One conversion at a time, no state, runs as uid 65534. It has no authentication of its own: keep it on a trusted network or behind an authenticating proxy. See [office-convert/README.md](office-convert/README.md) |
 | [`media-bridge`](media-bridge/) | An OBS-driven virtual camera and microphone for any call app in the desktop | A receiver that turns an MPEG-TS/UDP stream into a v4l2loopback camera and a PipeWire microphone, plus host setup, supervisord/systemd examples and audio/browser helpers in `/opt/malrunar/media-bridge`. A `FROM scratch` layer you copy into your image |
 | [`node`](node/) | A Node.js runtime in any image | Node.js 24 LTS, the unmodified nodejs.org release, in `/opt/malrunar/node`. A `FROM scratch` layer you copy into your image; it depends on nothing |
 | [`work-browser`](work-browser/) | A persistent Firefox for the desktop user | A launcher, an open-URL helper and a supervisord program for the unmodified Firefox of `desktop-base`, with the profile, preferences and policies supplied by you. A `FROM scratch` layer; it needs `desktop-base` only |
@@ -118,6 +118,24 @@ Configuration is a TOML file or `MALRUNAR_OBS_*` variables; the API, the compati
 the controller it came from, and the plugin interface are in
 [docs/obs-control-api.md](docs/obs-control-api.md). The end-to-end test that runs exactly this chain
 (OBS to the bridge, with audio checked at the virtual microphone) is `obs-control/test/e2e/`.
+
+The camera `url` can be any web camera page, for example a VDO.Ninja view link
+(`https://vdo.ninja/?view=<stream-id>&cleanoutput`).
+
+#### Behind an authenticating proxy
+
+obs-control, `guacamole-tunnel`, `teams-service` and `office-convert` do no authentication themselves. The contract is the same in each:
+
+- An authenticating reverse proxy (for example Authelia behind Traefik forward-auth; any gateway works) names the user in headers: `Remote-User`, `Remote-Groups`, `Remote-Name`, `Remote-Email` by default, all configurable.
+- The headers are trusted only when the request provably came from the proxy: its address is in a trusted CIDR list, and/or it sends a shared secret header (secret read from a file, two allowed while rotating); with both configured, both must pass.
+- With neither configured nothing is trusted, every request is anonymous, and the component logs a warning at start.
+- The identity is used for per-user ownership today (obs-control, `guacamole-tunnel`) or only logged (`office-convert`); richer group rules can build on it later.
+- All four share one module, `tools/identity/` (vendored into each component by `scripts/sync-identity.sh`), so the rules and the test vectors are identical.
+
+Setup, variables and a Traefik example: [obs-control](docs/obs-control-api.md#behind-an-authenticating-proxy),
+[guacamole-tunnel](guacamole-tunnel/README.md#behind-an-authenticating-proxy),
+[teams-service](teams-service/README.md#behind-an-authenticating-proxy),
+[office-convert](office-convert/README.md#behind-an-authenticating-proxy).
 
 ### Firefox
 
