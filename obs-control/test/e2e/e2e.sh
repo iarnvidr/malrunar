@@ -42,8 +42,10 @@ fail() { echo "obs-control e2e failed: $*" >&2; exit 1; }
 step() { echo "== $*"; }
 [ -d "$root/media-bridge/test/consumer" ] || fail 'media-bridge/test/consumer is missing (the e2e reuses its desktop image recipe)'
 
+secret_tar=""
 cleanup() {
     status=$?
+    [ -z "$secret_tar" ] || rm -f "$secret_tar"
     if [ "$status" -ne 0 ]; then
         for name in obs desktop; do
             echo "--- logs: $name" >&2
@@ -135,9 +137,23 @@ timeout -k 10 120 docker create --name "$id-obs" --network "$id" --network-alias
     "$obs_image" >/dev/null
 put_dir "$id-obs" "$here" /e2e
 # Replace generic directory-copy metadata with the exact secret ownership/mode before startup.
-# The image runs as obs uid 1000; doing this after start races the loader's startup validation.
-tar -C "$here" --owner=1000 --group=1000 --mode=0600 --transform='s,^,e2e/,' -cf - proxy-secret | docker cp - "$id-obs:/"
-docker exec --user 0 "$id-obs" sh -c 'test "$(stat -c %a /e2e/proxy-secret)" = 600 && test "$(stat -c %u /e2e/proxy-secret)" = 1000' || fail 'proxy secret ownership/mode is incorrect before startup'
+# Validate the archive locally: docker exec cannot run against a CREATED container.
+secret_tar="$(mktemp)"
+tar -C "$here" --owner=1000 --group=1000 --mode=0600 --transform='s,^,e2e/,' -cf "$secret_tar" proxy-secret
+python3 - "$secret_tar" <<'PY'
+import sys, tarfile
+with tarfile.open(sys.argv[1], "r:") as archive:
+    members = [m for m in archive.getmembers() if m.name == "e2e/proxy-secret"]
+    assert len(members) == 1, "proxy secret archive member is missing or duplicated"
+    member = members[0]
+    assert (member.uid, member.gid, member.mode) == (1000, 1000, 0o600), (
+        f"proxy secret archive metadata is uid={member.uid} gid={member.gid} mode={member.mode:o}"
+    )
+PY
+[ "$?" -eq 0 ] || fail 'proxy secret archive ownership/mode is incorrect'
+docker cp - "$id-obs:/" < "$secret_tar"
+rm -f "$secret_tar"
+secret_tar=""
 timeout -k 10 120 docker start "$id-obs" >/dev/null
 ready=false
 for _ in $(seq 1 120); do
