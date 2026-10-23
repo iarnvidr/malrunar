@@ -58,6 +58,8 @@ IMAGES = {
     "node": None,
     "work-browser": None,
     "session-kit": None,
+    "thunderbird": None,
+    "thunderbird-mcp": None,
     "msteams-mcp": None,
     "teams-service": None,
 }
@@ -67,6 +69,8 @@ TESTED_WITH = {
     "media-bridge": ("desktop-base",),
     "work-browser": ("desktop-base",),
     "session-kit": ("desktop-base", "work-browser"),
+    "thunderbird": ("desktop-base",),
+    "thunderbird-mcp": ("desktop-base", "node", "thunderbird"),
     "msteams-mcp": ("desktop-base", "node", "work-browser"),
     "teams-service": ("desktop-base", "node", "msteams-mcp"),
 }

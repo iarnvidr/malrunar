@@ -1,6 +1,6 @@
 # Conventions
 
-Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, tail-browser-mcp, media-bridge, office-convert, node, work-browser, session-kit, msteams-mcp, teams-service) has:
+Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, tail-browser-mcp, media-bridge, office-convert, node, work-browser, session-kit, thunderbird, thunderbird-mcp, msteams-mcp, teams-service) has:
 
 - `<image>/Dockerfile`: build context is `<image>/` only (copy nothing from outside it).
 - `<image>/pins.env`: `KEY=VALUE` lines, passed as `--build-arg`. Must define `VERSION` (the human tag).
@@ -49,7 +49,7 @@ Signature and certificate verification are never disabled.
         malrunar_retry malrunar_apt install -y --no-install-recommends <packages>; \
         malrunar_snapshot_disable
 
-Component images (`tail-browser-mcp`, `media-bridge`, `node`, `work-browser`, `session-kit`, `msteams-mcp`, `teams-service`) are `FROM scratch` and
+Component images (`tail-browser-mcp`, `media-bridge`, `node`, `work-browser`, `session-kit`, `thunderbird`, `thunderbird-mcp`, `msteams-mcp`, `teams-service`) are `FROM scratch` and
 hold only `/opt/malrunar/<component>` (and, for a supervisord program, the one fragment described
 below); consumers add them with `COPY --link --from=<image> / /`. A component that needs a runtime
 from `desktop-base` (ffmpeg, PipeWire tools, Firefox) documents that and is smoke-tested in a consumer
@@ -67,6 +67,17 @@ one pulls in. A component therefore:
   it (exit status 78, "configuration error");
 - reads settings only from `MALRUNAR_<COMPONENT>_*` variables: no user, path, secret or host name is
   built in, and a missing setting that cannot have a default is reported by name.
+
+### Components that carry other people's trademarked software
+
+A component that ships a Mozilla build (`desktop-base`'s Firefox, `thunderbird`) ships it exactly as
+Mozilla builds it: the download is verified (sha256 pinned, and the PGP-signed checksum file where the
+vendor publishes one) and unpacked as it is, the latest stable release is what the pin tracks, and
+the component records the checksums of what it unpacked so a test can prove nothing changed. Anything
+that edits, patches or extends it (policies, add-ons, `omni.ja` edits) is a script and its patch files
+under `<component>/consumer/`, with a documented Dockerfile snippet, applied at the consumer's own build.
+The component's smoke test applies it to a copy in a throwaway image, checks it works and that only the
+intended files differ, and never publishes that image.
 
 ### supervisord programs of components
 

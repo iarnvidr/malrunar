@@ -19,7 +19,7 @@ if git grep -nIE '\bC[A]LL_[A-Z0-9_]+|\bR[K]_[A-Z0-9_]+' -- . ':!LICENSE'; then 
 # 365 data has, so a fixture copied from a real chat, calendar or token fails here whoever it belongs to.
 # Fixtures use obviously synthetic values: example.invalid addresses, GUIDs built from one or two repeated
 # digits, contoso.sharepoint.com (Microsoft's own fictional tenant).
-tracked_text() { git grep -noIE "$1" -- . ':!LICENSE' ':!*package-lock.json' ':!*go.sum' "${@:2}" || true; }
+tracked_text() { git grep -noIE "$1" -- . ':!LICENSE' ':!*package-lock.json' ':!*go.sum' ':!*.asc' "${@:2}" || true; }
 # 1. GUIDs: only synthetic ones (at most two distinct hex digits, like 11111111-1111-... or 00000001-0000-...)
 #    and the public identifiers listed here: the Microsoft first-party applications the code talks to (Teams
 #    web client, Teams desktop client, Microsoft Graph) and one random namespace constant in obs-control.
@@ -31,10 +31,11 @@ guids="$(tracked_text '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
           for (i = 1; i <= length(digits); i++) { c = substr(digits, i, 1); if (!(c in seen)) { seen[c] = 1; distinct++ } }
           if (distinct > 2 && !(value in allowed)) print }')"
 if [ -n "$guids" ]; then echo "$guids"; echo 'GUIDs that are neither synthetic nor a listed public identifier (use 11111111-1111-1111-1111-111111111111 style values)' >&2; status=1; fi
-# 2. Mail addresses: only reserved or example domains. (File names such as logo@2x.png and the Teams
-#    identifier suffixes after a thread id are not addresses.)
+# 2. Mail addresses: only reserved or example domains. (File names such as logo@2x.png, the Teams
+#    identifier suffixes after a thread id and the public identifiers of the Thunderbird add-ons, which
+#    look like addresses, are not addresses; PGP key files (*.asc) carry their owners' addresses.)
 mails="$(tracked_text '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}' \
-    | grep -viE '@([a-z0-9-]+\.)*(example\.(org|com|net|invalid)|[a-z0-9-]+\.invalid|example|invalid|test|localhost)$|@[0-9]x\.(png|jpg|svg)$|@(unq\.gbl\.spaces|thread\.(v2|tacv2?|skype))$|@users\.noreply\.github\.com$|@(thread|tail)\.' || true)"
+    | grep -viE '@([a-z0-9-]+\.)*(example\.(org|com|net|invalid)|[a-z0-9-]+\.invalid|example|invalid|test|localhost)$|@[0-9]x\.(png|jpg|svg)$|@(unq\.gbl\.spaces|thread\.(v2|tacv2?|skype))$|@users\.noreply\.github\.com$|@(thread|tail)\.|^[^:]*:[0-9]+:(thunderbird-mcp@tkasperczyk\.dev|(eas4)?tbsync@jobisoft\.de)$' || true)"
 if [ -n "$mails" ]; then echo "$mails"; echo 'mail addresses on domains that are not example or reserved ones (use user@example.invalid)' >&2; status=1; fi
 # 3. Microsoft tenant host names (a tenant name in front of sharepoint.com or onmicrosoft.com) other than the fictional contoso.
 tenants="$(tracked_text '[A-Za-z0-9-]+\.(sharepoint|onmicrosoft)\.com' | grep -viE '(^|[^A-Za-z0-9-])contoso(-[a-z0-9]+)?\.(sharepoint|onmicrosoft)\.com' || true)"

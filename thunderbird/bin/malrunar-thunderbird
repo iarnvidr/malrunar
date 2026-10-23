@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Keep Thunderbird running on a persistent profile (meant for supervisord).
+# Runs the unmodified Thunderbird of this component; policies, add-ons and preferences come from the
+# consumer (see ../README.md). Settings are MALRUNAR_THUNDERBIRD_* environment variables.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "$here/../lib/common.sh"
+
+tb_drop_privileges "${BASH_SOURCE[0]}" "$@"
+if [ "${MALRUNAR_THUNDERBIRD_ENABLED:-1}" = 0 ]; then
+    tb_log 'MALRUNAR_THUNDERBIRD_ENABLED=0: not starting Thunderbird'
+    exit 0
+fi
+tb_require_runtime
+retry="${MALRUNAR_THUNDERBIRD_RETRY_SECONDS:-10}"
+pid_file="${MALRUNAR_THUNDERBIRD_PID_FILE:-}"
+profile="$(tb_profile_dir)"
+
+extra_args=()
+if [ -n "${MALRUNAR_THUNDERBIRD_ARGS:-}" ]; then
+    read -r -a extra_args <<< "$MALRUNAR_THUNDERBIRD_ARGS"
+fi
+
+tb_pid=""
+stop() {
+    [ -z "$tb_pid" ] || kill "$tb_pid" 2>/dev/null || true
+    [ -z "$pid_file" ] || rm -f "$pid_file"
+    exit 0
+}
+trap stop TERM INT
+
+while true; do
+    if ! display="$(tb_find_display)"; then
+        tb_log "no X display answers yet (is the desktop session up?); retrying in ${retry}s"
+        sleep "$retry" & wait $!
+        continue
+    fi
+    if [ "$display" = none ]; then
+        unset DISPLAY
+        export MOZ_HEADLESS=1
+    else
+        export DISPLAY="$display"
+    fi
+    tb_prepare_profile
+    tb_clean_stale_profile "$profile"
+
+    tb_log "starting Thunderbird ($TB_APP/thunderbird) on profile $profile, display ${display}"
+    # --no-remote: never hand the start over to some other Thunderbird that answers on the same display
+    "$TB_APP/thunderbird" --no-remote --profile "$profile" ${extra_args[@]+"${extra_args[@]}"} &
+    tb_pid=$!
+    if [ -n "$pid_file" ]; then
+        mkdir -p "$(dirname "$pid_file")"
+        printf '%s\n' "$tb_pid" > "$pid_file"
+    fi
+    status=0
+    wait "$tb_pid" || status=$?
+    tb_pid=""
+    [ -z "$pid_file" ] || rm -f "$pid_file"
+    tb_log "Thunderbird exited (status $status); starting it again in ${retry}s"
+    sleep "$retry" & wait $!
+done

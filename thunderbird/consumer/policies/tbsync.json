@@ -1,0 +1,16 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "tbsync@jobisoft.de": {
+        "installation_mode": "normal_installed",
+        "install_url": "file:///opt/malrunar/thunderbird-addons/tbsync.xpi",
+        "updates_disabled": true
+      },
+      "eas4tbsync@jobisoft.de": {
+        "installation_mode": "normal_installed",
+        "install_url": "file:///opt/malrunar/thunderbird-addons/eas4tbsync.xpi",
+        "updates_disabled": true
+      }
+    }
+  }
+}

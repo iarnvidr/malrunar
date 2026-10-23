@@ -1,0 +1,14 @@
+{
+  "tbsync": {
+    "url": "https://addons.thunderbird.net/thunderbird/downloads/file/1040395/tbsync-4.16-tb.xpi",
+    "sha256": "60aba312770e5a49dcedfb8db67cb57a9f8daf12ffd49dca2d7ed1af825bbcbb",
+    "id": "tbsync@jobisoft.de",
+    "licence": "MPL-2.0"
+  },
+  "eas4tbsync": {
+    "url": "https://addons.thunderbird.net/thunderbird/downloads/file/1046520/provider_fur_exchange_activesync-4.18-tb.xpi",
+    "sha256": "2923e13adbcc2fadfe6fe4fa65f01c43b1782765ff2ed3cf125515e2df47584d",
+    "id": "eas4tbsync@jobisoft.de",
+    "licence": "MPL-2.0"
+  }
+}

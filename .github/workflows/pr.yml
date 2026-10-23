@@ -34,6 +34,9 @@ jobs:
           (cd work-browser/bin && shellcheck --severity=warning -x malrunar-work-browser malrunar-work-browser-open)
           bash -n session-kit/bin/malrunar-session
           (cd session-kit/bin && shellcheck --severity=warning -x malrunar-session)
+          bash -n thunderbird/bin/malrunar-thunderbird thunderbird-mcp/bin/malrunar-thunderbird-mcp
+          (cd thunderbird/bin && shellcheck --severity=warning -x malrunar-thunderbird)
+          shellcheck --severity=warning thunderbird-mcp/bin/malrunar-thunderbird-mcp
           bash -n msteams-mcp/bin/malrunar-msteams-mcp teams-service/bin/malrunar-teams-service
           (cd msteams-mcp/bin && shellcheck --severity=warning -x malrunar-msteams-mcp)
           (cd teams-service/bin && shellcheck --severity=warning -x malrunar-teams-service)
@@ -53,6 +56,8 @@ jobs:
         run: work-browser/test/launcher-test.sh
       - name: session-kit unit tests (stand-in X tools; no X server)
         run: python3 -m unittest discover -s session-kit/test -v
+      - name: thunderbird consumer tools (customize.py and the OAuth patch against a stand-in installation)
+        run: python3 -I -m unittest discover -s thunderbird/test -v
       - name: msteams-mcp shell helpers (settings, log level, profile paths, stand-in supervisorctl)
         run: msteams-mcp/test/unit/common.test.sh
       - name: Content hashes are computable and stable
@@ -80,6 +85,8 @@ jobs:
       media_bridge: ${{ steps.plan.outputs.media_bridge }}
       work_browser: ${{ steps.plan.outputs.work_browser }}
       session_kit: ${{ steps.plan.outputs.session_kit }}
+      thunderbird: ${{ steps.plan.outputs.thunderbird }}
+      thunderbird_mcp: ${{ steps.plan.outputs.thunderbird_mcp }}
       msteams_mcp: ${{ steps.plan.outputs.msteams_mcp }}
       teams_service: ${{ steps.plan.outputs.teams_service }}
       obs_control_e2e: ${{ steps.plan.outputs.obs_control_e2e }}
@@ -280,6 +287,84 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh session-kit
+
+  # thunderbird is a FROM scratch component holding Mozilla's unmodified Thunderbird; it is tested inside a
+  # desktop built on desktop-base (test/consumer), under supervisord, and the consumer-side changes
+  # (customize.py) are applied to a copy in a throwaway image that is never pushed. The node component is
+  # built for the OAuth module test only. The published desktop-base with the current content hash is pulled
+  # when it exists, and built from this checkout when it does not.
+  thunderbird:
+    needs: [scripts, plan]
+    if: needs.plan.outputs.thunderbird == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build the component and node (the OAuth module test runs under it)
+        run: |
+          scripts/build.sh thunderbird --load
+          scripts/build.sh node --load
+      - name: Get desktop-base (published image if it exists, else build it)
+        run: |
+          set -eu
+          hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
+          ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
+          if docker pull --quiet "$ref"; then
+            echo "using published $ref"
+          else
+            echo "$ref is not published; building desktop-base from this checkout"
+            scripts/build.sh desktop-base --load
+            ref="malrunar/desktop-base:h-$hash"
+          fi
+          echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
+      - name: Smoke-test
+        run: scripts/smoke.sh thunderbird
+
+  # thunderbird-mcp is a FROM scratch component. Its smoke test needs the node component (its declared
+  # dependency) and, for the end-to-end part only, desktop-base and the thunderbird component.
+  thunderbird-mcp:
+    needs: [scripts, plan]
+    if: needs.plan.outputs.thunderbird_mcp == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build the component, node and thunderbird
+        run: |
+          scripts/build.sh thunderbird-mcp --load
+          scripts/build.sh node --load
+          scripts/build.sh thunderbird --load
+      - name: Get desktop-base (published image if it exists, else build it)
+        run: |
+          set -eu
+          hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
+          ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
+          if docker pull --quiet "$ref"; then
+            echo "using published $ref"
+          else
+            echo "$ref is not published; building desktop-base from this checkout"
+            scripts/build.sh desktop-base --load
+            ref="malrunar/desktop-base:h-$hash"
+          fi
+          echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
+      - name: Smoke-test
+        run: scripts/smoke.sh thunderbird-mcp
 
   # msteams-mcp is a FROM scratch component for desktop-base; it declares the node and work-browser components as
   # its dependencies. Its smoke test builds consumers with each of them missing (status 78 and a message that
