@@ -19,6 +19,8 @@ A plugin may define any of these functions (all optional):
     ``on_cleanup``, use ``controller.obs(...)`` for obs-websocket requests, claim the program with
     ``controller.add_program_holder(...)`` and extend ``/ready`` with
     ``controller.add_ready_info(...)``. See docs/obs-control-api.md.
+
+Built in and optional: ``malrunar_obs.takes`` (also switched on by ``[features] takes = true``).
 """
 from __future__ import annotations
 
@@ -51,7 +53,12 @@ def _load_file(path: Path) -> ModuleType:
     return module
 
 
+BUILTIN_TAKES = "malrunar_obs.takes"
+
+
 def load_plugins(config: Config) -> list[ModuleType]:
+    """Load the configured plugins. The built-in ones are optional: ``features.takes`` is shorthand for
+    listing ``malrunar_obs.takes`` in ``plugins.modules``; nothing is loaded by default."""
     modules: list[ModuleType] = []
     directory = config.plugins.dir
     if directory:
@@ -63,7 +70,10 @@ def load_plugins(config: Config) -> list[ModuleType]:
         for path in sorted(folder.glob("*.py")):
             if not path.name.startswith("_"):
                 modules.append(_load_file(path))
-    for entry in config.plugins.modules:
+    entries = list(config.plugins.modules)
+    if config.features.takes and BUILTIN_TAKES not in entries:
+        entries.insert(0, BUILTIN_TAKES)
+    for entry in entries:
         if entry.endswith(".py") or "/" in entry:
             path = Path(entry)
             if not path.is_file():

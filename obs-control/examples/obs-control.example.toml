@@ -71,6 +71,7 @@ program_control = false       # /api/call/* gates, clip playback and deletion, i
 video_profiles = false        # /api/call/video-profile (needs program_control)
 sender_lease = true           # require sender heartbeats (POST /api/sender-heartbeat)
 mode_label = "program-control"  # the "mode" reported by /ready in program control
+takes = false                 # the built-in takes plugin (record ahead, assemble, play); same as plugins.modules = ["malrunar_obs.takes"]
 
 [sender]
 lease_seconds = 12
@@ -142,3 +143,14 @@ dir = ""                      # every *.py in this directory is loaded; MALRUNAR
 # Settings for a plugin live under [plugin.<name>] and are available as config.plugin["<name>"].
 # [plugin.example]
 # anything = "your plugin defines this"
+
+# The built-in takes plugin (features.takes = true) reads [plugin.takes]; every key is optional.
+# [plugin.takes]
+# scene = "Take Studio"
+# camera_url = ""              # empty: the first camera's URL (camera_url_file: a file holding it)
+# width = 1920
+# height = 1080
+# max_take_seconds = 1800
+# max_upload_mb = 25
+# max_pdf_pages = 100
+# check_camera = true          # refuse to record while the take camera picture is black

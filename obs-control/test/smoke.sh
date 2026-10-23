@@ -2,7 +2,9 @@
 # Smoke test for the obs-control image: scripts/smoke.sh obs-control [image-ref]
 # Runs the unit tests inside the image, then starts the image with a sample config and checks that
 # OBS starts under Xvfb, the generated scenes exist, the API answers, the program preview is a
-# JPEG and the output stream carries H.264 and AAC.
+# JPEG and the output stream carries H.264 and AAC. The sample config also enables the takes plugin:
+# upload slides (PNG and a PDF), arm, record a short take from the test card, assemble it with a slide
+# and play the result into the program.
 set -euo pipefail
 image="${1:?usage: smoke.sh <image-ref>}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,6 +18,7 @@ name="obs-control-smoke-$$"
 cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 exec_in() { timeout -k 10 120 docker exec "$name" "$@"; }
+json() { python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
 api() { exec_in curl -fsS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
 # Like api, but also returns the body of an error status (/health answers 503 while the output is off).
 api_any() { exec_in curl -sS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
@@ -115,6 +118,91 @@ exec_in test -s /tmp/out.ts.done || { exec_in cat /tmp/capture.log >&2 || true; 
 streams="$(exec_in ffprobe -v error -show_entries stream=codec_name,codec_type -of csv=p=0 /tmp/out.ts)"
 printf '%s\n' "$streams" | grep -q '^h264,video' || { echo "$streams" >&2; fail 'no H.264 video in the output'; }
 printf '%s\n' "$streams" | grep -q '^aac,audio' || { echo "$streams" >&2; fail 'no AAC audio in the output'; }
+
+echo '== takes: slides (PNG and PDF), arm, record a take from the test card, assemble, play into the program'
+# The output goes to a closed UDP port once the capture above is done; keep a receiver on it.
+exec_in bash -c 'nohup python3 /test/udp-drain.py 18096 >/dev/null 2>&1 &' || fail 'drain start'
+api /api/takes/status | grep -q '"armed": false' || fail 'takes status (plugin not loaded?)'
+exec_in bash -c '
+    set -e
+    ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i color=c=0x2060a0:size=800x450 -frames:v 1 /tmp/slide.png
+    python3 /test/make-pdf.py 2 /tmp/slides.pdf
+    echo "not an image" > /tmp/notes.txt
+' || fail 'could not create slide files'
+upload() { exec_in curl -sS --max-time 60 -w '\n%{http_code}' -F "name=$2" -F "file=@$1" http://127.0.0.1:18095/api/takes/slides; }
+png="$(upload /tmp/slide.png Picture)"
+[ "$(printf '%s' "$png" | tail -n 1)" = 201 ] || { echo "$png" >&2; fail 'PNG slide upload'; }
+deck="$(printf '%s' "$png" | head -n -1 | json 'd["slides"]["id"]')" || fail 'PNG upload response'
+pdf="$(upload /tmp/slides.pdf Pages)"
+[ "$(printf '%s' "$pdf" | tail -n 1)" = 201 ] || { echo "$pdf" >&2; fail 'PDF slide upload (pdftoppm)'; }
+[ "$(printf '%s' "$pdf" | head -n -1 | json 'd["slides"]["pages"]')" = 2 ] || { echo "$pdf" >&2; fail 'the PDF did not become two slides'; }
+text="$(upload /tmp/notes.txt Notes)"
+[ "$(printf '%s' "$text" | tail -n 1)" = 415 ] || { echo "$text" >&2; fail 'a text file was accepted as a slide'; }
+api "/api/takes/slides/$deck/1" -o /tmp/slide-back.png || fail 'slide picture route'
+exec_in bash -c 'head -c 4 /tmp/slide-back.png | od -An -tx1 | tr -d " \n" | grep -q "^89504e47"' || fail 'the slide picture is not a PNG'
+
+api /api/takes/arm -X POST -H 'Content-Type: application/json' \
+    -d "{\"layout\": \"pip\", \"slide\": {\"deck_id\": \"$deck\", \"page\": 1}}" | grep -q '"armed": true' || fail 'arm'
+healthy=false
+for _ in $(seq 1 30); do
+    if api_any /health 2>/dev/null | grep -qF '"scene": "Take Studio"'; then healthy=true; break; fi
+    sleep 1
+done
+[ "$healthy" = true ] || fail 'the take scene is not on the program'
+healthy=false
+for _ in $(seq 1 30); do
+    if api_any /health 2>/dev/null | grep -q '"healthy": true'; then healthy=true; break; fi
+    sleep 2
+done
+[ "$healthy" = true ] || { docker logs "$name" 2>&1 | tail -n 30 >&2; fail 'the program output did not come back after the canvas change'; }
+api /api/takes/layout -X POST -H 'Content-Type: application/json' -d '{"layout": "camera"}' | grep -q '"layout": "camera"' || fail 'layout'
+started=false
+for _ in $(seq 1 30); do   # the camera page needs a moment before its picture is not black
+    if api_any /api/takes/start -X POST -H 'Content-Type: application/json' -d '{"take_id": "smoke-take"}' | grep -q '"take_id": "smoke-take"'; then started=true; break; fi
+    sleep 2
+done
+[ "$started" = true ] || { docker logs "$name" 2>&1 | tail -n 30 >&2; fail 'the take did not start'; }
+sleep 7
+take="$(api /api/takes/stop -X POST)" || fail 'stop take'
+printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail 'the take has no audio stream'; }
+take_file=/config/recordings/takes/shared/takes/smoke-take.mp4
+streams="$(exec_in ffprobe -v error -show_entries stream=codec_name,codec_type,width,height -of csv=p=0 "$take_file")" || fail 'probe take'
+printf '%s\n' "$streams" | grep -q '^h264,video,1920,1080\|^h264,1920,1080,video' || { echo "$streams" >&2; fail 'the take is not 1080p H.264'; }
+printf '%s\n' "$streams" | grep -q 'aac' || { echo "$streams" >&2; fail 'the take has no AAC audio'; }
+api /api/takes/library | grep -qF '"take_id": "smoke-take"' || fail 'the take is not in the library'
+
+job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"Smoke video\", \"items\": [
+    {\"type\": \"take\", \"take_id\": \"smoke-take\", \"start\": 1, \"end\": 4},
+    {\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 2}]}")" || fail 'assemble'
+job_id="$(printf '%s' "$job" | json 'd["job"]["job_id"]')"
+state=running
+for _ in $(seq 1 60); do
+    result="$(api "/api/takes/jobs/$job_id")"
+    state="$(printf '%s' "$result" | json 'd["job"]["state"]')"
+    [ "$state" = running ] || break
+    sleep 2
+done
+[ "$state" = "done" ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
+clip_id="$(printf '%s' "$result" | json 'd["job"]["clip"]["id"]')"
+clip_scene="$(printf '%s' "$result" | json 'd["job"]["clip"]["scene_name"]')"
+clip_streams="$(exec_in ffprobe -v error -show_entries stream=codec_name,codec_type,width,height -of csv=p=0 "/config/recordings/$clip_id.mp4")"
+printf '%s\n' "$clip_streams" | grep -q 'h264' || { echo "$clip_streams" >&2; fail 'the assembled clip has no H.264 video'; }
+printf '%s\n' "$clip_streams" | grep -q 'aac' || { echo "$clip_streams" >&2; fail 'the assembled clip has no AAC audio'; }
+api /api/clips | grep -qF "\"$clip_id\"" || fail 'the assembled clip is not in the clip library'
+
+api /api/takes/disarm -X POST | grep -q '"armed": false' || fail 'disarm'
+api /api/scene/live -X POST >/dev/null || fail 'back to the camera scene'
+healthy=false
+for _ in $(seq 1 30); do
+    if api_any /health 2>/dev/null | grep -q '"healthy": true'; then healthy=true; break; fi
+    sleep 2
+done
+[ "$healthy" = true ] || fail 'the program output did not come back after leaving take mode'
+api "/api/clip/$clip_id/scene" -X POST | grep -q '"ok": true' || fail 'playing the assembled clip into the program'
+[ "$(api_any /health | json 'd["scene"]')" = "$clip_scene" ] || fail 'the program scene is not the assembled clip'
+sleep 3
+exec_in bash -c 'curl -fsS --max-time 30 -o /tmp/take-preview.jpg http://127.0.0.1:18095/api/program-preview.jpg && test "$(stat -c %s /tmp/take-preview.jpg)" -gt 500' || fail 'program preview of the assembled clip'
+api /api/takes/status | grep -q '"armed": false' || fail 'take mode is still armed'
 
 echo '== output control and clean shutdown'
 api /api/stop-output -X POST | grep -q '"ok": true' || fail 'stop-output'

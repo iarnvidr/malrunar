@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- A second test card for the takes plugin's own camera: a 660 Hz tone and a different picture. Used by e2e.sh. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>test card</title>
+<style>html, body { margin: 0; background: #000; overflow: hidden; } canvas { display: block; width: 100vw; height: 100vh; }</style>
+</head>
+<body>
+<canvas id="c" width="640" height="360"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const g = canvas.getContext('2d');
+let frame = 0;
+function draw() {
+  frame += 1;
+  g.fillStyle = '#503010'; g.fillRect(0, 0, 640, 360);
+  g.fillStyle = '#42f5b9'; g.fillRect((frame * 4) % 600, 150, 40, 60);
+  g.fillStyle = '#fff'; g.font = '32px sans-serif'; g.fillText('malrunar take camera  ' + frame, 20, 60);
+  requestAnimationFrame(draw);
+}
+draw();
+try {
+  const audio = new AudioContext();
+  const tone = audio.createOscillator();
+  const level = audio.createGain();
+  tone.frequency.value = 660; level.gain.value = 0.2;
+  tone.connect(level).connect(audio.destination); tone.start();
+} catch (e) { /* no audio available */ }
+</script>
+</body>
+</html>

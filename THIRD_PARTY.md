@@ -85,6 +85,10 @@ two libraries installed from the pinned Ubuntu snapshot, with their dependencies
   permissive licence).
 - `python3-websockets` (BSD-3-Clause).
 
+The image also installs `poppler-utils` (GPL-2.0-or-later; `pdftoppm` and `pdfinfo`, with its libraries and their
+`copyright` files) from the same snapshot. The optional takes plugin runs it as a separate program to render the
+pages of an uploaded PDF; nothing is linked.
+
 It drives OBS Studio through obs-websocket, which is part of the OBS Studio package above
 (GPL-2.0-or-later). The controller talks to OBS over a local WebSocket and links none of its code. The
 automatic b-roll and clip features run the `ffmpeg` and `ffprobe` of `desktop-base`.

@@ -21,3 +21,7 @@ url = "udp://127.0.0.1:18096?pkt_size=1316"
 [obs]
 profile = "smoke"
 collection = "smoke"
+
+# The built-in takes plugin (record ahead, assemble, play); its camera is the test card above.
+[features]
+takes = true
