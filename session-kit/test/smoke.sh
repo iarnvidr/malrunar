@@ -180,6 +180,7 @@ cat > /tmp/session.sh <<'SESSION'
 #!/usr/bin/env bash
 set -euo pipefail
 kit=/opt/malrunar/session-kit/bin/malrunar-session
+trap 'echo "-- failed; window helper output:"; cat /tmp/w1.out /tmp/w2.out /tmp/xfwm4.out 2>&1 | head -40; xwininfo -root -tree 2>&1 | head -40' ERR
 xfwm4 --compositor=off > /tmp/xfwm4.out 2>&1 &
 for _ in $(seq 1 60); do xdotool get_desktop >/dev/null 2>&1 && break; sleep 1; done
 xdotool get_desktop >/dev/null || { echo 'no window manager'; cat /tmp/xfwm4.out; exit 1; }
@@ -208,7 +209,7 @@ cat /tmp/e
 echo 'workspaces, placement and check ok'
 SESSION
 chmod +x /tmp/session.sh
-dbus-run-session -- /tmp/session.sh || { cat /tmp/xvfb.out; exit 1; }
+dbus-run-session -- bash -x /tmp/session.sh || { cat /tmp/xvfb.out; exit 1; }
 XTEST
 chmod 755 "$work/x.sh"
 cp "$here/xwindow.py" "$work/xwindow.py"
