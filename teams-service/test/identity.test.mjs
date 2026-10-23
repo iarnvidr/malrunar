@@ -70,7 +70,7 @@ test('trusted proxy address: identity is visible to the handler; X-Forwarded-For
 test('spoofed headers from an untrusted address are ignored, even when X-Forwarded-For claims a proxy', async () => {
   const { whoami, close } = await start({ [`${P}TRUSTED_PROXIES`]: '10.0.0.0/8' });
   try {
-    const { body } = await whoami({ ...ADA, 'X-Forwarded-For': '10.1.2.3' });
+    const { body } = await whoami({ ...ADA, 'X-Forwarded-For': '198.51.100.3' });
     assert.equal(body.anonymous, true);
     assert.equal(body.trusted, false);
   } finally { close(); }
