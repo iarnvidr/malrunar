@@ -22,7 +22,8 @@ Usage:
                                                  parents from the registry by hash and build only what is missing.
                                                  --level unit|smoke|e2e|all keeps only the matching jobs.
 With --plan, prints GitHub Actions outputs (key=value): `images` (JSON list), `groups` (JSON list of
-space-separated build chains for the `build` job), and one true/false per dedicated job.
+space-separated build chains for the `build` job), `requested` (selected images, excluding unchanged
+parents that can be pulled by content hash), and one true/false per dedicated job.
 """
 import json
 import subprocess
@@ -104,6 +105,7 @@ def plan(images, level="all"):
     out = {
         "images": json.dumps(sorted(chosen)),
         "groups": json.dumps(groups),
+        "requested": " ".join(sorted(chosen)),
     }
     for job, triggers in DEDICATED.items():
         wanted = bool(chosen & set(triggers))
@@ -155,9 +157,6 @@ def main(argv):
     if "--plan" in argv:
         for key, value in plan(images, level).items():
             print(f"{key}={value}")
-        # Named images of a manual dispatch: the `build` job builds and tests only these, and takes the
-        # other members of their chain (the parents) from the registry. Empty for a pull request.
-        print(f"requested={' '.join(images) if only is not None else ''}")
     else:
         print("\n".join(images))
     return 0

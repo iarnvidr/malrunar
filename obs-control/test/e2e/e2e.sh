@@ -47,7 +47,13 @@ cleanup() {
     status=$?
     [ -z "$secret_tar" ] || rm -f "$secret_tar"
     if [ "$status" -ne 0 ]; then
+        debug_dir="${MALRUNAR_CI_LOG_DIR:-${TMPDIR:-/tmp}/malrunar-e2e-debug}"
+        mkdir -p "$debug_dir"
         for name in obs desktop; do
+            docker inspect --format '{{json .State}}' "$id-$name" > "$debug_dir/$name-state.json" 2>/dev/null || true
+            docker logs "$id-$name" > "$debug_dir/$name.log" 2>&1 || true
+            echo "--- container state: $name" >&2
+            cat "$debug_dir/$name-state.json" >&2 || true
             echo "--- logs: $name" >&2
             docker logs "$id-$name" 2>&1 | tail -n 50 >&2 || true
         done
@@ -234,6 +240,7 @@ deck="$(printf '%s' "$slides" | field 'd["slides"]["id"]')" || fail "unexpected 
 for cycle in $(seq 1 10); do
     take_id="e2e-take-$cycle"
     step "cycle $cycle/10: arm and record"
+    timeout 10 docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' "$id-obs" "$id-desktop" || true
     api /api/takes/arm -X POST -H 'Content-Type: application/json' \
         -d "{\"layout\": \"pip\", \"slide\": {\"deck_id\": \"$deck\", \"page\": 1}}" | grep -q '"armed": true' || fail 'POST /api/takes/arm'
     wait_take_camera_ready
