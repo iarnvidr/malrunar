@@ -165,7 +165,7 @@ done
 
 step 'access: authenticate remote and loopback operator requests, reject missing/wrong secrets'
 # Validate the config the process actually loaded, then exercise real API middleware from both peers.
-docker exec "$id-obs" python3 -c 'from malrunar_obs.config import load_config; c=load_config(); assert c.access.proxy_secret_header == "X-Proxy-Secret" and not c.access.trusted_proxies; assert c.identity_config().mode == "secret"'
+docker exec "$id-obs" env PYTHONPATH=/opt/malrunar/obs-control/lib python3 -c 'from malrunar_obs.config import load_config; c=load_config(); assert c.access.proxy_secret_header == "X-Proxy-Secret" and not c.access.trusted_proxies; assert c.identity_config().mode == "secret"'
 for peer in loopback remote; do
     if [ "$peer" = loopback ]; then who="$id-obs"; url=http://127.0.0.1:18095/api/clips; else who="$id-desktop"; url=http://obs:18095/api/clips; fi
     timeout -k 10 60 docker exec "$who" curl -fsS --max-time 20 -H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789' "$url" >/dev/null || fail "authenticated $peer request rejected"
