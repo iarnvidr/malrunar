@@ -135,7 +135,7 @@ echo "ci-try: run $run_id $url"
 
 echo "ci-try: waiting (at most $timeout_s s)"
 watch_rc=0
-timeout "$timeout_s" gh run watch "$run_id" -R "$repo" --exit-status --interval 30 --compact >"$workdir/watch.log" 2>&1 || watch_rc=$?
+timeout "$timeout_s" gh run watch "$run_id" -R "$repo" --exit-status --interval 30 >"$workdir/watch.log" 2>&1 || watch_rc=$?
 tail -n 25 "$workdir/watch.log" | sed "s/${esc}\\[[0-9;?]*[A-Za-z]//g"
 if [ "$watch_rc" -eq 124 ]; then
     echo "ci-try: timed out after $timeout_s s; cancelling the run" >&2
@@ -143,9 +143,10 @@ if [ "$watch_rc" -eq 124 ]; then
     finished=1
     die "timeout, see $url"
 fi
-finished=1
 
 conclusion="$(gh run view "$run_id" -R "$repo" --json conclusion --jq .conclusion)" || die "cannot read the result of run $run_id"
+[ -n "$conclusion" ] || die "the run has no result yet (gh run watch exited with $watch_rc); it is cancelled now"
+finished=1
 echo "ci-try: conclusion: $conclusion ($url)"
 
 # The artifacts of the run (the jobs upload container logs, smoke/e2e output and image digests when they fail).
