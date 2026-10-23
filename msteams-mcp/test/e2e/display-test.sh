@@ -20,6 +20,7 @@ trap cleanup EXIT
 
 Xvfb :77 -screen 0 1280x800x24 -ac -nolisten tcp > "$site/xvfb.log" 2>&1 &
 xvfb_pid=$!
+export DISPLAY=:77
 python3 -m http.server 18765 --bind 127.0.0.1 --directory "$site/www" > "$site/web.log" 2>&1 &
 web_pid=$!
 for _ in $(seq 1 30); do xdpyinfo -display :77 >/dev/null 2>&1 && break; sleep 0.5; done
@@ -44,7 +45,7 @@ for _ in $(seq 1 120); do
     xdotool search --name 'Fixture page one' >/dev/null 2>&1 && break
     sleep 1
 done
-xdotool search --name 'Fixture page one' >/dev/null 2>&1 || { echo 'no browser window with the first page'; exit 1; }
+xdotool search --name 'Fixture page one' >/dev/null 2>&1 || { echo 'no browser window with the first page'; xwininfo -root -tree | head -30; cat "$site/web.log"; exit 1; }
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/9222) 2>/dev/null && break; sleep 1; done
 (exec 3<>/dev/tcp/127.0.0.1/9222) 2>/dev/null || { echo 'the BiDi port 9222 is not listening'; exit 1; }
 
