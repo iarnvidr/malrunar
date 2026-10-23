@@ -1,0 +1,27 @@
+# A desktop that has the Teams MCP: desktop-base + node + work-browser + msteams-mcp (+ teams-service),
+# with the consumer's own user. Every component is added by its own COPY line; none pulls in another.
+# (Example only. The tags are placeholders: pin by digest in anything you deploy.)
+FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
+COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
+COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
+COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.27.2 / /
+# optional: a local copy of chats and calendar (needs node and msteams-mcp, nothing else)
+# COPY --link --from=ghcr.io/iarnvidr/teams-service:0.1.0 / /
+
+# The extra tools of the optional visual browser MCP (`malrunar-msteams-mcp browser-mcp`):
+# RUN apt-get update && apt-get install -y --no-install-recommends xdotool imagemagick xclip poppler-utils
+
+RUN useradd --create-home --uid 1000 --shell /bin/bash me
+# Teams microphone and camera permissions, and anything else about the visible browser, are YOUR policies
+# (see policies.teams.json.example); the Firefox of desktop-base stays unmodified otherwise.
+COPY policies.json /etc/firefox/policies/policies.json
+
+ENV PATH=/opt/malrunar/node/bin:$PATH \
+    MALRUNAR_WORK_BROWSER_USER=me \
+    MALRUNAR_WORK_BROWSER_START_URLS=https://teams.cloud.microsoft/
+# MALRUNAR_MSTEAMS_MCP_USER defaults to MALRUNAR_WORK_BROWSER_USER. Use a fixed container host name (hostname:
+# in compose): the token cache key is derived from the host name and the user name, so a changed host name
+# means a new sign-in. Keep /home/me/.teams-mcp-server on a volume.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/bin/supervisord", "-n"]
+# An MCP client then starts the server with:
+#   docker exec -i <container> /opt/malrunar/msteams-mcp/bin/malrunar-msteams-mcp

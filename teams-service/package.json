@@ -1,0 +1,10 @@
+{
+  "name": "malrunar-teams-service",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A local PocketBase copy of Microsoft Teams chats and calendar, kept in sync through msteams-mcp's own API modules, behind a small HTTP API.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

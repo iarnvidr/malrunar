@@ -28,6 +28,8 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`session-kit`](session-kit/) | Desktop session tools: workspaces, window placement, session check, default-browser launchers | `malrunar-session` and a supervisord program in `/opt/malrunar/session-kit`: names the XFCE workspaces and places windows on them, restores a Firefox profile's tabs, checks the session and registers the desktop's web browser. A `FROM scratch` layer; it needs `desktop-base` (and `xdotool`, installed by you) and uses the work browser only when that component is present |
 | [`thunderbird`](thunderbird/) | A mail client in the desktop | Mozilla's official Thunderbird 158.0.1, **unmodified** (the release tarball, checked against Mozilla's signed checksums), and a supervisord program that keeps it running on a persistent profile. The changes some setups need (an OAuth patch for shared mailboxes, add-ons, policies) are scripts you run at your own build, in `thunderbird/consumer/`. A `FROM scratch` layer; it needs `desktop-base` only |
 | [`thunderbird-mcp`](thunderbird-mcp/) | Letting an AI agent work in the mailbox | The [Thunderbird MCP](https://github.com/TKasperczyk/thunderbird-mcp) bridge and add-on in `/opt/malrunar/thunderbird-mcp`, with a wrapper. A `FROM scratch` layer with no Thunderbird in it; it needs the `node` component and talks to a Thunderbird that has the add-on installed |
+| [`msteams-mcp`](msteams-mcp/) | A Microsoft Teams MCP server for the desktop | The [msteams-mcp](https://github.com/m0nkmaster/msteams-mcp) MCP server (MIT) at a pinned commit with five build-time patches, a pinned Playwright Firefox and one command (`malrunar-msteams-mcp`): serve, interactive and password+MFA sign-in, cookie sync into the visible browser, a visual browser MCP, and an optional device-code sign-in that is **off** unless you opt in. A `FROM scratch` layer; it needs `node`, `desktop-base` and `work-browser` and says so (exit 78) when one is missing |
+| [`teams-service`](teams-service/) | A local, queryable copy of Teams chats and calendar | A PocketBase (pinned, built from source) mirror kept in sync through the `msteams-mcp` package, behind a small bearer-token HTTP API, with a supervisord program. A `FROM scratch` layer; it needs `node` and `msteams-mcp` only |
 
 ## Using them
 
@@ -160,6 +162,8 @@ examples of how the parts combine (no product is implied; take the rows you need
 | [`session-kit`](session-kit/) | component (`COPY --from`, with a supervisord program) | `desktop-base`, `xdotool` for window tools; `work-browser` optional | yes (workspaces, session check) | yes (with `work-browser`: reopen tabs, default browser) |
 | [`thunderbird`](thunderbird/) | component (`COPY --from`, with a supervisord program) | `desktop-base` | no | optional (a mail client) |
 | [`thunderbird-mcp`](thunderbird-mcp/) | component (`COPY --from`) | `node` at run time; a Thunderbird with its add-on installed (for example `thunderbird`) | no | optional (agent access to the mailbox) |
+| [`msteams-mcp`](msteams-mcp/) | component (`COPY --from`) | `node`, `desktop-base`, `work-browser`; `tail-browser-mcp` only for one optional backend | optional | optional |
+| [`teams-service`](teams-service/) | component (`COPY --from`, with a supervisord program) | `node`, `msteams-mcp` (not `desktop-base`) | optional | optional |
 
 ```dockerfile
 # a calls desktop: it receives the stream OBS (in its own container) sends, for a call app to use
@@ -249,6 +253,8 @@ scripts/build.sh node --load && scripts/smoke.sh node
 scripts/build.sh work-browser --load && scripts/smoke.sh work-browser   # the smoke test needs desktop-base built
 scripts/build.sh node --load && scripts/build.sh thunderbird --load && scripts/smoke.sh thunderbird   # needs desktop-base and node built
 scripts/build.sh thunderbird-mcp --load && scripts/smoke.sh thunderbird-mcp   # needs desktop-base, node and thunderbird built
+scripts/build.sh msteams-mcp --load && scripts/smoke.sh msteams-mcp     # the smoke test needs desktop-base, node and work-browser built
+scripts/build.sh teams-service --load && scripts/smoke.sh teams-service # the smoke test needs desktop-base, node and msteams-mcp built
 python3 -m unittest discover -s scripts/test    # hashes and pull request planning, and the tests of tools/
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
@@ -260,5 +266,5 @@ To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The images contain
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
-(Apache-2.0), Firefox and Thunderbird (MPL-2.0), Tail and thunderbird-mcp (MIT). `media-bridge` and `work-browser` add only scripts; `thunderbird` adds Mozilla's unmodified Thunderbird (MPL-2.0) and scripts, and `thunderbird-mcp` adds the upstream bridge and add-on (MIT); `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
+(Apache-2.0), Firefox and Thunderbird (MPL-2.0), Tail and thunderbird-mcp (MIT). `media-bridge` and `work-browser` add only scripts; `thunderbird` adds Mozilla's unmodified Thunderbird (MPL-2.0) and scripts, and `thunderbird-mcp` adds the upstream bridge and add-on (MIT); `msteams-mcp` adds the msteams-mcp package (MIT) with its npm dependencies and Playwright's Firefox build (MPL-2.0); `teams-service` adds PocketBase (MIT) and its Go modules; `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
 The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).

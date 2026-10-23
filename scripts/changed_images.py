@@ -42,6 +42,8 @@ DEDICATED = {
     "session-kit": ("session-kit",),
     "thunderbird": ("thunderbird",),
     "thunderbird-mcp": ("thunderbird-mcp",),
+    "msteams-mcp": ("msteams-mcp",),
+    "teams-service": ("teams-service",),
     "obs-control-e2e": ("obs-control", "media-bridge", "desktop-base", "obs-runtime"),
 }
 INFRASTRUCTURE_PATHS = ("scripts/build.sh", "scripts/smoke.sh", ".github/workflows/pr.yml")

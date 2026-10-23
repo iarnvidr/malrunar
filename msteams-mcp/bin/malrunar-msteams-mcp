@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# The one command of the msteams-mcp component. See ../README.md for every setting.
+#
+#   malrunar-msteams-mcp [serve]            the MCP server on stdin/stdout (what an MCP client starts)
+#   malrunar-msteams-mcp login [--force]    interactive sign-in in the package's own Firefox (teams_login)
+#   malrunar-msteams-mcp status             teams_status of the package's own CLI
+#   malrunar-msteams-mcp login-browser      password + MFA sign-in without a person at the screen (needs MALRUNAR_MSTEAMS_MCP_UPN, password on stdin)
+#   malrunar-msteams-mcp sync-browser       copy the Microsoft web cookies of the session into the visible browser's profile
+#   malrunar-msteams-mcp device-login       device-code sign-in; OFF unless MALRUNAR_MSTEAMS_MCP_DEVICE_LOGIN=1 (README, "Device-code sign-in")
+#   malrunar-msteams-mcp open [url]         open a page in the visible browser (the work-browser component's helper)
+#   malrunar-msteams-mcp browser-mcp        a second MCP server that looks at and drives the visible browser's windows
+#   malrunar-msteams-mcp check              verify the dependencies and print what is missing
+set -euo pipefail
+
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+MS_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+export MS_ROOT
+# shellcheck source=../lib/common.sh
+. "$MS_ROOT/lib/common.sh"
+
+usage() { sed -n '2,15p' "$self" | sed 's/^# \{0,1\}//' >&2; }
+
+command_name="${1:-serve}"
+case "$command_name" in
+    -h|--help|help) usage; exit 0 ;;
+    serve|login|status|login-browser|sync-browser|device-login|open|browser-mcp|check) [ "$#" -eq 0 ] || shift ;;
+    *) usage; exit 2 ;;
+esac
+
+# `check` and the other commands need the dependencies; they run as the session's user.
+ms_drop_privileges "$self" "$command_name" "$@"
+ms_require_all
+ms_validate_settings
+ms_home
+ms_export_package_env
+node_dir="$(dirname "$MS_NODE")"
+export PATH="$node_dir:$PATH"
+
+# The session store lives where upstream puts it: $HOME/.teams-mcp-server (mount a volume there).
+state_dir="$HOME/.teams-mcp-server"
+install -d -m 700 "$state_dir"
+
+display_or_note() {
+    if display="$(ms_find_display 2>/dev/null)"; then
+        export DISPLAY="$display"
+        return 0
+    fi
+    return 1
+}
+
+case "$command_name" in
+    check)
+        status=0
+        echo "node: $MS_NODE ($("$MS_NODE" --version))"
+        echo "package: $MS_APP (msteams-mcp, patched)"
+        echo "playwright firefox: $MS_PLAYWRIGHT_FIREFOX"
+        echo "desktop-base: present"
+        echo "work-browser: present"
+        missing="$(ms_missing_libraries)"
+        if [ -n "$missing" ]; then
+            echo "missing libraries for the Playwright Firefox (desktop-base provides them): $(echo "$missing" | tr '\n' ' ')" >&2
+            status="$MS_EX_CONFIG"
+        fi
+        missing="$(ms_missing_browser_mcp_tools | tr '\n' ' ')"
+        if [ -n "$missing" ]; then
+            echo "optional, for browser-mcp only: not installed: $missing"
+        else
+            echo "browser-mcp tools: present"
+        fi
+        exit "$status"
+        ;;
+    serve)
+        export LOG_LEVEL
+        LOG_LEVEL="$(ms_server_log_level)"
+        display_or_note || true   # only the sign-in and headless refresh use a display; never fail over it
+        exec "$MS_NODE" "$MS_APP/dist/index.js"
+        ;;
+    status)
+        export LOG_LEVEL=warn
+        exec "$MS_NODE" "$MS_APP/dist/cli.js" teams_status
+        ;;
+    login)
+        export LOG_LEVEL=warn
+        display_or_note || ms_die 3 'no display answers: teams_login opens a visible browser; sign in to the desktop session first (or set MALRUNAR_WORK_BROWSER_DISPLAY / DISPLAY)'
+        trap ms_browser_restore EXIT
+        if ms_profiles_shared; then
+            # The visible browser and the package use one profile: only one Firefox can hold it.
+            ms_browser_release "$(ms_playwright_profile_dir)"
+            ms_reconcile_profile_version "$(ms_playwright_profile_dir)" "$MS_PLAYWRIGHT_FIREFOX"
+        fi
+        if [ "${1:-}" = "--force" ]; then
+            "$MS_NODE" "$MS_APP/dist/cli.js" teams_login --force true
+        else
+            "$MS_NODE" "$MS_APP/dist/cli.js" teams_login
+        fi
+        ;;
+    login-browser)
+        export LOG_LEVEL=warn
+        [ -n "${MALRUNAR_MSTEAMS_MCP_UPN:-}" ] || ms_die "$MS_EX_CONFIG" 'MALRUNAR_MSTEAMS_MCP_UPN (the account to sign in, for example user@example.invalid) is not set; the password is read from stdin, never from the environment'
+        work="$(mktemp -d)"
+        chmod 700 "$work"
+        trap 'rm -rf "$work"; ms_browser_restore' EXIT
+        if ms_profiles_shared; then
+            # One profile for both browsers: the sign-in writes the visible browser's profile directly.
+            ms_browser_release "$(ms_playwright_profile_dir)"
+            ms_reconcile_profile_version "$(ms_playwright_profile_dir)" "$MS_PLAYWRIGHT_FIREFOX"
+            "$MS_NODE" "$MS_ROOT/libexec/browser-login.mjs" "$@"
+        else
+            # Separate profiles (the default): sign in the package's browser, then mirror the Microsoft
+            # cookies into the visible browser's profile while that browser is stopped.
+            "$MS_NODE" "$MS_ROOT/libexec/browser-login.mjs" --cookies-out "$work/cookies.json" "$@"
+            if [ -s "$work/cookies.json" ]; then
+                ms_browser_release "$MALRUNAR_MSTEAMS_MCP_BROWSER_PROFILE_DIR"
+                "$MS_NODE" "$MS_ROOT/libexec/sync-browser-session.mjs" --cookies-file "$work/cookies.json"
+            fi
+        fi
+        ;;
+    sync-browser)
+        trap ms_browser_restore EXIT
+        browser_profile="$MALRUNAR_MSTEAMS_MCP_BROWSER_PROFILE_DIR"
+        if [ -f "$browser_profile/cookies.sqlite" ] && ! printf '%s\n' "$*" | grep -q -- '--dry-run'; then
+            ms_browser_release "$browser_profile"
+        fi
+        "$MS_NODE" "$MS_ROOT/libexec/sync-browser-session.mjs" "$@"
+        ;;
+    device-login)
+        if [ "${MALRUNAR_MSTEAMS_MCP_DEVICE_LOGIN:-0}" != 1 ]; then
+            ms_die "$MS_EX_CONFIG" 'device-code sign-in is off. It signs in as the Teams desktop application, which Microsoft or your tenant policy may not allow; read the README section "Device-code sign-in" and set MALRUNAR_MSTEAMS_MCP_DEVICE_LOGIN=1 to opt in'
+        fi
+        export LOG_LEVEL=warn
+        trap ms_browser_restore EXIT
+        if "$MS_NODE" "$MS_ROOT/libexec/device-login.mjs" "$@"; then
+            case " $* " in
+                *" --region-only "*) : ;;
+                *) if [ "${MALRUNAR_MSTEAMS_MCP_SYNC_AFTER_DEVICE_LOGIN:-0}" = 1 ]; then "$self" sync-browser || ms_log 'sync-browser failed (the MCP session is signed in anyway)'; fi ;;
+            esac
+        else
+            exit 1
+        fi
+        ;;
+    open)
+        exec /opt/malrunar/work-browser/bin/malrunar-work-browser-open "$@"
+        ;;
+    browser-mcp)
+        missing="$(ms_missing_browser_mcp_tools | tr '\n' ' ')"
+        [ -z "$missing" ] || ms_die "$MS_EX_CONFIG" "browser-mcp needs tools that desktop-base does not have: $missing(Ubuntu packages: xdotool imagemagick xclip poppler-utils; x11-utils and python3 come with desktop-base). Install them in your own image layer"
+        if [ "${MALRUNAR_MSTEAMS_MCP_BROWSER_MCP_BACKEND:-bidi}" = tail ] && [ ! -r "${MALRUNAR_MSTEAMS_MCP_TAIL_CLIENT:-/opt/malrunar/tail-browser-mcp/client.mjs}" ]; then
+            ms_die "$MS_EX_CONFIG" 'MALRUNAR_MSTEAMS_MCP_BROWSER_MCP_BACKEND=tail needs the tail-browser-mcp component (COPY --link --from=ghcr.io/iarnvidr/tail-browser-mcp:<tag> / /) or MALRUNAR_MSTEAMS_MCP_TAIL_CLIENT'
+        fi
+        display_or_note || true
+        # Window titles are UTF-8 (they contain an em dash): the X tools cannot convert them in the POSIX locale.
+        case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LC_ALL=C.UTF-8 ;; esac
+        exec "$MS_NODE" "$MS_ROOT/libexec/work-browser-mcp.mjs"
+        ;;
+esac
