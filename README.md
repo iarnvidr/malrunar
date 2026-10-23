@@ -6,6 +6,10 @@ easy to get subtly wrong (pinned OBS with its browser source, guacd against Free
 desktop with working audio), so they are built here once, reproducibly, and published as images you
 build on top of.
 
+**Want to see it work first?** [`examples/quickstart`](examples/quickstart/) is one `docker compose up`:
+a desktop with a virtual microphone (and, opt-in, a virtual camera) fed by OBS, which you switch scenes on
+over HTTP.
+
 The images are generic. They create no users and carry no site configuration; you add those in your
 own image.
 

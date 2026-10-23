@@ -1,0 +1,51 @@
+# Runs examples/quickstart exactly as its README documents it: docker compose up, wait for /ready,
+# switch a scene through the API, check the virtual microphone in the desktop container.
+# It always runs (so it can be a required check). Images the pull request did not change are pulled
+# from ghcr.io by content hash; changed ones are built from the checkout. Hosted runner, no secrets,
+# read-only token. Separate from pr.yml on purpose: editing that file rebuilds every image.
+name: quickstart
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: quickstart-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quickstart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # a pull request that changes desktop-base or OBS builds it here; otherwise this takes minutes
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        timeout-minutes: 5
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Check the quickstart scripts and compose files
+        timeout-minutes: 5
+        run: |
+          set -eu
+          shellcheck --severity=warning examples/quickstart/test/*.sh examples/quickstart/desktop/*.sh
+          docker compose -f examples/quickstart/compose.yaml config --quiet
+          docker compose -f examples/quickstart/compose.yaml -f examples/quickstart/compose.camera.yaml config --quiet
+      - name: Images from this checkout (published ones are reused when their content is unchanged)
+        timeout-minutes: 40
+        run: examples/quickstart/test/build-images.sh
+      - name: Quickstart (docker compose up, /ready, scene switch, virtual microphone)
+        timeout-minutes: 20
+        run: |
+          set -eu
+          set -o pipefail
+          timeout -k 30 1100 examples/quickstart/test/run.sh 2>&1 | tee quickstart.log
+          grep -F 'QUICKSTART: ready OK' quickstart.log
+          grep -F 'QUICKSTART: scene switched OK' quickstart.log
+          grep -F 'QUICKSTART: virtual mic present OK' quickstart.log

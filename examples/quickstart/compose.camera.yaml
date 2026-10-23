@@ -1,0 +1,10 @@
+# Opt-in: send the picture to a real virtual camera, /dev/video10, instead of discarding it.
+#   docker compose -f examples/quickstart/compose.yaml -f examples/quickstart/compose.camera.yaml up -d --build
+# The device is created on the HOST first (a container cannot load kernel modules); see README.md.
+services:
+  desktop:
+    devices:
+      - /dev/video10:/dev/video10
+    environment:
+      MALRUNAR_BRIDGE_VIDEO_SINK: v4l2
+      MALRUNAR_BRIDGE_VIDEO_DEVICE: /dev/video10

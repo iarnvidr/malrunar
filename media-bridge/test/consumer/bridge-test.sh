@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Runs inside the test consumer container as an unprivileged user (uid 1000).
-#   bridge-test.sh file               video to a file (the documented fallback sink)
+#   bridge-test.sh file               video to a bounded file (ring of path and path.1, the fallback sink)
+#   bridge-test.sh null               video decoded and discarded (the sink that stores nothing)
 #   bridge-test.sh v4l2 /dev/videoN   video to a v4l2loopback device mapped into the container
 # Starts PipeWire without hardware, sends a generated MPEG-TS stream (colour test pattern and a
 # 440 Hz sine) to the bridge and checks that the virtual microphone appears, is the default source
 # and carries the tone, that video frames arrive at the sink, and that failures are reported clearly.
+# The file sink is also checked to stay within twice its size cap, the null sink to decode the video
+# and store nothing, and a bridge that joins a stream mid-GOP to keep its log free of decoder noise.
+# Every check prints a "PASS: ..." line.
 set -euo pipefail
 
-mode="${1:?usage: bridge-test.sh file|v4l2 [device]}"
+mode="${1:?usage: bridge-test.sh file|null|v4l2 [device]}"
 device="${2:-}"
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null; then
     exec dbus-run-session -- "$0" "$@"
@@ -62,8 +66,12 @@ echo "== bridge ($mode sink)"
 if [ "$mode" = v4l2 ]; then
     [ -c "$device" ] || fail "$device is not a character device in the container"
     sink_env=(MALRUNAR_BRIDGE_VIDEO_DEVICE="$device")
+elif [ "$mode" = null ]; then
+    # info level so that ffmpeg's progress line ("frame=N") shows that video was decoded
+    sink_env=(MALRUNAR_BRIDGE_VIDEO_SINK=null MALRUNAR_BRIDGE_LOGLEVEL=info)
 else
-    sink_env=(MALRUNAR_BRIDGE_VIDEO_SINK="file:$work/video.yuv")
+    # 1280x720 yuv420p frame; cap of 60 frames so that the 60 s stream rotates the file several times
+    sink_env=(MALRUNAR_BRIDGE_VIDEO_SINK="file:$work/video.yuv" MALRUNAR_BRIDGE_FILE_MAX_BYTES=$(( 1280 * 720 * 3 / 2 * 60 )))
 fi
 env "${sink_env[@]}" MALRUNAR_BRIDGE_UDP_PORT="$port" MALRUNAR_BRIDGE_BIND=127.0.0.1 \
     MALRUNAR_BRIDGE_MIC_NAME="$mic" MALRUNAR_BRIDGE_MIC_DESCRIPTION='Smoke Test Microphone' \
@@ -119,13 +127,32 @@ if [ "$mode" = v4l2 ]; then
     timeout 60 ffmpeg -nostdin -hide_banner -loglevel error -y -f v4l2 -i "$device" -frames:v 15 \
         -f rawvideo -pix_fmt yuv420p "$work/frames.yuv"
     frames_file="$work/frames.yuv"; want=15
+elif [ "$mode" = null ]; then
+    for _ in $(seq 1 30); do grep -aq 'frame= *[1-9]' "$work/bridge.log" && break; sleep 1; done
+    grep -a 'frame= *[1-9]' "$work/bridge.log" | tail -n 1 | tr '\r' '\n' | tail -n 1
+    grep -aq 'frame= *[1-9]' "$work/bridge.log" || fail 'null sink: ffmpeg reports no decoded video frames'
+    stored="$(find "$work" -type f \( -name '*.yuv*' -o -name '*.raw' -o -name 'video*' \) ! -name 'mic.raw' | head -n 1)"
+    [ -z "$stored" ] || fail "null sink stored data: $stored"
+    echo "PASS: null sink: video stream decoded (ffmpeg reports frames), nothing stored"
 else
+    # the file is a ring of video.yuv (being written) and video.yuv.1 (previous full segment)
+    cap=$(( frame * 60 ))
+    biggest() { ls -S "$work/video.yuv" "$work/video.yuv.1" 2>/dev/null | head -n 1; }
     for _ in $(seq 1 30); do
-        [ "$(stat -c %s "$work/video.yuv" 2>/dev/null || echo 0)" -ge $(( frame * 30 )) ] && break
+        [ -n "$(biggest)" ] && [ "$(stat -c %s "$(biggest)")" -ge $(( frame * 30 )) ] && break
         sleep 1
     done
-    frames_file="$work/video.yuv"; want=30
+    for _ in $(seq 1 30); do [ -e "$work/video.yuv.1" ] && break; sleep 1; done
+    frames_file="$(biggest)"; want=30
+    [ -n "$frames_file" ] || fail 'file sink: no video file'
+    total=$(( $(stat -c %s "$work/video.yuv" 2>/dev/null || echo 0) + $(stat -c %s "$work/video.yuv.1" 2>/dev/null || echo 0) ))
+    echo "video files: $total bytes in total, cap $cap per file"
+    [ -e "$work/video.yuv.1" ] || fail 'file sink: the file never rotated'
+    [ "$total" -le $(( 2 * cap )) ] || fail "file sink: $total bytes on disk exceeds 2 x cap ($(( 2 * cap )))"
+    [ "$(find "$work" -maxdepth 1 -name 'video.yuv*' | wc -l)" -eq 2 ] || fail 'file sink: unexpected extra files'
+    echo "PASS: file sink bounded: $total bytes on disk after rotating, cap $cap per file (at most 2 x cap)"
 fi
+if [ "$mode" != null ]; then
 size="$(stat -c %s "$frames_file")"
 echo "video file: $size bytes, frame size $frame"
 [ "$size" -ge $(( frame * want )) ] || fail "got $size bytes, expected at least $want frames of 1280x720 yuv420p ($((frame * want)) bytes)"
@@ -141,6 +168,7 @@ print(f"distinct luma values in frame 5: {distinct}")
 assert len(data) == frame, "short frame"
 assert distinct > 30, "frame is blank or uniform"
 PY
+fi
 
 echo "== xrdp audio tune"
 pactl load-module module-null-sink sink_name=xrdp-sink >/dev/null
@@ -155,4 +183,21 @@ kill -TERM "$bridge_pid"
 for _ in $(seq 1 20); do kill -0 "$bridge_pid" 2>/dev/null || break; sleep 0.5; done
 ! kill -0 "$bridge_pid" 2>/dev/null || fail 'bridge did not stop on SIGTERM'
 pactl list short sources | grep -q "[[:space:]]${mic}[[:space:]]" && fail 'microphone still present after stop'
+echo "== joining a stream mid-GOP leaves a clean log"
+# A sender whose only keyframe is its first packet: a bridge that joins later sees no SPS/PPS and
+# no reference frame, so the decoder complains (non-existing PPS, no frame!, ...) until the next
+# keyframe. The bridge hides those messages for its first seconds; real errors must stay visible.
+join_port=$(( port + 1 ))
+ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi -i 'testsrc=size=640x360:rate=30' \
+    -c:v libx264 -preset ultrafast -tune zerolatency -g 900 -x264-params keyint=900:scenecut=0 -pix_fmt yuv420p \
+    -t 40 -f mpegts "udp://127.0.0.1:$join_port?pkt_size=1316" >"$work/sender-join.log" 2>&1 & pids+=($!)
+sleep 4
+MALRUNAR_BRIDGE_VIDEO_SINK=null MALRUNAR_BRIDGE_UDP_PORT="$join_port" MALRUNAR_BRIDGE_BIND=127.0.0.1 \
+    MALRUNAR_BRIDGE_MIC_NAME="${mic}_join" MALRUNAR_BRIDGE_MIC_DEFAULT=0 MALRUNAR_BRIDGE_RESTART=0 \
+    MALRUNAR_BRIDGE_INPUT_TIMEOUT=3 timeout -k 5 15 "$bridge" >"$work/join.log" 2>&1 || true
+noise='non-existing PPS|non-existing SPS|Error submitting packet to decoder|no frame!|decode_slice_header error'
+echo "  join.log has $(wc -l < "$work/join.log") lines"
+if grep -aE "$noise" "$work/join.log"; then fail 'expected decoder noise reached the log on a mid-stream join'; fi
+echo "PASS: startup log is clean on mid-stream join (no PPS/no frame/decoder-submit noise)"
+pactl list short sources | grep -q "[[:space:]]${mic}_join[[:space:]]" && fail 'join-test microphone still present'
 echo "bridge-test ($mode) passed"

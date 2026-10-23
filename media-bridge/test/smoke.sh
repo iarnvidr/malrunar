@@ -25,7 +25,7 @@ cid="$(docker create "$image" /unused)"
 mkdir "$work/out"
 docker cp "$cid:/opt/malrunar/media-bridge/." "$work/out/"
 docker rm -f "$cid" >/dev/null; cid=""
-for f in bin/malrunar-media-bridge bin/malrunar-xrdp-audio-tune bin/malrunar-media-profile host/setup-v4l2loopback.sh; do
+for f in bin/malrunar-media-bridge bin/malrunar-bridge-logfilter.sh bin/malrunar-xrdp-audio-tune bin/malrunar-media-profile host/setup-v4l2loopback.sh; do
     test -x "$work/out/$f" || fail "$f is missing or not executable"
 done
 for f in README.md LICENSE share/supervisord-media-bridge.conf.example share/malrunar-media-bridge.service.example; do
@@ -35,9 +35,13 @@ grep -q 'Apache License' "$work/out/LICENSE" || fail 'LICENSE is not the Apache-
 test -z "$(docker image inspect --format '{{range .Config.Entrypoint}}{{.}}{{end}}' "$image")" \
     || fail 'component image sets an entrypoint'
 bash -n "$work/out/bin/malrunar-media-bridge"
+bash -n "$work/out/bin/malrunar-bridge-logfilter.sh"
 bash -n "$work/out/host/setup-v4l2loopback.sh"
 sh -n "$work/out/bin/malrunar-xrdp-audio-tune"
 python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$work/out/bin/malrunar-media-profile"
+
+echo '== bridge script against stub ffmpeg/pactl: sinks, bounded file, config checks, startup log filter'
+"$here/test-bridge-offline.sh" "$work/out/bin"
 
 echo '== host setup script (stubbed kernel module)'
 "$here/test-host-script.sh" "$work/out/host/setup-v4l2loopback.sh"
@@ -59,8 +63,11 @@ run "$consumer" bash -c '
     if $p http://insecure.example >/dev/null 2>&1; then exit 1; fi
 ' || fail 'media-profile helper'
 
-echo '== bridge with the file video sink (the documented fallback)'
+echo '== bridge with the bounded file video sink (the documented fallback)'
 run "$consumer" /usr/local/bin/bridge-test.sh file || fail 'file-sink bridge test'
+
+echo '== bridge with the null video sink (decode and discard)'
+run "$consumer" /usr/local/bin/bridge-test.sh null || fail 'null-sink bridge test'
 
 if [ -n "${MALRUNAR_SMOKE_V4L2_DEVICE:-}" ]; then
     dev="$MALRUNAR_SMOKE_V4L2_DEVICE"
