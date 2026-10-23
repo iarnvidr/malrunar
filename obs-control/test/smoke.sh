@@ -182,7 +182,7 @@ for _ in $(seq 1 60); do
     [ "$state" = running ] || break
     sleep 2
 done
-[ "$state" = done ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
+[ "$state" = "done" ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
 clip_id="$(printf '%s' "$result" | json 'd["job"]["clip"]["id"]')"
 clip_scene="$(printf '%s' "$result" | json 'd["job"]["clip"]["scene_name"]')"
 clip_streams="$(exec_in ffprobe -v error -show_entries stream=codec_name,codec_type,width,height -of csv=p=0 "/config/recordings/$clip_id.mp4")"

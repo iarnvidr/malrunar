@@ -161,7 +161,7 @@ for _ in $(seq 1 60); do
     [ "$state" = running ] || break
     sleep 2
 done
-[ "$state" = done ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
+[ "$state" = "done" ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
 take_clip="$(printf '%s' "$result" | field 'd["job"]["clip"]["id"]')"
 api /api/takes/disarm -X POST | grep -q '"armed": false' || fail 'POST /api/takes/disarm'
 api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
