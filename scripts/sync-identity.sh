@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-mode=write
+mode="write"
 case "${1:-}" in
     '') ;;
     --check) mode=check ;;
