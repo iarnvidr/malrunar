@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# The supervisord program of the teams-service component: PocketBase (loopback only) and the Teams
+# service, started together; the script exits when either stops, so supervisord restarts both.
+# See ../README.md for every setting.
+set -euo pipefail
+
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+TS_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+export TS_ROOT
+# shellcheck source=../lib/common.sh
+. "$TS_ROOT/lib/common.sh"
+
+if [ "${MALRUNAR_TEAMS_SERVICE_ENABLED:-1}" = 0 ]; then
+    ts_log 'MALRUNAR_TEAMS_SERVICE_ENABLED=0: not starting'
+    exit 0
+fi
+case "${1:-run}" in
+    run) ;;
+    check) ;;
+    *) echo "usage: $0 [run|check]" >&2; exit 2 ;;
+esac
+
+ts_drop_privileges "$self" "$@"
+ts_find_node
+ts_require_mcp_package
+ts_home
+
+pocketbase="$TS_ROOT/bin/malrunar-teams-pocketbase"
+[ -x "$pocketbase" ] || ts_die "$TS_EX_CONFIG" "$pocketbase is missing (an incomplete copy of the component?)"
+if [ "${1:-run}" = check ]; then
+    echo "node: $TS_NODE ($("$TS_NODE" --version))"
+    echo "msteams-mcp package: $TS_MCP_DIST"
+    echo "pocketbase: $("$pocketbase" --version)"
+    exit 0
+fi
+
+umask 077
+data="${MALRUNAR_TEAMS_SERVICE_DATA_DIR:-$HOME/.local/share/malrunar-teams-service}"
+pb_port="${MALRUNAR_TEAMS_SERVICE_PB_PORT:-18391}"
+install -d -m 700 "$data" "$data/pb_data"
+export MALRUNAR_TEAMS_SERVICE_DATA_DIR="$data"
+node_dir="$(dirname "$TS_NODE")"
+export PATH="$node_dir:$PATH"
+# msteams-mcp's modules log at `info` to stdout otherwise; this service writes its own JSON log.
+export LOG_LEVEL="${LOG_LEVEL:-warn}"
+
+# The superuser login of the service: generated once, kept in a 0600 file next to the data. PocketBase's
+# own output about it is discarded because it prints the password hash.
+credentials="$data/pb-credentials.json"
+if [ ! -s "$credentials" ]; then
+    password="$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n')"
+    printf '{"identity":"service@local.invalid","password":"%s"}\n' "$password" > "$credentials.new"
+    mv "$credentials.new" "$credentials"
+fi
+identity="$("$TS_NODE" -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).identity' "$credentials")"
+password="$("$TS_NODE" -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).password' "$credentials")"
+"$pocketbase" superuser upsert "$identity" "$password" --dir="$data/pb_data" >/dev/null 2>&1 \
+    || ts_die 1 'could not create the PocketBase superuser for the service'
+unset password
+
+"$pocketbase" serve --http="127.0.0.1:$pb_port" --dir="$data/pb_data" &
+pb_pid=$!
+"$TS_NODE" --max-old-space-size=256 "$TS_ROOT/src/main.mjs" &
+service_pid=$!
+
+stop() { kill "$service_pid" "$pb_pid" 2>/dev/null || true; wait 2>/dev/null || true; }
+trap 'stop; exit 0' TERM INT
+# Either one ending ends both: supervisord then restarts the pair.
+status=0
+wait -n "$pb_pid" "$service_pid" || status=$?
+ts_log "a child exited (status $status); stopping"
+stop
+exit "$((status == 0 ? 1 : status))"

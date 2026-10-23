@@ -161,6 +161,34 @@ pages and changelog are removed. Source: https://github.com/nodejs/node at the t
 `desktop-base` (Mozilla, MPL-2.0), unmodified and not redistributed by this component, together with
 `dbus-daemon`, `xdpyinfo` and `setpriv` from `desktop-base`.
 
+## msteams-mcp
+
+`msteams-mcp` is Apache-2.0 for its own scripts and patches. It contains
+
+- msteams-mcp, https://github.com/m0nkmaster/msteams-mcp (MIT, copyright Rob MacDonald), built from the commit
+  pinned in `msteams-mcp/pins.env` with the lockfile of that commit; the licence is in the image as
+  `/opt/malrunar/msteams-mcp/licenses/msteams-mcp-LICENSE`;
+- its production npm dependencies (MIT, Apache-2.0 for Playwright, and others): name, version and licence of
+  each are listed in `/opt/malrunar/msteams-mcp/THIRD-PARTY.txt`, and every package keeps its own licence
+  file in `app/node_modules/<name>/`;
+- Playwright's Firefox build (MPL-2.0 for Firefox, Apache-2.0 for Playwright's patches), revision and
+  sha256 in `msteams-mcp/pins.env`, downloaded unmodified from cdn.playwright.dev; the MPL-2.0 text is in
+  `licenses/MPL-2.0` and `SOURCE.txt` names the Mozilla sources and Playwright's patches. It is built by the
+  Playwright project, not Mozilla's own Firefox.
+
+Build-time only: Node.js (MIT), TypeScript and the other development dependencies of msteams-mcp, git and
+unzip from the Ubuntu snapshot. At run time the component uses the `node` component, the Firefox of
+`desktop-base` (unmodified) and the `work-browser` component.
+
+## teams-service
+
+`teams-service` is Apache-2.0 for its own code (the Node service, the shell scripts, the Go migrations). It
+contains PocketBase, https://github.com/pocketbase/pocketbase (MIT), built from source with the Go modules
+pinned in `teams-service/pocketbase/go.sum` (MIT, BSD-3-Clause, Apache-2.0 and others); the list of modules
+is `/opt/malrunar/teams-service/THIRD-PARTY.txt` and the licence files of each are in
+`/opt/malrunar/teams-service/licenses/`. The Node service has no npm dependencies. Build-time only: the Go
+toolchain (BSD-3-Clause, the `golang` image).
+
 ## apps/desktop-wrapper (not part of any image)
 
 The macOS app is Apache-2.0 (the recipe and its own code). It is built with Tauri v2 and its crates

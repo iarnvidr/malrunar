@@ -58,6 +58,8 @@ IMAGES = {
     "node": None,
     "work-browser": None,
     "session-kit": None,
+    "msteams-mcp": None,
+    "teams-service": None,
 }
 # Images whose smoke test runs them inside or next to other images. This is test-time only (it is
 # not part of the hash and not a build parent); changed_images.py re-tests them when those change.
@@ -65,6 +67,8 @@ TESTED_WITH = {
     "media-bridge": ("desktop-base",),
     "work-browser": ("desktop-base",),
     "session-kit": ("desktop-base", "work-browser"),
+    "msteams-mcp": ("desktop-base", "node", "work-browser"),
+    "teams-service": ("desktop-base", "node", "msteams-mcp"),
 }
 # Files that do not influence image content.
 EXCLUDED_DIRS = {"test", "__pycache__", "node_modules", ".git"}

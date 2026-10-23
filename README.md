@@ -26,6 +26,8 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`node`](node/) | A Node.js runtime in any image | Node.js 24 LTS, the unmodified nodejs.org release, in `/opt/malrunar/node`. A `FROM scratch` layer you copy into your image; it depends on nothing |
 | [`work-browser`](work-browser/) | A persistent Firefox for the desktop user | A launcher, an open-URL helper and a supervisord program for the unmodified Firefox of `desktop-base`, with the profile, preferences and policies supplied by you. A `FROM scratch` layer; it needs `desktop-base` only |
 | [`session-kit`](session-kit/) | Desktop session tools: workspaces, window placement, session check, default-browser launchers | `malrunar-session` and a supervisord program in `/opt/malrunar/session-kit`: names the XFCE workspaces and places windows on them, restores a Firefox profile's tabs, checks the session and registers the desktop's web browser. A `FROM scratch` layer; it needs `desktop-base` (and `xdotool`, installed by you) and uses the work browser only when that component is present |
+| [`msteams-mcp`](msteams-mcp/) | A Microsoft Teams MCP server for the desktop | The [msteams-mcp](https://github.com/m0nkmaster/msteams-mcp) MCP server (MIT) at a pinned commit with five build-time patches, a pinned Playwright Firefox and one command (`malrunar-msteams-mcp`): serve, interactive and password+MFA sign-in, cookie sync into the visible browser, a visual browser MCP, and an optional device-code sign-in that is **off** unless you opt in. A `FROM scratch` layer; it needs `node`, `desktop-base` and `work-browser` and says so (exit 78) when one is missing |
+| [`teams-service`](teams-service/) | A local, queryable copy of Teams chats and calendar | A PocketBase (pinned, built from source) mirror kept in sync through the `msteams-mcp` package, behind a small bearer-token HTTP API, with a supervisord program. A `FROM scratch` layer; it needs `node` and `msteams-mcp` only |
 
 ## Using them
 
@@ -149,6 +151,8 @@ examples of how the parts combine (no product is implied; take the rows you need
 | [`tail-browser-mcp`](tail-browser-mcp/) | component (`COPY --from`) | `node` at run time | optional | optional |
 | [`work-browser`](work-browser/) | component (`COPY --from`, with a supervisord program) | `desktop-base` | optional | yes |
 | [`session-kit`](session-kit/) | component (`COPY --from`, with a supervisord program) | `desktop-base`, `xdotool` for window tools; `work-browser` optional | yes (workspaces, session check) | yes (with `work-browser`: reopen tabs, default browser) |
+| [`msteams-mcp`](msteams-mcp/) | component (`COPY --from`) | `node`, `desktop-base`, `work-browser`; `tail-browser-mcp` only for one optional backend | optional | optional |
+| [`teams-service`](teams-service/) | component (`COPY --from`, with a supervisord program) | `node`, `msteams-mcp` (not `desktop-base`) | optional | optional |
 
 ```dockerfile
 # a calls desktop: it receives the stream OBS (in its own container) sends, for a call app to use
@@ -229,6 +233,8 @@ scripts/build.sh office-convert --load && scripts/smoke.sh office-convert
 scripts/build.sh guacamole-tunnel --load && scripts/smoke.sh guacamole-tunnel
 scripts/build.sh node --load && scripts/smoke.sh node
 scripts/build.sh work-browser --load && scripts/smoke.sh work-browser   # the smoke test needs desktop-base built
+scripts/build.sh msteams-mcp --load && scripts/smoke.sh msteams-mcp     # the smoke test needs desktop-base, node and work-browser built
+scripts/build.sh teams-service --load && scripts/smoke.sh teams-service # the smoke test needs desktop-base, node and msteams-mcp built
 python3 -m unittest discover -s scripts/test    # hashes and pull request planning, and the tests of tools/
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
@@ -240,5 +246,5 @@ To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The images contain
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
-(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` and `work-browser` add only scripts; `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
+(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `msteams-mcp` adds the msteams-mcp package (MIT) with its npm dependencies and Playwright's Firefox build (MPL-2.0); `teams-service` adds PocketBase (MIT) and its Go modules. `media-bridge` and `work-browser` add only scripts; `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
 The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).

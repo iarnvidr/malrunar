@@ -34,6 +34,11 @@ jobs:
           (cd work-browser/bin && shellcheck --severity=warning -x malrunar-work-browser malrunar-work-browser-open)
           bash -n session-kit/bin/malrunar-session
           (cd session-kit/bin && shellcheck --severity=warning -x malrunar-session)
+          bash -n msteams-mcp/bin/malrunar-msteams-mcp teams-service/bin/malrunar-teams-service
+          (cd msteams-mcp/bin && shellcheck --severity=warning -x malrunar-msteams-mcp)
+          (cd teams-service/bin && shellcheck --severity=warning -x malrunar-teams-service)
+          shellcheck --severity=warning msteams-mcp/lib/common.sh teams-service/lib/common.sh
+          for file in msteams-mcp/libexec/*.mjs msteams-mcp/patches/*.cjs teams-service/src/*.mjs teams-service/dev/*.mjs; do node --check "$file"; done
       - name: Public hygiene (no private names, addresses or environment names in tracked files)
         run: scripts/check-public-hygiene.sh
       - name: obs-control tests that need only the standard library (config, scene generation, docs)
@@ -48,6 +53,8 @@ jobs:
         run: work-browser/test/launcher-test.sh
       - name: session-kit unit tests (stand-in X tools; no X server)
         run: python3 -m unittest discover -s session-kit/test -v
+      - name: msteams-mcp shell helpers (settings, log level, profile paths, stand-in supervisorctl)
+        run: msteams-mcp/test/unit/common.test.sh
       - name: Content hashes are computable and stable
         run: |
           set -eu
@@ -73,6 +80,8 @@ jobs:
       media_bridge: ${{ steps.plan.outputs.media_bridge }}
       work_browser: ${{ steps.plan.outputs.work_browser }}
       session_kit: ${{ steps.plan.outputs.session_kit }}
+      msteams_mcp: ${{ steps.plan.outputs.msteams_mcp }}
+      teams_service: ${{ steps.plan.outputs.teams_service }}
       obs_control_e2e: ${{ steps.plan.outputs.obs_control_e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -271,6 +280,81 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh session-kit
+
+  # msteams-mcp is a FROM scratch component for desktop-base; it declares the node and work-browser components as
+  # its dependencies. Its smoke test builds consumers with each of them missing (status 78 and a message that
+  # names it), runs the unit tests in the node component, starts the real Playwright Firefox through the patched
+  # package and the stock Firefox under a virtual display. The published images with the current content hashes
+  # are pulled when they exist and built from this checkout when they do not.
+  msteams-mcp:
+    needs: [scripts, plan]
+    if: needs.plan.outputs.msteams_mcp == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build the component
+        run: scripts/build.sh msteams-mcp --load
+      - name: Get desktop-base, node and work-browser (published image if it exists, else build it)
+        run: |
+          set -eu
+          for image in desktop-base node work-browser; do
+            hash="$(python3 scripts/malrunar_image.py hash "$image")"
+            ref="ghcr.io/iarnvidr/$image:h-$hash"
+            if docker pull --quiet "$ref" >/dev/null; then
+              echo "using published $ref"
+              docker tag "$ref" "malrunar/$image:h-$hash"
+            else
+              echo "$ref is not published; building $image from this checkout"
+              scripts/build.sh "$image" --load
+            fi
+          done
+      - name: Smoke-test
+        run: scripts/smoke.sh msteams-mcp
+
+  # teams-service is a FROM scratch component for the node and msteams-mcp components (not for desktop-base:
+  # it is tested in a bare Ubuntu image with exactly those two, and once on desktop-base under supervisord).
+  teams-service:
+    needs: [scripts, plan]
+    if: needs.plan.outputs.teams_service == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build the component
+        run: scripts/build.sh teams-service --load
+      - name: Get desktop-base, node and msteams-mcp (published image if it exists, else build it)
+        run: |
+          set -eu
+          for image in desktop-base node msteams-mcp; do
+            hash="$(python3 scripts/malrunar_image.py hash "$image")"
+            ref="ghcr.io/iarnvidr/$image:h-$hash"
+            if docker pull --quiet "$ref" >/dev/null; then
+              echo "using published $ref"
+              docker tag "$ref" "malrunar/$image:h-$hash"
+            else
+              echo "$ref is not published; building $image from this checkout"
+              scripts/build.sh "$image" --load
+            fi
+          done
+      - name: Smoke-test
+        run: scripts/smoke.sh teams-service
 
   # obs-control -> UDP -> media-bridge in a desktop-base container, with audio (and video) checked at
   # the virtual microphone and camera. The published images with the current content hashes are pulled when they exist and built from this

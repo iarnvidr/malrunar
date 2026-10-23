@@ -1,6 +1,6 @@
 # Conventions
 
-Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, tail-browser-mcp, media-bridge, office-convert, node, work-browser, session-kit) has:
+Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, tail-browser-mcp, media-bridge, office-convert, node, work-browser, session-kit, msteams-mcp, teams-service) has:
 
 - `<image>/Dockerfile`: build context is `<image>/` only (copy nothing from outside it).
 - `<image>/pins.env`: `KEY=VALUE` lines, passed as `--build-arg`. Must define `VERSION` (the human tag).
@@ -49,7 +49,7 @@ Signature and certificate verification are never disabled.
         malrunar_retry malrunar_apt install -y --no-install-recommends <packages>; \
         malrunar_snapshot_disable
 
-Component images (`tail-browser-mcp`, `media-bridge`, `node`, `work-browser`, `session-kit`) are `FROM scratch` and
+Component images (`tail-browser-mcp`, `media-bridge`, `node`, `work-browser`, `session-kit`, `msteams-mcp`, `teams-service`) are `FROM scratch` and
 hold only `/opt/malrunar/<component>` (and, for a supervisord program, the one fragment described
 below); consumers add them with `COPY --link --from=<image> / /`. A component that needs a runtime
 from `desktop-base` (ffmpeg, PipeWire tools, Firefox) documents that and is smoke-tested in a consumer

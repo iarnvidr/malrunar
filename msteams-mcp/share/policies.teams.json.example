@@ -1,0 +1,15 @@
+{
+  "policies": {
+    "Permissions": {
+      "Camera": {
+        "Allow": ["https://teams.microsoft.com", "https://teams.cloud.microsoft", "https://teams.live.com"],
+        "BlockNewRequests": true
+      },
+      "Microphone": {
+        "Allow": ["https://teams.microsoft.com", "https://teams.cloud.microsoft", "https://teams.live.com"],
+        "BlockNewRequests": true
+      }
+    },
+    "DNSOverHTTPS": { "Enabled": false, "Locked": true }
+  }
+}
