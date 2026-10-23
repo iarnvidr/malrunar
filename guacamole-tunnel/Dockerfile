@@ -5,9 +5,10 @@
 # "open this connection" request of the same user into a join of the session that is already running.
 # It is a service of its own and changes nothing in guacd: use it only if you want the behaviour.
 #
-# Settings are MALRUNAR_GUAC_TUNNEL_* variables, documented in guacamole-tunnel/README.md. Two are
-# required (the upstream Guacamole URL and the name of the trusted identity header); without them the
-# service exits with status 78 and a message naming the setting. The image runs as uid/gid 65534
+# Settings are MALRUNAR_GUAC_TUNNEL_* variables, documented in guacamole-tunnel/README.md. The
+# upstream Guacamole URL is required; an invalid setting makes the service exit with status 78 and a
+# message naming it. Who the user is comes from a header set by your authenticating proxy, trusted only
+# per MALRUNAR_GUAC_TUNNEL_TRUSTED_PROXIES / _PROXY_SECRET_* (forward_auth.py); with neither, nobody is trusted. The image runs as uid/gid 65534
 # (nobody), keeps no state and listens on 0.0.0.0:8082 inside the container.
 ARG UBUNTU_IMAGE
 FROM ${UBUNTU_IMAGE}
@@ -18,8 +19,8 @@ RUN --mount=type=bind,source=scripts,target=/scripts \
     malrunar_snapshot_enable; \
     malrunar_retry malrunar_apt install -y --no-install-recommends python3 python3-aiohttp python3-yarl; \
     malrunar_snapshot_disable
-COPY guacamole_tunnel.py /opt/malrunar/guacamole-tunnel/guacamole_tunnel.py
-RUN python3 -I -m py_compile /opt/malrunar/guacamole-tunnel/guacamole_tunnel.py; \
+COPY guacamole_tunnel.py forward_auth.py /opt/malrunar/guacamole-tunnel/
+RUN python3 -I -m py_compile /opt/malrunar/guacamole-tunnel/guacamole_tunnel.py /opt/malrunar/guacamole-tunnel/forward_auth.py; \
     rm -rf /opt/malrunar/guacamole-tunnel/__pycache__
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MALRUNAR_GUAC_TUNNEL_BIND=0.0.0.0
 USER 65534:65534

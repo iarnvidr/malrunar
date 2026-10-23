@@ -11,7 +11,8 @@
 #
 # Settings are MALRUNAR_OFFICE_* variables, documented in office-convert/README.md. The service has NO
 # authentication and, by default, listens on 127.0.0.1 only: in a container set
-# MALRUNAR_OFFICE_BIND=0.0.0.0 and keep the published port on a trusted network.
+# MALRUNAR_OFFICE_BIND=0.0.0.0 and keep the published port on a trusted network or behind an
+# authenticating proxy (forward_auth.py reads the user it names; see office-convert/README.md).
 # The image runs as uid/gid 65534 (nobody) and needs no writable volume (it uses /tmp).
 ARG UBUNTU_IMAGE
 FROM ${UBUNTU_IMAGE}
@@ -25,8 +26,8 @@ RUN --mount=type=bind,source=scripts,target=/scripts \
         fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core; \
     malrunar_snapshot_disable; \
     soffice --version
-COPY convert.py /opt/malrunar/office-convert/convert.py
-RUN python3 -I -m py_compile /opt/malrunar/office-convert/convert.py; \
+COPY convert.py forward_auth.py /opt/malrunar/office-convert/
+RUN python3 -I -m py_compile /opt/malrunar/office-convert/convert.py /opt/malrunar/office-convert/forward_auth.py; \
     rm -rf /opt/malrunar/office-convert/__pycache__
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER 65534:65534

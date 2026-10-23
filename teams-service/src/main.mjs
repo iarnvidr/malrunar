@@ -15,6 +15,7 @@ import { createGraphAuth, createGraphClient } from './calendar-auth.mjs';
 import { createCalendar } from './calendar.mjs';
 import { createFileClient } from './files.mjs';
 import { mediaKey } from './messages.mjs';
+import { ConfigError, IdentityConfig } from './forward-auth.mjs';
 
 // Settings: MALRUNAR_TEAMS_SERVICE_* variables, documented in ../README.md.
 const env = name => process.env[`MALRUNAR_TEAMS_SERVICE_${name}`];
@@ -42,6 +43,13 @@ function resolveToken() {
 }
 const token = resolveToken();
 if (token.length < 32) { console.error('The Teams service token (MALRUNAR_TEAMS_SERVICE_TOKEN, or the file it is read from) is missing or shorter than 32 characters'); process.exit(78); }
+
+// Identity from an authenticating reverse proxy (MALRUNAR_TEAMS_SERVICE_USER_HEADER, GROUPS_HEADER, NAME_HEADER,
+// EMAIL_HEADER, TRUSTED_PROXIES, PROXY_SECRET_HEADER, PROXY_SECRET_FILE). Additional to the bearer token.
+let identity;
+try { identity = IdentityConfig.fromEnv(process.env, 'MALRUNAR_TEAMS_SERVICE_'); }
+catch (error) { if (!(error instanceof ConfigError)) throw error; console.error(error.message); process.exit(78); }
+const identityWarning = identity.startupWarning();
 
 const credentials = JSON.parse(fs.readFileSync(path.join(dataDir, 'pb-credentials.json'), 'utf8'));
 const pb = new PocketBase({ url: pbUrl, identity: credentials.identity, password: credentials.password });
@@ -86,7 +94,8 @@ async function registerArchivedFiles() {
   }
   await store.setState('file_archive_registered', true);
 }
-const server = createServer({ token, store, sync, teams, auth, media, files, calendar, myName });
+if (identityWarning) log('warn', identityWarning);
+const server = createServer({ token, store, sync, teams, auth, media, files, calendar, myName, identity, log });
 server.listen(port, bind, () => {
   log('info', `Teams service listening on ${bind}:${port}`);
   auth.ensure().then(() => sync.start()).catch(() => sync.start());

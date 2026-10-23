@@ -41,6 +41,9 @@ key = "live"                  # used in POST /api/scene/<key>
 scene = "Live Feed"
 source = "Camera Receiver"
 url = "https://example.invalid/camera-page"    # or: url_file = "/run/secrets/camera-url" (re-read on every use)
+# Any web camera page works. For example a VDO.Ninja view link (view = the stream, room = a room,
+# cleanoutput = no interface, transparent = transparent background):
+# url = "https://vdo.ninja/?view=<stream-id>&cleanoutput&transparent"
 # width = 0                   # 0: the canvas size
 # height = 0
 # fps = 0                     # 0: video.fps
@@ -84,9 +87,20 @@ min_segment_seconds = 6.0
 preview_url = ""              # URL the status endpoint reports for the preview; empty: the built-in route
 
 [access]
-identity_header = ""          # a header set by a trusted reverse proxy, e.g. "X-Forwarded-User"
-allowed_identities = []       # non-empty: b-roll is kept per identity
-enforce = false               # true: reject every request (except /health, /ready) without an allowed identity
+# Authentication and authorization are external (an authenticating reverse proxy, here Authelia behind Traefik
+# as an example; see docs/obs-control-api.md). Nothing set: no identity header is trusted, nothing is enforced
+# here (a startup warning says so) and the proxy must restrict access.
+# trusted_proxies = ["198.51.100.0/24"]        # peer addresses (CIDR) of the proxy; both checks must pass if both are set
+# proxy_secret_header = "X-Obs-Proxy-Secret" # the proxy adds this header after authenticating
+# proxy_secret_file = "/run/secrets/obs-proxy-secret"   # one secret per line, at most two (rotation)
+# identity_header = "Remote-User"            # defaults: Remote-User, Remote-Groups, Remote-Name, Remote-Email
+# groups_header = "Remote-Groups"
+# name_header = "Remote-Name"
+# email_header = "Remote-Email"
+# With trust configured and no [access.groups], every authenticated user is an operator.
+# [access.groups]                            # capability = groups that have it (operator implies viewer)
+# operator = ["calls-operators"]
+# viewer = ["calls-viewers"]
 
 [storage]
 recordings_dir = "/config/recordings"

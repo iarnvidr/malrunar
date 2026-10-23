@@ -179,11 +179,29 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 
 #### `[access]`
 
+Authentication is external (an authenticating reverse proxy such as Authelia; nothing here is tied to a product).
+These settings say which requests may be believed when they carry identity headers, and which groups may do
+what. See [Identity and security](#identity-and-security).
+
 | Key | Default | Environment variable | Meaning |
 |---|---|---|---|
-| `identity_header` | (empty) | `MALRUNAR_OBS_ACCESS_IDENTITY_HEADER` | Header carrying the caller's identity, set by a trusted reverse proxy (for example `X-Forwarded-User`). Empty: identity comes from the `user` query parameter |
-| `allowed_identities` | `[]` | `MALRUNAR_OBS_ACCESS_ALLOWED_IDENTITIES` | Identities that may own b-roll. Non-empty (with `features.program_control`): b-roll is kept per identity and a request without an allowed identity gets 400 |
-| `enforce` | `false` | `MALRUNAR_OBS_ACCESS_ENFORCE` | Reject every request except `/health` and `/ready` unless the trusted header names an allowed identity (403) |
+| `identity_header` | (empty: `Remote-User`) | `MALRUNAR_OBS_ACCESS_IDENTITY_HEADER` | Header with the user name. Setting it switches identities on (per-user b-roll in program control) but trusts nothing by itself: see `trusted_proxies` and `proxy_secret_header` |
+| `groups_header` | (empty: `Remote-Groups`) | `MALRUNAR_OBS_ACCESS_GROUPS_HEADER` | Header with the user's groups, comma separated |
+| `name_header` | (empty: `Remote-Name`) | `MALRUNAR_OBS_ACCESS_NAME_HEADER` | Header with the display name |
+| `email_header` | (empty: `Remote-Email`) | `MALRUNAR_OBS_ACCESS_EMAIL_HEADER` | Header with the mail address |
+| `trusted_proxies` | `[]` | `MALRUNAR_OBS_ACCESS_TRUSTED_PROXIES` | List of addresses or CIDRs (IPv4 and IPv6; the environment variable is comma separated) the connection's peer address must be in. The address of the TCP peer is used, never `X-Forwarded-For` |
+| `proxy_secret_header` | (empty) | `MALRUNAR_OBS_ACCESS_PROXY_SECRET_HEADER` | Header in which the proxy sends a shared secret. Set together with `proxy_secret_file` |
+| `proxy_secret_file` | (empty) | `MALRUNAR_OBS_ACCESS_PROXY_SECRET_FILE` | File with the secret: one per line, at most two (old and new during a rotation), each at least 16 characters; `#` lines and blank lines are ignored. Re-read when its modification time changes. The secret is never in the config file, logs or responses |
+| `groups` (table `[access.groups]`) | `{}` | `MALRUNAR_OBS_ACCESS_GROUPS_VIEWER`, `MALRUNAR_OBS_ACCESS_GROUPS_OPERATOR` | Capability to list of groups: `operator = ["calls-operators"]`, `viewer = ["calls-viewers"]` (environment: comma separated groups; an empty value removes that capability's entry). Needs `trusted_proxies` or `proxy_secret_header` |
+
+Trust: with neither `trusted_proxies` nor `proxy_secret_header` set, no identity header is trusted, every
+request is anonymous, and obs-control logs a warning at startup. With one of them, that check must pass; with both,
+**both** must pass. A request that fails the check is anonymous and its identity headers are ignored. A wrong
+header name, an unparsable CIDR, an unreadable or too short secret, or `[access.groups]` without trust refuses to
+start.
+
+`access.enforce` and `access.allowed_identities` (and their `MALRUNAR_OBS_ACCESS_*` variables) were removed; a
+configuration that still sets them fails to load with `unknown setting(s)`.
 
 #### `[storage]`
 
@@ -228,7 +246,7 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 | `key` | `"live"` | `MALRUNAR_OBS_CAMERA_KEY` | Scene key in `POST /api/scene/<key>`; the first camera's key is the live scene |
 | `scene` | `"Live Feed"` | `MALRUNAR_OBS_CAMERA_SCENE` | Scene name |
 | `source` | `"Camera Receiver"` | `MALRUNAR_OBS_CAMERA_SOURCE` | Browser source name |
-| `url` | (empty) | `MALRUNAR_OBS_CAMERA_URL` | Page the browser source shows (`file://` paths work too). Required unless `url_file` is set |
+| `url` | (empty) | `MALRUNAR_OBS_CAMERA_URL` | Page the browser source shows: any web camera page (`file://` paths work too); see the VDO.Ninja example below. Required unless `url_file` is set |
 | `url_file` | (empty) | `MALRUNAR_OBS_CAMERA_URL_FILE` | File holding the URL; re-read on every use (keeps secrets out of the config) |
 | `width` | `0` | `MALRUNAR_OBS_CAMERA_WIDTH` | Source width; 0 = canvas |
 | `height` | `0` | `MALRUNAR_OBS_CAMERA_HEIGHT` | Source height; 0 = canvas |
@@ -237,6 +255,18 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 | `restart_when_active` | (unset) | `MALRUNAR_OBS_CAMERA_RESTART_WHEN_ACTIVE` | Reload the page whenever its scene goes on air. Unset: `true`, but `false` with `features.program_control` (a reload drops a peer connection on every return to live) |
 | `reroute_audio` | `true` | `MALRUNAR_OBS_CAMERA_REROUTE_AUDIO` | Capture the page's audio into OBS |
 | `shutdown_when_hidden` | `false` | `MALRUNAR_OBS_CAMERA_SHUTDOWN_WHEN_HIDDEN` | Unload the page while off air (drops a peer connection) |
+
+Example: VDO.Ninja is one way to bring a remote camera in. Give the sender a push link and show the matching view
+link in the browser source (one option among any web camera page):
+
+```toml
+[[cameras]]
+key = "live"
+url = "https://vdo.ninja/?view=<stream-id>&cleanoutput&transparent"   # or: room=<room-name> to view a room
+```
+
+`view` selects the stream to show, `room` a room, `cleanoutput` hides the interface and `transparent` makes the page
+background transparent. Treat a stream id as a secret and keep it in `url_file` if the config is shared.
 
 #### `[profiles.<name>]` (video profiles, used with `features.video_profiles`)
 
@@ -312,6 +342,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `GET /` | Product console page | Generic console: output state, scene buttons, preview, recording, clips | Page rewritten; the sender iframe, `https` redirect and title are configuration | Set `console.sender_url` and `console.secure_url`, or set `console.enabled = false` and use the API |
 | `GET /health` | `{healthy, obs, scene, output_active, output_timecode}`, 503 when the output is off | same | none | none |
 | `GET /ready` | `{ready, obsVersion, rpcVersion}`; with the product mode also `mode`, mute states, video profile(s), program scene | same keys; the extras appear with `features.program_control`; `mode` is `features.mode_label`; `video_profile(s)` need `features.video_profiles`; plugins can add keys | `mode` default is `program-control`. The server answers `503 {"ready": false}` while OBS starts (the old server refused connections) | Set `features.mode_label` to the old value if a client checks it |
+| `GET /api/whoami` | not present | `{user, name, email, groups, capabilities}` of the caller as obs-control sees it (nulls and `[]` for an anonymous caller); needs `viewer` | **new** | none |
 | `GET /api/scenes` | not present | `{scenes, program, keys, stopped}` | **new** | none |
 | `GET /api/program-preview.jpg` | JPEG of the program scene (640x360), `X-OBS-Scene` header | same | none | none |
 | `GET /api/program-live.mjpg` | multipart MJPEG, about 8 fps, 320x180 | same | none | none |
@@ -325,7 +356,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `GET /api/recording/status` | relay capture status | same, via `relay.control_url` | none | `MALRUNAR_OBS_RELAY_CONTROL_URL` replaces the old variable |
 | `POST /api/recording/start` | `{name}` starts a relay capture | same | none | none |
 | `POST /api/recording/stop` | stops, remuxes to MP4, creates the clip scene | same | none | none |
-| `GET /api/daily-fallback/status` | b-roll state; in the product mode `?user=` had to be one of two hard-coded names | same state machine and fields; the owner comes from `access.*` (below); `url` is `broll.preview_url`, else `api/daily-fallback/preview` in program control, `media/3-minute-video.mp4` otherwise; `{"enabled": false, "state": "disabled"}` when `broll.enabled = false` | identity handling; the product mode reported `api/obs/daily-fallback/preview` as `url` | Set `broll.preview_url` to the old value if a client relies on it; list identities in `access.allowed_identities` (per-identity b-roll applies in program control, as before) |
+| `GET /api/daily-fallback/status` | b-roll state; in the product mode `?user=` had to be one of two hard-coded names | same state machine and fields; the owner is the trusted identity's user (below); 403 when there is none; `url` is `broll.preview_url`, else `api/daily-fallback/preview` in program control, `media/3-minute-video.mp4` otherwise; `{"enabled": false, "state": "disabled"}` when `broll.enabled = false` | identity handling; the product mode reported `api/obs/daily-fallback/preview` as `url` | Set `broll.preview_url` to the old value if a client relies on it; configure identities (`access.trusted_proxies` and/or `access.proxy_secret_header`; per-identity b-roll applies in program control, as before; no list of identities is needed) |
 | `GET /api/daily-fallback/preview` | today's b-roll for the owner | same | none | none |
 | `POST /api/daily-fallback/ensure` | 202, starts capture; product mode: 409 unless the owner's camera is live | same | `409 {"error": "Automatic b-roll is disabled"}` when disabled | none |
 | `POST /api/daily-fallback/cancel` | cancels the owner's capture | same | none | none |
@@ -338,7 +369,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `POST /api/call/microphone` | `{"muted": bool}` gates the live audio | same; applies to every camera source | flag name | as above |
 | `POST /api/call/clip-audio` | `{"muted": bool}` gates the clip audio | same | flag name | as above |
 | `POST /api/call/video-profile` | `{"profile": "360p"\|"540p"\|"720p"}`; response had `scale` and `viewer_kbps` | profiles come from `[profiles.*]`; response `{ok, profile, width, height, encoder_kbps, camera_query}`; needs `features.program_control` and `features.video_profiles`; 409 while a plugin holds the program | the viewer-side `scale`/`viewer_kbps` were sender-specific and became the generic `camera_query` | Put `scale` and `videobitrate` (or whatever the sender understands) in `profiles.<name>.camera_query` |
-| `POST /api/sender-heartbeat` | `{"healthy": bool, "user": name}`; simple mode starts the b-roll | same; `user` is accepted only if listed in `access.allowed_identities` | no hard-coded names | none |
+| `POST /api/sender-heartbeat` | `{"healthy": bool, "user": name}`; simple mode starts the b-roll | same; when identities are configured, the sender's user is the trusted identity's user (403 without one in program control) and the body `user` is ignored; with no identity configuration the body `user` is ignored too (no user) | no hard-coded names | none |
 | `POST /api/restart-live` | refreshed the product's receiver input | refreshes the first camera's browser source (`?key=<camera key>` for another one); falls back to resetting its URL | optional `key` parameter | none |
 | `POST /api/restart-output` | stop (if running), start | same | none | none |
 | `POST /api/stop-output` | stop if running | same | none | none |
@@ -351,23 +382,124 @@ Error responses keep the old shapes: `{"ok": false, "error": "..."}` with 400 (b
 
 ## Identity and security
 
-The HTTP API has **no authentication of its own**. Publish its port only to networks you trust, or
-put an authenticating reverse proxy in front of it and tell obs-control which header the proxy
-sets:
+Authentication is **external**: a reverse proxy that authenticates users (for example an SSO forward-auth service
+such as Authelia, used as the example below) tells obs-control who the caller is in request headers.
+obs-control believes those headers only from a request that proves it came from that proxy (see
+[`[access]`](#access)), maps the user's groups to a capability, and refuses what the capability does not allow.
+Authelia is an example: nothing is hard-coded, the header names, the trusted addresses and the groups are all
+configuration.
 
 ```toml
 [access]
-identity_header = "X-Forwarded-User"     # set (and any client value overwritten) by the proxy
-allowed_identities = ["ann", "bob"]      # who may own b-roll
-enforce = true                           # also reject any other request, except /health and /ready (403)
+trusted_proxies = ["198.51.100.0/24"]            # the proxy's network
+proxy_secret_header = "X-Obs-Proxy-Secret"      # the proxy adds this header after authenticating
+proxy_secret_file = "/run/secrets/obs-proxy-secret"
+
+[access.groups]
+operator = ["calls-operators"]
+viewer = ["calls-viewers"]
 ```
 
-- With `allowed_identities` empty (the default), or without `features.program_control`, there are no
-  identities: b-roll is shared and the heartbeat's `user` is ignored.
-- With identities listed and `identity_header` empty, the identity is the `user` query parameter
-  (the old behaviour): that is only a label, not a trust boundary.
-- `enforce` requires `identity_header` and `allowed_identities`, and then trusts the header: the proxy
-  must strip it from client requests.
+### Compatibility: what happens with which configuration
+
+| Configuration | Identity headers | Access checks | b-roll and heartbeat user |
+|---|---|---|---|
+| Nothing set (the default) | not trusted; everyone is anonymous; a warning is logged at startup | **none: nothing is enforced here**, the proxy in front must restrict access | shared b-roll; the heartbeat has no user (as before) |
+| `identity_header` only (an older configuration) | not trusted (a header alone proves nothing); everyone is anonymous | none | per-identity b-roll needs an owner, so in program control b-roll routes and the heartbeat answer 403 until trust is configured |
+| `trusted_proxies` and/or `proxy_secret_header`, no `[access.groups]` | trusted when the check passes | an authenticated user is an operator; an anonymous request gets 403 (except `/health`, `/ready`) | per identity (program control) |
+| as above plus `[access.groups]` | as above | the user's groups must map to a capability; anonymous and unmapped users get 403 | per identity (program control) |
+
+Previously the header named by `identity_header` was believed from any peer; add `trusted_proxies` or a proxy
+secret when upgrading. Without trust configured, **obs-control enforces nothing**: anyone who can reach the port can
+use every route, so publish it only on a trusted network or behind the proxy.
+
+### Capabilities
+
+`viewer` may watch (preview, status, who am I); `operator` may do everything else, and implies `viewer`. Groups map
+to capabilities with `[access.groups]`. With trust configured and no mapping, every authenticated user is an
+operator. `GET /health` and `GET /ready` are always open. A route that is not in the table below (for example one
+a plugin registered) is refused when access checks are on, until the plugin declares it with
+`controller.classify_route("GET", "/path", "viewer")`; a test asserts that every built-in route is classified.
+
+| Capability | Routes |
+|---|---|
+| open | `GET /health`, `GET /ready` |
+| `viewer` | `GET /` (console), `GET /api/whoami`, `GET /api/scenes`, `GET /api/program-preview.jpg`, `GET /api/program-live.mjpg`, `GET /api/input-levels`, `GET /api/recording/status`, `GET /api/daily-fallback/status` |
+| `operator` | `GET /api/clips`, `GET /clips/<id>.mp4`, `GET /api/daily-fallback/preview`, `GET /media/3-minute-video.mp4`, `POST /api/clips/upload`, `POST /api/clips/<id>/trim`, `DELETE /api/clips/<id>`, `POST /api/scene/<key>`, `POST /api/clip/<id>/scene`, `POST /api/clip/<id>/play`, `POST /api/call/*` (`live`, `stop`, `microphone`, `clip-audio`, `video-profile`), `POST /api/recording/start`, `POST /api/recording/stop`, `POST /api/daily-fallback/play`, `POST /api/daily-fallback/cancel`, `POST /api/daily-fallback/ensure`, `POST /api/sender-heartbeat`, `POST /api/restart-live`, `POST /api/restart-output`, `POST /api/stop-output`, `POST /api/start-output` |
+
+A refused request gets `403 {"ok": false, "error": ...}`.
+
+`GET /api/whoami` answers `{"user": "ann", "name": "Ann Example", "email": "ann@example.invalid",
+"groups": ["calls-operators"], "capabilities": ["operator", "viewer"]}`. An anonymous caller gets `null` fields,
+`[]` groups and, when access checks are off, both capabilities (nothing is enforced); with checks on, anonymous
+callers get 403 instead.
+
+The user name keys per-user state: with identities configured and `features.program_control`, b-roll is kept per
+user (any user the proxy passes gets its own; a request without an identity gets 403 from the b-roll routes), and
+`POST /api/sender-heartbeat` takes the sender's user from the identity, never from the body or a query parameter.
+Identity and secret headers are never forwarded to the relay or logged.
+
+### Behind an authenticating proxy
+
+An example with Authelia and Traefik (generic names; adapt freely, any forward-auth proxy that sets headers works).
+Authelia authenticates, Traefik's `forwardAuth` copies the `Remote-*` headers onto the request, and a second
+middleware adds the shared secret **after** the forward-auth step so a client cannot supply it.
+
+```yaml
+# Traefik dynamic configuration
+http:
+  middlewares:
+    authelia:
+      forwardAuth:
+        address: "http://authelia:9091/api/authz/forward-auth"
+        trustForwardHeader: true
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Name, Remote-Email]
+    obs-secret:
+      headers:
+        customRequestHeaders:
+          X-Obs-Proxy-Secret: "<the secret in /run/secrets/obs-proxy-secret>"
+  routers:
+    obs:
+      rule: "Host(`obs.example.com`)"
+      service: obs
+      middlewares: [authelia, obs-secret]      # order matters: the secret is set after forward-auth
+  services:
+    obs:
+      loadBalancer:
+        servers: [{ url: "http://obs-control.example.invalid:18095" }]
+```
+
+```yaml
+# Authelia configuration: who may reach the host at all (groups are the ones used in [access.groups])
+access_control:
+  default_policy: deny
+  rules:
+    - domain: obs.example.com
+      policy: one_factor
+      subject: ["group:calls-operators", "group:calls-viewers"]
+```
+
+```toml
+# obs-control
+[access]
+trusted_proxies = ["198.51.100.0/24"]       # Traefik's network
+proxy_secret_header = "X-Obs-Proxy-Secret"
+proxy_secret_file = "/run/secrets/obs-proxy-secret"
+
+[access.groups]
+operator = ["calls-operators"]
+viewer = ["calls-viewers"]
+```
+
+- Put the secret (at least 16 random characters, kept out of the config) in a file mounted at
+  `proxy_secret_file` and in the proxy configuration. To rotate, list the new secret second in the file, change the
+  proxy, then remove the old one; both work meanwhile.
+- Authelia group names are the strings Authelia sends in `Remote-Groups`; `[access.groups]` maps them to
+  `viewer` and `operator`. A user in neither list gets 403.
+- Do not publish obs-control's port except to the proxy. The proxy must not let a client set `Remote-*` or the
+  secret header itself (Traefik's `authResponseHeaders` replaces them).
+- Richer integration (more capabilities, per-take ownership, an audit log of who did what) can be added later by
+  reading further configurable headers; the existing settings would not change.
 
 obs-websocket is protected with a password (generated on first start, or `obs.websocket_password`)
 and is not published by the image. The relay's control API is unauthenticated and binds to
@@ -510,7 +642,8 @@ Names that were fixed in code are configuration now. To keep the old scene and s
 existing OBS volume, set them: `cameras[0].scene`, `cameras[0].source`, `media.scene`, `media.source`,
 `stopped.scene`, `stopped.source` (the defaults are generic names, and the OBS configuration is
 regenerated on every start). The profile and collection names (`obs.profile`, `obs.collection`)
-default to `malrunar`. The hard-coded allowlist of two users is `access.allowed_identities`; the
+default to `malrunar`. The hard-coded allowlist of two users is gone (authorization is external; see
+[Identity and security](#identity-and-security)); the
 heartbeat's sender lease is `features.sender_lease` and `sender.lease_seconds`. The OBS image runs as
 uid/gid 1000 with home `/config`, like the previous container; obs-websocket now needs a password
 (generated and stored in the OBS configuration, nothing to do for the controller).

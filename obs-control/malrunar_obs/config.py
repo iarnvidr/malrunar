@@ -20,6 +20,9 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from .forward_auth import ConfigError as IdentityConfigError
+from .forward_auth import IdentityConfig
+
 try:  # Python 3.11+
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
@@ -86,7 +89,16 @@ DEFAULTS: dict[str, Any] = {
         "min_segment_seconds": 6.0,
         "preview_url": "",
     },
-    "access": {"identity_header": "", "allowed_identities": [], "enforce": False},
+    "access": {
+        "identity_header": "",  # the user header; empty: Remote-User
+        "groups_header": "",  # empty: Remote-Groups
+        "name_header": "",  # empty: Remote-Name
+        "email_header": "",  # empty: Remote-Email
+        "trusted_proxies": [],
+        "proxy_secret_header": "",
+        "proxy_secret_file": "",
+        "groups": {},  # capability -> list of groups, e.g. operator = ["calls-operators"]
+    },
     "storage": {"recordings_dir": "/config/recordings", "state_dir": "/config/state"},
     "relay": {
         "control_url": "http://127.0.0.1:18097",
@@ -125,6 +137,8 @@ ENV_ALIASES = {
 # controller-only restart (see docs/obs-control-api.md), and the config file location.
 ENV_CONFIG = "MALRUNAR_OBS_CONFIG"
 ENV_RESTORE = "MALRUNAR_OBS_RESTORE"
+
+CAPABILITIES = ("viewer", "operator")
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}
@@ -210,11 +224,41 @@ class Config:
         return self.cameras[0].scene
 
     @property
+    def trust_configured(self) -> bool:
+        """Whether a trusted proxy address or a proxy secret is configured (identity headers can be trusted)."""
+        access = self.access
+        return bool(access.trusted_proxies or access.proxy_secret_header)
+
+    @property
+    def identity_active(self) -> bool:
+        """Whether identities are in use at all: a user header or any trust setting is configured."""
+        return bool(self.access.identity_header) or self.trust_configured
+
+    @property
     def per_identity_broll(self) -> bool:
-        return bool(self.access.allowed_identities)
+        return self.identity_active
+
+    def identity_config(self) -> IdentityConfig:
+        """The forward-auth settings (reads the proxy secret file); raises ConfigError."""
+        try:
+            return IdentityConfig.from_mapping(_identity_values(self.access.to_dict()), "[access] ")
+        except IdentityConfigError as exc:
+            raise ConfigError(f"[access]: {exc}") from exc
 
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self.data)
+
+
+def _identity_values(access: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "USER_HEADER": access["identity_header"],
+        "GROUPS_HEADER": access["groups_header"],
+        "NAME_HEADER": access["name_header"],
+        "EMAIL_HEADER": access["email_header"],
+        "TRUSTED_PROXIES": access["trusted_proxies"],
+        "PROXY_SECRET_HEADER": access["proxy_secret_header"],
+        "PROXY_SECRET_FILE": access["proxy_secret_file"],
+    }
 
 
 def setattr_obj(obj: object, name: str, value: Any) -> None:
@@ -299,8 +343,26 @@ def _merge_section(name: str, base: dict[str, Any], given: Any) -> dict[str, Any
         raise ConfigError(f"[{name}]: unknown setting(s) {', '.join(sorted(unknown))}")
     merged = dict(base)
     for key, value in given.items():
-        merged[key] = _check_type(value, base[key], f"[{name}] {key}")
+        if name == "access" and key == "groups":
+            merged[key] = _check_groups(value)
+        else:
+            merged[key] = _check_type(value, base[key], f"[{name}] {key}")
     return merged
+
+
+def _check_groups(value: Any) -> dict[str, list[str]]:
+    where = "[access.groups]"
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where} must be a table of capability = [groups]")
+    unknown = set(value) - set(CAPABILITIES)
+    if unknown:
+        raise ConfigError(f"{where}: unknown capability {', '.join(sorted(unknown))} (use {', '.join(CAPABILITIES)})")
+    result = {}
+    for capability, groups in value.items():
+        if not isinstance(groups, list) or not all(isinstance(g, str) and g.strip() for g in groups):
+            raise ConfigError(f"{where} {capability}: expected a list of group names")
+        result[capability] = [g.strip() for g in groups]
+    return result
 
 
 def _merge_profiles(given: Any) -> dict[str, Any]:
@@ -365,9 +427,20 @@ def apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         if section in ("cameras", "profiles", "plugin") or not isinstance(values, dict):
             continue
         for key, like in values.items():
+            if section == "access" and key == "groups":
+                continue
             name = env_name(section, key)
             if name in env and name not in claimed:
                 data[section][key] = _coerce(env[name], like, name)
+    # [access.groups]: MALRUNAR_OBS_ACCESS_GROUPS_<CAPABILITY> = comma-separated groups.
+    for capability in CAPABILITIES:
+        name = f"{ENV_PREFIX}ACCESS_GROUPS_{capability}".upper()
+        if name in env:
+            groups = _coerce(env[name], [], name)
+            if groups:
+                data["access"]["groups"] = {**data["access"]["groups"], capability: groups}
+            else:
+                data["access"]["groups"] = {k: v for k, v in data["access"]["groups"].items() if k != capability}
     # The first camera: MALRUNAR_OBS_CAMERA_<KEY>.
     overrides = {
         key: _coerce(env[f"{ENV_PREFIX}CAMERA_{key}".upper()], like, f"{ENV_PREFIX}CAMERA_{key}".upper())
@@ -427,15 +500,24 @@ def validate(data: dict[str, Any], *, cameras: bool = True) -> None:
         raise ConfigError(f"[stopped] color must look like #rrggbb (got {color!r})")
     if not data["output"]["url"]:
         raise ConfigError("[output] url is required (MALRUNAR_OBS_OUTPUT_URL)")
-    access = data["access"]
-    if access["enforce"] and not (access["identity_header"] and access["allowed_identities"]):
-        raise ConfigError("[access] enforce needs identity_header and allowed_identities")
     start = data["obs"]["start_scene"]
     if start and start != "stopped" and start not in keys and start not in scenes:
         raise ConfigError(f"[obs] start_scene {start!r} is not a scene key or scene name")
     for name in ("recordings_dir", "state_dir"):
         if not data["storage"][name]:
             raise ConfigError(f"[storage] {name} must not be empty")
+    access = data["access"]
+    if bool(access["proxy_secret_header"]) != bool(access["proxy_secret_file"]):
+        raise ConfigError("[access] proxy_secret_header and proxy_secret_file go together: set both or neither")
+    try:  # header names and CIDRs (the secret file is read when the controller starts)
+        IdentityConfig.from_mapping({**_identity_values(access), "PROXY_SECRET_HEADER": "", "PROXY_SECRET_FILE": ""}, "[access] ")
+    except IdentityConfigError as exc:
+        raise ConfigError(f"[access]: {exc}") from exc
+    if access["groups"] and not (access["trusted_proxies"] or access["proxy_secret_header"]):
+        raise ConfigError(
+            "[access.groups] needs trust: set access.trusted_proxies and/or access.proxy_secret_header "
+            "(otherwise no identity is trusted and every request would be refused)"
+        )
     http_port = data["http"]["port"]
     if not 0 <= http_port <= 65535:
         raise ConfigError("[http] port must be between 0 and 65535")

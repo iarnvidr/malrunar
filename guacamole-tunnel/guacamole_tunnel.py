@@ -9,16 +9,23 @@ rewritten into a join (GUAC_TYPE=a) of that session; otherwise it is passed thro
 becomes the session others join.
 
 Who the user is comes from a header that YOUR reverse proxy sets after it has authenticated the
-request (and strips from client requests): this service trusts it and nothing else.
+request. It is trusted only if the request comes from a trusted proxy address and/or carries the shared
+proxy secret (forward_auth.py); otherwise the request is anonymous and gets 403. Nothing configured:
+nobody is trusted.
 
 Settings (environment):
   MALRUNAR_GUAC_TUNNEL_UPSTREAM       required: base URL of the Guacamole web application,
                                       including its context path, e.g. http://guacamole:8080/guacamole
-  MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER required: name of the trusted header that carries the user
-                                      name; it is also forwarded to Guacamole under the same name
-                                      (which is what Guacamole's header authentication reads)
-  MALRUNAR_GUAC_TUNNEL_ALLOWED_USERS  optional: comma-separated user names that may use the tunnel;
-                                      unset = any non-empty identity the proxy supplies
+  MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER optional (alias USER_HEADER): name of the header that carries the
+                                      user name, default Remote-User; it is also forwarded to Guacamole
+                                      under the same name (which is what Guacamole's header
+                                      authentication reads). No other identity header and never the
+                                      proxy secret is forwarded
+  MALRUNAR_GUAC_TUNNEL_GROUPS_HEADER, NAME_HEADER, EMAIL_HEADER   optional: further identity headers
+                                      (Remote-Groups, Remote-Name, Remote-Email); resolved, not used yet
+  MALRUNAR_GUAC_TUNNEL_TRUSTED_PROXIES optional: comma-separated CIDRs the peer address must be in
+  MALRUNAR_GUAC_TUNNEL_PROXY_SECRET_HEADER / _PROXY_SECRET_FILE  optional, together: header carrying a
+                                      shared secret and the file holding it (two lines during rotation)
   MALRUNAR_GUAC_TUNNEL_DATA_SOURCE    optional: Guacamole data source whose active connections are
                                       looked up, default postgresql
   MALRUNAR_GUAC_TUNNEL_PATH_PREFIX    optional: path this service answers under, default the path of
@@ -35,9 +42,14 @@ import asyncio
 import os
 import socket
 import sys
+from pathlib import Path
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+# python -I does not put the script directory on sys.path; forward_auth.py sits next to this file.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import forward_auth  # noqa: E402
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 from yarl import URL
 
@@ -48,19 +60,21 @@ LOCK = web.AppKey('connect_lock', asyncio.Lock)
 CONFIG = web.AppKey('config', object)
 
 
-class ConfigError(ValueError):
-    pass
+ConfigError = forward_auth.ConfigError
 
 
 @dataclass(frozen=True)
 class Config:
     upstream: str
-    identity_header: str
-    allowed_users: frozenset = frozenset()
+    identity: forward_auth.IdentityConfig
     data_source: str = 'postgresql'
     path_prefix: str = ''
     bind: str = '127.0.0.1'
     port: int = 8082
+
+    @property
+    def identity_header(self):
+        return self.identity.user_header
 
     @classmethod
     def from_env(cls, env):
@@ -76,10 +90,7 @@ class Config:
         parts = urlsplit(upstream)
         if parts.scheme not in ('http', 'https') or not parts.netloc or parts.query or parts.fragment:
             raise ConfigError(f'{PREFIX}UPSTREAM must be an http(s) URL without query or fragment')
-        header = get('IDENTITY_HEADER')
-        if not all(c.isalnum() or c == '-' for c in header):
-            raise ConfigError(f'{PREFIX}IDENTITY_HEADER must be a header name (letters, digits, hyphen)')
-        allowed = frozenset(u.strip() for u in env.get(PREFIX + 'ALLOWED_USERS', '').split(',') if u.strip())
+        identity = forward_auth.IdentityConfig.from_env(env, PREFIX)
         source = get('DATA_SOURCE', 'postgresql')
         if not all(c.isalnum() or c in '-_.' for c in source):
             raise ConfigError(f'{PREFIX}DATA_SOURCE has characters a data source name cannot have')
@@ -92,7 +103,7 @@ class Config:
             raise ConfigError(f'{PREFIX}PORT must be a number') from None
         if not 1 <= port <= 65535:
             raise ConfigError(f'{PREFIX}PORT must be 1-65535')
-        return cls(upstream, header, allowed, source, prefix, get('BIND', '127.0.0.1'), port)
+        return cls(upstream, identity, source, prefix, get('BIND', '127.0.0.1'), port)
 
 
 async def connection_parameters(session, config, parameters, user):
@@ -132,10 +143,14 @@ async def relay(source, target):
 
 async def tunnel(request):
     config = request.app[CONFIG]
-    user = request.headers.get(config.identity_header, '').strip()
-    if not user or (config.allowed_users and user not in config.allowed_users):
+    # The transport peer, never X-Forwarded-For: that header is client-controlled.
+    peername = request.transport.get_extra_info('peername') if request.transport else None
+    identity = config.identity.resolve(peername[0] if peername else None, request.headers)
+    user = identity.user
+    if not user:  # untrusted or no identity: no session owner; who may connect is the proxy's decision
         raise web.HTTPForbidden()
     root = config.upstream
+    # Only the user header goes to Guacamole, under the configured name.
     headers = {config.identity_header: user}
     timeout = ClientTimeout(total=None, sock_connect=10)
     async with ClientSession(timeout=timeout, headers=headers) as session:
@@ -185,6 +200,7 @@ async def tunnel(request):
         headers = {'Content-Type': request.content_type}
         if 'Guacamole-Tunnel-Token' in request.headers:
             headers['Guacamole-Tunnel-Token'] = request.headers['Guacamole-Tunnel-Token']
+        headers = config.identity.scrub_headers(headers)  # per-request headers never carry identity/secret
         if request.method == 'POST' and 'connect' in request.query:
             async with request.app[LOCK]:
                 parameters = await connection_parameters(session, config, parse_qsl(body.decode()), user)
@@ -231,6 +247,9 @@ def main(argv, env):
         return EX_CONFIG
     if '--healthcheck' in argv:
         return healthcheck(config)
+    warning = config.identity.startup_warning()
+    if warning:
+        print(f'guacamole-tunnel: WARNING: {warning}; every tunnel request will get 403', file=sys.stderr)
     # Never log request URLs: Guacamole carries authentication tokens in them.
     web.run_app(create_app(config), host=config.bind, port=config.port, access_log=None)
     return 0

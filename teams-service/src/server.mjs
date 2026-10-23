@@ -9,6 +9,7 @@ import { escapeHtml, mediaKey, renderMessage, searchSnippet } from './messages.m
 import { imageSize } from './media.mjs';
 import { PRIORITY, TeamsError } from './teams.mjs';
 import { GraphError } from './calendar-auth.mjs';
+import { IdentityConfig } from './forward-auth.mjs';
 
 const MAX_BODY = 1024 * 1024;
 const MAX_TEXT = 28000;
@@ -50,7 +51,7 @@ async function readJson(request) {
 
 const intParam = (value, fallback, low, high) => { const number = Number.parseInt(value, 10); return Number.isFinite(number) ? Math.max(low, Math.min(high, number)) : fallback; };
 
-export function createServer({ token, store, sync, teams, auth, media, files, calendar, myName = () => '', stats = () => ({}), now = () => Date.now() }) {
+export function createServer({ token, store, sync, teams, auth, media, files, calendar, myName = () => '', stats = () => ({}), now = () => Date.now(), identity = new IdentityConfig(), log = () => {} }) {
   const expected = Buffer.from(token);
   const authorised = request => {
     const header = String(request.headers.authorization || '');
@@ -143,6 +144,10 @@ export function createServer({ token, store, sync, teams, auth, media, files, ca
   }
 
   route('GET', '/health', async () => ({ ok: true }));
+
+  // Who the authenticating proxy in front says the caller is (README, "Behind an authenticating proxy").
+  // Informational: the bearer token still decides access, and nothing here is restricted by identity.
+  route('GET', '/whoami', async ({ identity: who }) => ({ user: who.user, name: who.name, email: who.email, groups: [...who.groups], trusted: who.trusted, anonymous: who.anonymous }));
 
   route('GET', '/status', async () => {
     const memory = process.memoryUsage();
@@ -312,6 +317,11 @@ export function createServer({ token, store, sync, teams, auth, media, files, ca
     try {
       const url = new URL(request.url, 'http://127.0.0.1');
       const path = url.pathname;
+      // The identity comes from the peer address and the proxy secret, never from X-Forwarded-For. The
+      // identity and secret headers are not logged or passed on; only the resolved user is.
+      const who = identity.resolve(request.socket.remoteAddress, request.headers);
+      request.identity = who;
+      response.on('finish', () => log('debug', `${request.method} ${path} ${response.statusCode} user=${JSON.stringify(who.user)}`));
       if (path !== '/health' && !authorised(request)) { json(response, 401, { error: 'Not authorised' }); return; }
       for (const entry of routes) {
         if (entry.method !== request.method) continue;
@@ -320,7 +330,7 @@ export function createServer({ token, store, sync, teams, auth, media, files, ca
         const params = match.slice(1).map(part => { try { return decodeURIComponent(part); } catch { throw new HttpError(400, 'Bad path'); } });
         const rawBody = entry.raw && request.method === 'POST' ? await readBytes(request, MAX_UPLOAD + 1024) : null;
         const body = request.method === 'POST' && !entry.raw ? await readJson(request) : {};
-        const result = await entry.handler({ params, query: url.searchParams, body, rawBody, response, request });
+        const result = await entry.handler({ params, query: url.searchParams, body, rawBody, response, request, identity: who });
         if (result !== undefined) json(response, 200, result);
         return;
       }

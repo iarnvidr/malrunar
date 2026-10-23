@@ -14,12 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from urllib.parse import quote
+
 from aiohttp import web
 
 from .daily_video import assemble, exclude_voice_activity, find_clean_spans, usable_duration
 
 if TYPE_CHECKING:  # pragma: no cover
     from .controller import Controller
+
+
+def owner_dirname(identity: str) -> str:
+    """A directory name for any identity the proxy passes: percent-encoded, never ``.`` or ``..``."""
+    return quote(identity, safe="").replace(".", "%2E") if identity.strip(".") == "" else quote(identity, safe="")
 
 
 def local_day() -> str:
@@ -62,7 +69,7 @@ class Broll:
         return max(3.0, float(self.cfg.min_segment_seconds))
 
     def path(self, day: str | None = None, user: str | None = None) -> Path:
-        directory = self.directory / user if user else self.directory
+        directory = self.directory / owner_dirname(user) if user else self.directory
         return directory / f"{day or local_day()}.mp4"
 
     def today_path(self, user: str | None = None) -> Path | None:
@@ -70,13 +77,12 @@ class Broll:
         return path if path.is_file() else None
 
     def user(self, request: web.Request | None) -> str | None:
-        """The b-roll owner. Only in program control, with identities configured, is b-roll per identity."""
-        allowed = self.ctl.config.access.allowed_identities
-        if not allowed or not self.ctl.program_control:
+        """The b-roll owner. Only in program control, with identities configured (config.identity_active), is b-roll per identity."""
+        if not self.ctl.config.per_identity_broll or not self.ctl.program_control:
             return None
         identity = self.ctl.identity(request) if request is not None else None
-        if identity not in allowed:
-            raise web.HTTPBadRequest(text="An authenticated b-roll owner is required")
+        if not identity:
+            raise web.HTTPForbidden(text="An authenticated b-roll owner is required")
         return identity
 
     # ------------------------------------------------------------------ OBS

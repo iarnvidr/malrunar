@@ -22,6 +22,11 @@ class DocsTests(unittest.TestCase):
             if section in ("cameras", "profiles", "plugin"):
                 continue
             for key in values:
+                if (section, key) == ("access", "groups"):
+                    for capability in ("viewer", "operator"):
+                        if f"`MALRUNAR_OBS_ACCESS_GROUPS_{capability.upper()}`" not in self.text:
+                            missing.append(f"MALRUNAR_OBS_ACCESS_GROUPS_{capability.upper()}")
+                    continue
                 name = env_name(section, key)
                 if f"`{name}`" not in self.text:
                     missing.append(name)

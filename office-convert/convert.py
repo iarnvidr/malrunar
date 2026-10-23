@@ -7,13 +7,17 @@ name itself. One conversion runs at a time; other requests wait their turn, and 
 answered. LibreOffice runs only for the duration of a request, in its own process group, and the
 whole group is killed on timeout. Nothing is kept between requests.
 
-The service has no authentication: keep it on a trusted network.
+The service has no authentication of its own: keep it on a trusted network or behind an
+authenticating proxy. The user a proxy names in a request header (forward_auth.py) is only logged; no
+request is refused because of it, and nothing about the user is kept.
 
 Settings (environment, all optional):
   MALRUNAR_OFFICE_PORT              listen port, default 8090
   MALRUNAR_OFFICE_BIND              listen address, default 127.0.0.1 (use 0.0.0.0 in a container)
   MALRUNAR_OFFICE_TIMEOUT_SECONDS   per-conversion limit, default 180
   MALRUNAR_OFFICE_MAX_BYTES         largest accepted document, default 209715200 (200 MiB)
+  MALRUNAR_OFFICE_USER_HEADER, _GROUPS_HEADER, _NAME_HEADER, _EMAIL_HEADER, _TRUSTED_PROXIES,
+  _PROXY_SECRET_HEADER, _PROXY_SECRET_FILE   identity from a proxy, see forward_auth.py and README.md
 
 `convert.py --healthcheck` probes the local /health and exits 0 or 1 (used by the image HEALTHCHECK).
 """
@@ -27,9 +31,12 @@ import sys
 import tempfile
 import threading
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # python3 -I does not add the script directory
+import forward_auth  # noqa: E402
 
 ALLOWED = frozenset({".pptx", ".ppt", ".odp", ".key", ".docx", ".doc", ".odt"})
 SOFFICE = "soffice"          # tests replace this with a stub
@@ -56,6 +63,7 @@ class Config:
     bind: str = "127.0.0.1"
     timeout: int = 180
     max_bytes: int = 200 * 1024 * 1024
+    identity: forward_auth.IdentityConfig = field(default_factory=forward_auth.IdentityConfig, compare=False, repr=False)
 
 
 def _integer(environ, name, default, low, high):
@@ -74,7 +82,12 @@ def _integer(environ, name, default, low, high):
 def load_config(environ=None):
     environ = os.environ if environ is None else environ
     bind = (environ.get("MALRUNAR_OFFICE_BIND") or "127.0.0.1").strip()
+    try:
+        identity = forward_auth.IdentityConfig.from_env(environ, "MALRUNAR_OFFICE_")
+    except forward_auth.ConfigError as error:
+        raise ConfigError(str(error)) from None
     return Config(
+        identity=identity,
         port=_integer(environ, "MALRUNAR_OFFICE_PORT", 8090, 1, 65535),
         bind=bind,
         timeout=_integer(environ, "MALRUNAR_OFFICE_TIMEOUT_SECONDS", 180, 1, 86400),
@@ -186,8 +199,22 @@ class Handler(BaseHTTPRequestHandler):
     config = Config()
     gate = threading.Semaphore(1)
 
-    def log_message(self, fmt, *args):  # never log document names
-        pass
+    def identity(self):
+        """Who the proxy says the user is: anonymous unless the peer passes the trust check."""
+        headers = getattr(self, "headers", None)
+        return self.config.identity.resolve(self.client_address[0], dict(headers.items()) if headers else {})
+
+    def log_message(self, fmt, *args):
+        # One line per request: peer, user ("-" when anonymous), method, path without query, status.
+        # Never the document name, the query, the secret or the identity headers.
+        command = getattr(self, "command", None) or "-"
+        target = (getattr(self, "path", "") or "").split("?", 1)[0]
+        if command == "GET" and target == "/health":
+            return
+        path = target if target == "/convert" else "other"
+        code = args[1] if len(args) > 1 else "-"
+        print(f"office-convert: {self.client_address[0]} user={self.identity().user or '-'} "
+              f"{command} {path} {code}", file=sys.stderr, flush=True)
 
     def _reply(self, status, body=b"", content_type="text/plain; charset=utf-8"):
         self.send_response(status)
@@ -271,6 +298,9 @@ def main(argv):
         return 2
     server = make_server(config)
     print(f"office-convert: listening on {config.bind}:{config.port}", flush=True)
+    warning = config.identity.startup_warning()
+    if warning:
+        print(f"office-convert: {warning}", file=sys.stderr, flush=True)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
     try:
         server.serve_forever()

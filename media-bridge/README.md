@@ -108,7 +108,7 @@ ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 -f lavfi -i sine=frequency=
 
 The bridge reads from a UDP listener, so it can start before or after the sender and recovers when
 the stream stops and resumes. OBS can send the same stream with its custom FFmpeg output (format
-`mpegts`, URL as above). The upcoming `obs-control` component will drive OBS and provide the
+`mpegts`, URL as above). [`obs-control`](../obs-control/) drives OBS and provides the
 start-output endpoint for `MALRUNAR_BRIDGE_START_OUTPUT_URL`.
 
 ## Running it

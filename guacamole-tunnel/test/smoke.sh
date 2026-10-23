@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke test for guacamole-tunnel: scripts/smoke.sh guacamole-tunnel [image-ref]
 # The image is a service on its own: the test image holds nothing but it (no guacd, no Guacamole).
-# Runs the unit tests inside the image, checks the configuration errors and the user, and runs the
+# Runs the unit tests inside the image, checks the configuration errors, the startup warning and the user, and runs the
 # real service against a fake Guacamole upstream inside one container. Every container is bounded.
 set -euo pipefail
 image="${1:?usage: smoke.sh <image-ref>}"
@@ -24,9 +24,15 @@ out="$(run "$image" 2>&1)" || status=$?
 test "$status" = 78 || fail "expected exit status 78 without settings, got $status: $out"
 echo "$out" | grep -q MALRUNAR_GUAC_TUNNEL_UPSTREAM || fail "UPSTREAM was not named: $out"
 status=0
-out="$(run -e MALRUNAR_GUAC_TUNNEL_UPSTREAM=http://upstream.invalid/gw "$image" 2>&1)" || status=$?
-test "$status" = 78 || fail "expected exit status 78 without an identity header name, got $status"
-echo "$out" | grep -q MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER || fail "IDENTITY_HEADER was not named: $out"
+out="$(run -e MALRUNAR_GUAC_TUNNEL_UPSTREAM=http://upstream.invalid/gw -e MALRUNAR_GUAC_TUNNEL_TRUSTED_PROXIES=nonsense "$image" 2>&1)" || status=$?
+test "$status" = 78 || fail "expected exit status 78 with an invalid TRUSTED_PROXIES, got $status"
+echo "$out" | grep -q MALRUNAR_GUAC_TUNNEL_TRUSTED_PROXIES || fail "TRUSTED_PROXIES was not named: $out"
+
+echo '== nothing configured: started with a clear warning (nobody is trusted)'
+cid="$(docker run -d -e MALRUNAR_GUAC_TUNNEL_UPSTREAM=http://upstream.invalid/gw "$image")"
+sleep 3
+logs="$(docker logs "$cid" 2>&1)"; docker rm -f "$cid" >/dev/null
+echo "$logs" | grep -q 'WARNING.*every request is anonymous' || fail "no startup warning: $logs"
 
 echo '== unit tests inside the image'
 run --entrypoint python3 -v "$here:/test:ro" -e MALRUNAR_GUAC_TUNNEL_CODE=/opt/malrunar/guacamole-tunnel \
