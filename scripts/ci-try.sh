@@ -124,8 +124,8 @@ fi
 
 echo "ci-try: dispatched, looking for the run (head sha $sha, created at or after $since)"
 for _ in $(seq 1 30); do
-    run_id="$(gh run list -R "$repo" --workflow pr.yml --branch "$branch" --event workflow_dispatch --limit 30 \
-        --json databaseId,headSha,createdAt --jq "[.[] | select(.headSha == \"$sha\" and .createdAt >= \"$since\")] | sort_by(.createdAt) | .[0].databaseId // empty" 2>/dev/null || true)"
+    run_id="$(gh run list -R "$repo" --workflow pr.yml --branch "$branch" --limit 30 \
+        --json databaseId,headSha,createdAt,event --jq "[.[] | select(.event == \"workflow_dispatch\" and .headSha == \"$sha\" and .createdAt >= \"$since\")] | sort_by(.createdAt) | .[0].databaseId // empty" 2>"$workdir/list.log")" || { cat "$workdir/list.log" >&2; die "cannot list runs"; }
     [ -n "$run_id" ] && break
     sleep 3
 done
