@@ -94,7 +94,8 @@ docker build --quiet --tag "$consumer" --build-arg "BRIDGE_IMAGE=$bridge_image" 
     --build-arg "DESKTOP_BASE=$desktop_base" "$root/media-bridge/test/consumer" >/dev/null
 
 step 'test media: video with a 1000 Hz tone (the scene "video"); the camera page carries 440 Hz'
-docker network create "$id" >/dev/null
+# Pin the isolated bridge subnet so obs-control can trust the desktop peer precisely.
+docker network create --driver bridge --subnet 172.30.240.0/24 "$id" >/dev/null
 docker volume create "$id-media" >/dev/null
 timeout -k 10 300 docker run --rm --user 0 --entrypoint '' -v "$id-media:/media" "$obs_image" bash -c '
     ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i "testsrc=size=640x360:rate=24" \
@@ -133,9 +134,10 @@ timeout -k 10 120 docker create --name "$id-obs" --network "$id" --network-alias
     -e 'MALRUNAR_OBS_OUTPUT_URL=udp://desktop:5004?pkt_size=1316' \
     "$obs_image" >/dev/null
 put_dir "$id-obs" "$here" /e2e
-# Proxy secrets are one secret per line. Restrict the file after the generic test-directory copy;
-# the loader rejects group/world-readable secret files.
-docker exec "$id-obs" sh -c 'chmod 0600 /e2e/proxy-secret && test "$(stat -c %a /e2e/proxy-secret)" = 600' || fail 'proxy secret file permissions are not private'
+# Replace generic directory-copy metadata with the exact secret ownership/mode before startup.
+# The image runs as obs uid 1000; doing this after start races the loader's startup validation.
+tar -C "$here" --owner=1000 --group=1000 --mode=0600 --transform='s,^,e2e/,' -cf - proxy-secret | docker cp - "$id-obs:/"
+docker exec --user 0 "$id-obs" sh -c 'test "$(stat -c %a /e2e/proxy-secret)" = 600 && test "$(stat -c %u /e2e/proxy-secret)" = 1000' || fail 'proxy secret ownership/mode is incorrect before startup'
 timeout -k 10 120 docker start "$id-obs" >/dev/null
 ready=false
 for _ in $(seq 1 120); do
