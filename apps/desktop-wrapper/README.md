@@ -97,7 +97,7 @@ use the GitHub workflow below.
 [`.github/workflows/desktop-wrapper.yml`](../../.github/workflows/desktop-wrapper.yml) builds on
 GitHub-hosted `macos-15` runners (Apple Silicon). Standard macOS runners are free for public
 repositories, so this needs no Mac and no paid minutes. A universal build and disk image takes
-about 15 minutes (see the workflow run for the actual time).
+about 10 minutes (the first pull request run took 9 minutes 40 seconds with a cold cache).
 
 - **Pull requests** that touch `apps/desktop-wrapper/**` run the Linux tests, then build the
   example configuration pointed at a stand-in site on `127.0.0.1`, verify the bundle, and launch
