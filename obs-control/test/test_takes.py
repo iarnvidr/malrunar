@@ -249,13 +249,14 @@ class ClassificationTests(TakesCase):
         viewer = {"Remote-User": "vic", "Remote-Groups": "watch"}
         operator = {"Remote-User": "ann", "Remote-Groups": "ops"}
         for method, path in (("get", "/api/takes/status"), ("get", "/api/takes/library"), ("post", "/api/takes/arm"),
-                             ("get", "/api/takes/abc-123.mp4"), ("delete", "/api/takes/abc-123"),
+                             ("get", "/api/takes/abc-123.mp4"), ("get", "/api/takes/abc-123/audio.mp3"), ("delete", "/api/takes/abc-123"),
                              ("get", "/api/takes/slides/deck-abc/1"), ("post", "/api/takes/slides")):
             with self.subTest(path):
                 self.assertEqual((await getattr(client, method)(path, headers=viewer)).status, 403)
                 self.assertEqual((await getattr(client, method)(path)).status, 403, "anonymous")
         self.assertEqual((await client.get("/api/takes/status", headers=operator)).status, 200)
         self.assertEqual((await client.get("/api/takes/abc-123.mp4", headers=operator)).status, 404)
+        self.assertEqual((await client.get("/api/takes/abc-123/audio.mp3", headers=operator)).status, 404)
 
 
 class ArmingTests(TakesCase):
@@ -443,6 +444,7 @@ class PerUserTests(TakesCase):
         self.assertEqual(bob_library["takes"], [])
         self.assertEqual((await client.get(f"/api/takes/slides/{ann_deck}/1", headers=BOB)).status, 404)
         self.assertEqual((await client.get("/api/takes/ann-take.mp4", headers=BOB)).status, 404)
+        self.assertEqual((await client.get("/api/takes/ann-take/audio.mp3", headers=BOB)).status, 404)
         self.assertEqual((await client.get("/api/takes/ann-take.mp4", headers=ANN)).status, 200)
         self.assertEqual((await client.delete("/api/takes/ann-take", headers=BOB)).status, 404)
         self.assertEqual((await client.delete(f"/api/takes/slides/{ann_deck}", headers=BOB)).status, 404)
@@ -530,11 +532,18 @@ class RecordingTests(TakesCase):
         self.assertEqual((await client.post("/api/takes/stop")).status, 409)
         self.assertEqual((await client.post("/api/takes/start", json={"take_id": "first-take"})).status, 409, "ids are not reused")
         self.assertEqual(await (await client.get("/api/takes/first-take.mp4")).read(), b"mkv")
+        audio = await client.get("/api/takes/first-take/audio.mp3")
+        self.assertEqual((audio.status, audio.headers["Content-Type"]), (200, "audio/mpeg"))
+        self.assertEqual(await audio.read(), b"mkv")
+        cached = self.data_dir / "shared" / "takes" / "first-take.mp3"
+        self.assertTrue(cached.is_file())
+        cached.write_bytes(b"cached-mp3")
+        self.assertEqual(await (await client.get("/api/takes/first-take/audio.mp3")).read(), b"cached-mp3")
         library = await (await client.get("/api/takes/library")).json()
         self.assertEqual([t["take_id"] for t in library["takes"]], ["first-take"])
         self.assertEqual(library["takes"][0]["url"], "api/takes/first-take.mp4")
         names = sorted(p.name for p in (self.data_dir / "shared" / "takes").iterdir())
-        self.assertEqual(names, ["first-take.json", "first-take.mp4"], "no partial files are left")
+        self.assertEqual(names, ["first-take.json", "first-take.mp3", "first-take.mp4"], "only the take, its metadata, and cached audio remain")
         self.assertEqual((await client.delete("/api/takes/first-take")).status, 200)
         self.assertEqual((await client.get("/api/takes/first-take.mp4")).status, 404)
 
@@ -581,11 +590,19 @@ class RecordingTests(TakesCase):
         take = (await (await client.get("/api/takes/library")).json())["takes"][0]
         self.assertEqual((take["take_id"], take["auto_stopped"]), ("long-take", True))
 
-    async def test_disarm_keeps_the_take_that_was_running(self):
+    async def test_disarm_waits_for_obs_stream_inactive_before_restoring_canvas(self):
         client = await self.start_takes()
+        self.obs.delayed_stream_stop = True
         await client.post("/api/takes/arm", json={})
         await client.post("/api/takes/start", json={"take_id": "kept-take"})
-        finished = (await (await client.post("/api/takes/disarm")).json())["finished_take"]
+        response = await client.post("/api/takes/disarm")
+        self.assertEqual(response.status, 200, await response.text())
+        payload = await response.json()
+        self.assertFalse(self.obs.streaming)
+        self.assertEqual(self.obs.video["baseWidth"], 640)
+        self.assertTrue(self.obs.streaming_at_canvas_changes)
+        self.assertFalse(self.obs.streaming_at_canvas_changes[-1], "canvas restore must wait until OBS reports outputActive false")
+        finished = payload["finished_take"]
         self.assertEqual((finished["take_id"], finished["ok"]), ("kept-take", True))
         self.assertTrue((self.data_dir / "shared" / "takes" / "kept-take.mp4").is_file())
 

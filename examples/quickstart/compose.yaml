@@ -32,6 +32,7 @@ services:
   # OBS, headless, with an HTTP API (obs-control). It sends its program to the desktop's bridge.
   obs:
     image: ${MALRUNAR_OBS_CONTROL_IMAGE:-ghcr.io/iarnvidr/obs-control:0.1.0}
+    mem_limit: 2g          # software-rendered 1080p OBS can use about 1.4 GiB
     shm_size: 512m         # Chromium (browser sources) needs shared memory
     depends_on:
       desktop:

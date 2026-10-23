@@ -4,7 +4,7 @@
 # with their copyright files. Build inputs are all pinned: base image by digest, apt by a
 # snapshot.ubuntu.com date, sources by sha256 (see pins.env). Build with scripts/build.sh guacd.
 #
-# Defaults: runs as root (no user is created; derive an image or pass --user to change that)
+# Runs as uid 1000 (guacd), with writable HOME=/home/guacd.
 # and listens on 0.0.0.0:4822. guacd has no authentication, so never publish the port beyond
 # the network that talks to it; bind it to loopback with `guacd -f -b 127.0.0.1 -l 4822`.
 ARG UBUNTU_IMAGE
@@ -102,6 +102,11 @@ RUN set -eu; \
         test "$(dpkg-query -W -f='${binary:Package} ${Version}' "$package")" = "$package $version"; \
         test -s "/usr/share/doc/${package%%:*}/copyright"; \
     done < /usr/local/share/malrunar/guacd-linked-packages
+RUN set -eu; \
+    useradd --create-home --uid 1000 --user-group --shell /usr/sbin/nologin guacd; \
+    chown guacd:guacd /home/guacd
+USER guacd:guacd
+ENV HOME=/home/guacd
 LABEL org.opencontainers.image.title="guacd" \
       org.opencontainers.image.description="Apache Guacamole guacd 1.6.0 with the RDP GDI fix on Ubuntu 26.04" \
       org.opencontainers.image.licenses="Apache-2.0" \

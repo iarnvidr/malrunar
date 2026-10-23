@@ -1,4 +1,13 @@
 # Settings for the obs-control container of e2e.sh (the rest comes from MALRUNAR_OBS_* variables).
 # The take camera is its own page, so the take carries a tone that no other scene has (660 Hz).
+[access]
+trusted_proxies = ["127.0.0.0/8"]
+identity_header = "X-Forwarded-User"
+proxy_secret_header = "X-Proxy-Secret"
+proxy_secret = "e2e-proxy-secret"
+
+[access.users.e2e-operator]
+role = "admin"
+
 [plugin.takes]
 camera_url = "file:///e2e/take-camera.html"

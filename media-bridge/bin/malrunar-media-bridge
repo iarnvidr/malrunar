@@ -22,6 +22,7 @@
 #   MALRUNAR_BRIDGE_MIC_DESCRIPTION   Virtual Microphone
 #   MALRUNAR_BRIDGE_MIC_DEFAULT       1 (make the microphone the default source), 0 to leave it
 #   MALRUNAR_BRIDGE_START_OUTPUT_URL  empty (off); if set, POSTed after ffmpeg starts
+#   MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE empty (off); newline-delimited HTTP headers, re-read per POST
 #   MALRUNAR_BRIDGE_INPUT_TIMEOUT     5 (seconds without input before ffmpeg gives up and restarts)
 #   MALRUNAR_BRIDGE_WAIT              60 (seconds to wait for PipeWire and the video device)
 #   MALRUNAR_BRIDGE_RESTART           1 (restart after ffmpeg ends), 0 to exit after one run
@@ -44,6 +45,7 @@ mic_name="${MALRUNAR_BRIDGE_MIC_NAME:-malrunar_virtual_mic}"
 mic_description="${MALRUNAR_BRIDGE_MIC_DESCRIPTION:-Virtual Microphone}"
 mic_default="${MALRUNAR_BRIDGE_MIC_DEFAULT:-1}"
 start_url="${MALRUNAR_BRIDGE_START_OUTPUT_URL:-}"
+start_headers_file="${MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE:-}"
 input_timeout="${MALRUNAR_BRIDGE_INPUT_TIMEOUT:-5}"
 wait_seconds="${MALRUNAR_BRIDGE_WAIT:-60}"
 restart="${MALRUNAR_BRIDGE_RESTART:-1}"
@@ -77,6 +79,10 @@ description_re='^[^"\\[:cntrl:]]+$'
 if [[ -n "$start_url" ]]; then
     [[ "$start_url" =~ ^https?://[^[:space:]]+$ ]] || die "MALRUNAR_BRIDGE_START_OUTPUT_URL must be an http(s) URL"
     command -v curl >/dev/null || die "MALRUNAR_BRIDGE_START_OUTPUT_URL is set but curl is not installed"
+fi
+if [[ -n "$start_headers_file" ]]; then
+    [[ -n "$start_url" ]] || die "MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE requires MALRUNAR_BRIDGE_START_OUTPUT_URL"
+    [[ -r "$start_headers_file" && -f "$start_headers_file" ]] || die "MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE must name a readable regular file"
 fi
 case "$video_sink" in
     v4l2)
@@ -225,7 +231,26 @@ while true; do
         # the bridge never asks it to stop (an MPEG-TS sender resends its headers, so a new
         # listener can join at any time).
         for _ in $(seq 1 60); do
-            curl -fsS --max-time 8 -X POST "$start_url" >/dev/null 2>&1 && break
+            header_args=()
+            if [[ -n "$start_headers_file" ]]; then
+                # Read afresh for every attempt so operators can rotate credentials without restart.
+                # Format is one strict `Name: value` header per line; no curl config syntax.
+                while IFS= read -r header_line || [[ -n "$header_line" ]]; do
+                    header_line="${header_line%$'\r'}"
+                    [[ -z "$header_line" || "$header_line" == \\#* ]] && continue
+                    [[ "$header_line" =~ ^[A-Za-z0-9!#$%\&\'*+.^_\`|~-]+:[[:space:]]*[^[:cntrl:]]*$ ]] || {
+                        log "warning: invalid header in MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE; skipping start request"
+                        header_args=(); break
+                    }
+                    header_args+=( -H "$header_line" )
+                done < "$start_headers_file"
+                [[ -r "$start_headers_file" ]] || { log "warning: headers file unreadable; skipping start request"; header_args=(); }
+            fi
+            if [[ -n "$start_headers_file" && ${#header_args[@]} -eq 0 ]]; then
+                # Empty headers are valid, but malformed/unreadable files must not send unauthenticated.
+                if [[ -s "$start_headers_file" ]]; then sleep 1; continue; fi
+            fi
+            curl -fsS --max-time 8 -X POST "${header_args[@]}" "$start_url" >/dev/null 2>&1 && break
             kill -0 "$ffmpeg_pid" 2>/dev/null || break
             sleep 1
         done

@@ -35,6 +35,8 @@ class FakeObs:
         self.profile_parameters: dict[str, str] = {}
         self.video = {"baseWidth": 640, "baseHeight": 360, "outputWidth": 640, "outputHeight": 360}
         self.streaming = False
+        self.delayed_stream_stop = False
+        self.streaming_at_canvas_changes: list[bool] = []
         self.stream_service: dict = {}
         self.camera_luma = 200  # brightness of the BMP GetSourceScreenshot returns
         self.scene_items: dict[str, list[dict]] = {}  # scene -> [{"sourceName", "sceneItemId"}]
@@ -137,13 +139,18 @@ class FakeObs:
         elif kind == "GetVideoSettings":
             return dict(self.video)
         elif kind == "SetVideoSettings":
+            self.streaming_at_canvas_changes.append(self.streaming)
             self.video.update(data)
         elif kind == "SetStreamServiceSettings":
             self.stream_service = data
         elif kind == "StartStream":
             self.streaming = True
         elif kind == "StopStream":
-            self.streaming = False
+            if self.delayed_stream_stop:
+                import asyncio
+                asyncio.get_running_loop().call_later(0.15, setattr, self, "streaming", False)
+            else:
+                self.streaming = False
         elif kind == "GetStreamStatus":
             return {"outputActive": self.streaming}
         elif kind == "GetSourceScreenshot" and data.get("imageFormat") == "bmp":

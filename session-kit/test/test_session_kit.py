@@ -299,6 +299,8 @@ class WorkBrowserGateTest(Env):
         self.assertIn(f"Exec={opener} %u", entry)
         helper = (self.home / ".local/share/xfce4/helpers/malrunar-session-kit-browser.desktop").read_text()
         self.assertIn(f'X-XFCE-CommandsWithParameter={opener} "%s";', helper)
+        self.assertIn("Icon=internet-web-browser", entry)
+        self.assertIn("Icon=internet-web-browser", helper)
 
     def test_launchers_work_without_the_component_when_given_a_command(self):
         self.set(WORK_BROWSER_DIR=str(self.tmp / "absent"), BROWSER_COMMAND="/usr/bin/my-browser",
@@ -306,6 +308,18 @@ class WorkBrowserGateTest(Env):
         self.assertEqual(self.call("launchers")[0], 0)
         self.assertIn("WebBrowser=my-browser", (self.home / ".config/xfce4/helpers.rc").read_text())
         self.assertIn("Name=My Browser", (self.home / ".local/share/applications/my-browser.desktop").read_text())
+
+    def test_launchers_configure_icon_for_both_entries(self):
+        self.set(BROWSER_COMMAND="/usr/bin/my-browser", LAUNCHER_ICON="custom-browser-symbol")
+        self.assertEqual(self.call("launchers")[0], 0)
+        entry = (self.home / ".local/share/applications/malrunar-session-kit-browser.desktop").read_text()
+        helper = (self.home / ".local/share/xfce4/helpers/malrunar-session-kit-browser.desktop").read_text()
+        self.assertIn("Icon=custom-browser-symbol", entry)
+        self.assertIn("Icon=custom-browser-symbol", helper)
+
+    def test_launchers_reject_multiline_icon(self):
+        self.set(BROWSER_COMMAND="/usr/bin/my-browser", LAUNCHER_ICON="icon\nExec=evil")
+        self.assertEqual(self.call("launchers")[0], 78)
 
     def test_launchers_reject_bad_input(self):
         self.set(BROWSER_COMMAND="cmd\nExec=evil")

@@ -100,6 +100,7 @@ starts as a normal user keeps that user.
 | `MALRUNAR_SESSION_KIT_BROWSER_COMMAND` | the work browser's open helper | The command `launchers` registers; it is called with the URL as its argument |
 | `MALRUNAR_SESSION_KIT_LAUNCHER_NAME` | `Web Browser` | Name of the menu entry |
 | `MALRUNAR_SESSION_KIT_LAUNCHER_ID` | `malrunar-session-kit-browser` | File name of the `.desktop` entries and the XFCE helper id |
+| `MALRUNAR_SESSION_KIT_LAUNCHER_ICON` | `internet-web-browser` | Icon theme name or absolute icon path written to both launcher entries |
 | `MALRUNAR_SESSION_KIT_CHECK_WINDOWS` | none | `check`: `;` separated `<selector>,count=<n>` (default count 1): exactly that many windows must match |
 | `MALRUNAR_SESSION_KIT_CHECK_WORK_BROWSER` | `0` | `check`: `1` verifies the work browser: it holds the profile lock, was started with `-profile <that profile>`, runs without a WebDriver or debugging port, and exactly one browser window exists and is its own. Needs the component |
 | `MALRUNAR_SESSION_KIT_CHECK_BROWSER_WINDOWS` | `1` | `check`: the expected number of browser windows for the check above, or `any` |
@@ -109,7 +110,7 @@ starts as a normal user keeps that user.
 `workspaces --once` applies everything once and exits (the supervisord program keeps running).
 Exit status 78 means the image or a setting cannot do what was asked, with a message that names it.
 
-`launchers` writes only inside the user's home (`~/.local/share/applications`,
+`launchers` writes both desktop entries with `MALRUNAR_SESSION_KIT_LAUNCHER_ICON` (default `internet-web-browser`), which can be a theme icon name or absolute path. It writes only inside the user's home (`~/.local/share/applications`,
 `~/.local/share/xfce4/helpers`, and the `WebBrowser=` line of `~/.config/xfce4/helpers.rc`).
 
 ## Files

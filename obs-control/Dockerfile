@@ -28,13 +28,13 @@ RUN groupadd --gid 1000 obs; \
     useradd --uid 1000 --gid 1000 --home-dir /config --no-create-home --shell /usr/sbin/nologin obs; \
     install -d -o 1000 -g 1000 -m 0755 /config
 COPY malrunar_obs /opt/malrunar/obs-control/lib/malrunar_obs
-COPY entrypoint.sh /opt/malrunar/obs-control/entrypoint.sh
+COPY entrypoint.sh healthcheck.sh /opt/malrunar/obs-control/
 COPY examples/ /usr/local/share/malrunar/obs-control/examples/
-RUN chmod 0755 /opt/malrunar/obs-control/entrypoint.sh; \
+RUN chmod 0755 /opt/malrunar/obs-control/entrypoint.sh /opt/malrunar/obs-control/healthcheck.sh; \
     PYTHONPATH=/opt/malrunar/obs-control/lib python3 -c 'import aiohttp, websockets, malrunar_obs.controller, malrunar_obs.relay, malrunar_obs.takes'; \
     command -v pdftoppm pdfinfo >/dev/null
 USER 1000:1000
 EXPOSE 18095
-HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=8 \
-    CMD curl -fsS "http://127.0.0.1:${MALRUNAR_OBS_CONTROL_PORT:-18095}/ready" | grep -q '"ready": true'
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=8 \\
+    CMD ["/opt/malrunar/obs-control/healthcheck.sh"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/malrunar/obs-control/entrypoint.sh"]

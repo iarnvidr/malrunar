@@ -133,6 +133,9 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/health":
+            self.send_json(200, {"healthy": True})
+            return
         if path == "/recording/status":
             self.send_json(200, state_payload())
             return

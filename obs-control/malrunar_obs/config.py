@@ -279,6 +279,8 @@ def _read_file(path: Path) -> dict[str, Any]:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         else:
             raise ConfigError(f"config file {path}: use a .toml or .json extension")
+    except PermissionError as exc:
+        raise ConfigError(f"config file {path}: permission denied (cannot read configuration)") from exc
     except (OSError, ValueError) as exc:
         if isinstance(exc, ConfigError):
             raise

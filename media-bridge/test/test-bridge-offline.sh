@@ -2,8 +2,8 @@
 # Runs on any host without ffmpeg, PipeWire or Docker: the bridge script is run against stub
 # ffmpeg and pactl programs, and its log filter is fed canned lines.
 #   test-bridge-offline.sh <directory with malrunar-media-bridge and malrunar-bridge-logfilter.sh>
-# Covers: MALRUNAR_BRIDGE_VIDEO_SINK=null, the bounded file sink, rejected settings, and the
-# suppression of expected decoder noise at startup while real errors still pass.
+# Covers: MALRUNAR_BRIDGE_VIDEO_SINK=null, the bounded file sink, authenticated start-output headers,
+# rejected settings, and suppression of expected decoder noise while real errors still pass.
 set -euo pipefail
 bindir="$(cd "${1:?usage: test-bridge-offline.sh <bin directory>}" && pwd)"
 bridge="$bindir/malrunar-media-bridge"
@@ -137,5 +137,26 @@ pass "startup log is clean on mid-stream join and a real error still appears"
 run_bridge "$work/loud.log" MALRUNAR_BRIDGE_VIDEO_SINK=null MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS=0 || fail 'run failed'
 grep -q 'non-existing PPS 0 referenced' "$work/loud.log" || fail 'STARTUP_QUIET_SECONDS=0 should show the decoder messages'
 pass "STARTUP_QUIET_SECONDS=0 turns the filter off"
+
+echo '== authenticated start-output headers'
+cat > "$work/bin/curl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$CURL_LOG"
+exit 0
+STUB
+chmod +x "$work/bin/curl"
+export CURL_LOG="$work/curl.log"
+printf 'Authorization: Bearer first-secret\nX-Test: one\n' > "$work/headers"
+# Avoid the retry loop: the stub returns success immediately, but the bridge's one-second startup delay remains.
+run_bridge "$work/auth.log" MALRUNAR_BRIDGE_VIDEO_SINK=null MALRUNAR_BRIDGE_START_OUTPUT_URL=http://controller.invalid/start MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE="$work/headers" || fail 'authenticated start request failed'
+grep -q -- '-H Authorization: Bearer first-secret' "$CURL_LOG" || fail "auth header missing: $(cat "$CURL_LOG")"
+grep -q -- '-H X-Test: one' "$CURL_LOG" || fail 'second header missing'
+rc=0; run_bridge "$work/auth.log" MALRUNAR_BRIDGE_VIDEO_SINK=null MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE="$work/headers" || rc=$?
+[ "$rc" -eq 2 ] && grep -q 'requires MALRUNAR_BRIDGE_START_OUTPUT_URL' "$work/auth.log" || fail 'headers file without URL accepted'
+printf 'Authorization: Bearer bad\n\n-H https://evil.invalid\n' > "$work/headers"
+: > "$CURL_LOG"
+run_bridge "$work/auth.log" MALRUNAR_BRIDGE_VIDEO_SINK=null MALRUNAR_BRIDGE_START_OUTPUT_URL=http://controller.invalid/start MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE="$work/headers" || fail 'bridge failed after malformed header'
+[ ! -s "$CURL_LOG" ] || fail 'malformed header request sent without authentication'
+pass 'start-output headers parsed safely; file required with URL; malformed header never sent'
 
 echo 'bridge offline tests passed'

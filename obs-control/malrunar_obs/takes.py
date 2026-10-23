@@ -453,6 +453,15 @@ class Takes:
             await asyncio.sleep(0.1)
         return False
 
+    async def _wait_stream(self, active: bool, attempts: int = 100) -> bool:
+        """Wait for OBS's output state, rather than assuming a StopStream reply is completion."""
+        for _ in range(attempts):
+            (status,) = await self.ctl.obs(("GetStreamStatus", {}))
+            if bool(status.get("outputActive")) == active:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
     async def current_canvas(self) -> dict[str, tuple]:
         (video,) = await self.ctl.obs(("GetVideoSettings", {}))
         return {
@@ -924,6 +933,10 @@ class Takes:
             await self.ctl.obs(("StopStream", {}))
         except Exception:
             pass
+        # StopStream returning only means OBS accepted the request. Do not hand control
+        # back to disarm/canvas restoration until the websocket reports stream inactive.
+        if not await self._wait_stream(False):
+            raise RuntimeError("OBS did not stop the take stream")
         try:
             await asyncio.wait_for(process.wait(), timeout=20)
         except asyncio.TimeoutError:
@@ -975,6 +988,28 @@ class Takes:
 
     async def take_media(self, request: web.Request) -> web.StreamResponse:
         return web.FileResponse(self._take_file(request)[2], headers={"Cache-Control": "private, max-age=3600"})
+
+    async def take_audio(self, request: web.Request) -> web.StreamResponse:
+        """Generate and cache an audio-only MP3 derivative of a take."""
+        _, _, source = self._take_file(request)
+        target = source.with_suffix(".mp3")
+        if not target.is_file():
+            partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "nice", "-n", "10", "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-codec:a", "libmp3lame",
+                    "-q:a", "4", "-y", str(partial), stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+                if process.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
+                    raise RuntimeError(stderr.decode("utf-8", "replace")[-400:] or "ffmpeg failed")
+                os.replace(partial, target)
+            except (OSError, asyncio.TimeoutError, RuntimeError) as exc:
+                partial.unlink(missing_ok=True)
+                return _error(f"Could not generate take audio: {exc}", 503)
+        return web.FileResponse(target, headers={"Content-Type": "audio/mpeg", "Cache-Control": "private, max-age=3600"})
 
     async def delete_take(self, request: web.Request) -> web.Response:
         user, take_id, path = self._take_file(request)
@@ -1191,6 +1226,7 @@ class Takes:
             ("POST", "/api/takes/start", self.start_take),
             ("POST", "/api/takes/stop", self.stop_take),
             ("GET", "/api/takes/{take_id}.mp4", self.take_media),
+            ("GET", "/api/takes/{take_id}/audio.mp3", self.take_audio),
             ("DELETE", "/api/takes/{take_id}", self.delete_take),
             ("POST", "/api/takes/assemble", self.assemble),
             ("GET", "/api/takes/jobs/{job_id}", self.job_status),

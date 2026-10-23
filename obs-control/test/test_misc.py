@@ -80,6 +80,7 @@ class RelayTests(TempDir, unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.shutdown)
         base = f"http://127.0.0.1:{server.server_address[1]}"
+        self.assertEqual(json.loads(urllib.request.urlopen(base + "/health").read()), {"healthy": True})
         outgoing = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.addCleanup(outgoing.close)
         self.addCleanup(target.close)
