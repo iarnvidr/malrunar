@@ -211,8 +211,8 @@ desk tone 1000 90 || fail 'no tone after the bridge restarted the output'
 
 step 'takes: slide upload, then 10 event-verified arm/record/stop/assemble/disarm cycles (660 Hz)'
 api /api/takes/status | grep -q '"armed": false' || fail 'the takes plugin is not loaded'
-# OBS browser sources load asynchronously. Wait on the real take-camera signal reported by
-# arm (camera_ready), not a fixed delay or repeated arm POSTs; keep program silence assertion intact.
+# OBS browser sources load asynchronously. The camera page may render black until the take
+# scene is active, so only inspect camera_ready after arm; wait on the real signal, not a delay.
 wait_take_camera_ready() {
     local status ready=false
     for _ in $(seq 1 120); do
@@ -226,7 +226,6 @@ wait_take_camera_ready() {
     done
     [ "$ready" = true ] || fail "take camera did not become ready; last status: $status"
 }
-wait_take_camera_ready
 timeout -k 10 60 docker exec "$id-obs" ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
     -i color=c=0x2060a0:size=800x450 -frames:v 1 -y /tmp/slide.png || fail 'could not make a slide picture'
 slides="$(timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 -F name=Slide -F file=@/tmp/slide.png "${trusted[@]}" \
@@ -237,6 +236,7 @@ for cycle in $(seq 1 10); do
     step "cycle $cycle/10: arm and record"
     api /api/takes/arm -X POST -H 'Content-Type: application/json' \
         -d "{\"layout\": \"pip\", \"slide\": {\"deck_id\": \"$deck\", \"page\": 1}}" | grep -q '"armed": true' || fail 'POST /api/takes/arm'
+    wait_take_camera_ready
     api /api/takes/start -X POST -H 'Content-Type: application/json' -d "{\"take_id\": \"$take_id\"}" \
         | grep -q "\\\"take_id\\\": \\\"$take_id\\\"" || fail "POST /api/takes/start ($take_id)"
     # Give OBS a short real recording interval; stop is then verified against the finalized media.
