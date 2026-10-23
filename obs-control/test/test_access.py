@@ -193,13 +193,13 @@ class ConfigTests(helpers.TempDir, unittest.TestCase):
 
     def test_environment_overrides(self):
         env = {
-            "MALRUNAR_OBS_ACCESS_TRUSTED_PROXIES": "10.0.0.0/8, 192.0.2.1",
+            "MALRUNAR_OBS_ACCESS_TRUSTED_PROXIES": "203.0.113.0/24, 192.0.2.1",
             "MALRUNAR_OBS_ACCESS_GROUPS_HEADER": "X-G",
             "MALRUNAR_OBS_ACCESS_GROUPS_OPERATOR": "ops, staff",
             "MALRUNAR_OBS_ACCESS_GROUPS_VIEWER": "watchers",
         }
         config = make_config(self.tmp, env=env)
-        self.assertEqual(config.access.trusted_proxies, ["10.0.0.0/8", "192.0.2.1"])
+        self.assertEqual(config.access.trusted_proxies, ["203.0.113.0/24", "192.0.2.1"])
         self.assertEqual(config.access.groups, {"operator": ["ops", "staff"], "viewer": ["watchers"]})
         self.assertEqual(config.identity_config().groups_header, "X-G")
         self.assertTrue(config.identity_active)
@@ -212,9 +212,9 @@ class ConfigTests(helpers.TempDir, unittest.TestCase):
         for access, text in (
             ({"trusted_proxies": ["not-a-cidr"]}, "not an address"),
             ({"identity_header": "bad header"}, "header name"),
-            ({"trusted_proxies": "10.0.0.0/8"}, "list of strings"),
-            ({"groups": {"admin": ["x"]}, "trusted_proxies": ["10.0.0.0/8"]}, "unknown capability"),
-            ({"groups": {"operator": "ops"}, "trusted_proxies": ["10.0.0.0/8"]}, "list of group names"),
+            ({"trusted_proxies": "203.0.113.0/24"}, "list of strings"),
+            ({"groups": {"admin": ["x"]}, "trusted_proxies": ["203.0.113.0/24"]}, "unknown capability"),
+            ({"groups": {"operator": "ops"}, "trusted_proxies": ["203.0.113.0/24"]}, "list of group names"),
             ({"groups": {"operator": ["ops"]}}, "needs trust"),
             ({"nonsense": 1}, "unknown setting"),
         ):
