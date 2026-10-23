@@ -74,7 +74,7 @@ desk() { timeout -k 10 150 docker exec --user 1000:1000 "$id-desktop" /e2e/deskt
 # api <path> [curl args]: prints the response body on success. On an HTTP error status (or a curl
 # failure) it prints the status and the response body to stderr and returns non-zero, so that a failing
 # call says why (the server's JSON error) instead of only "returned error: 503".
-trusted=(-H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret')
+trusted=(-H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789')
 api() {
     local out status
     out="$(timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "${trusted[@]}" -w '\n%{http_code}' "http://127.0.0.1:18095$1" "${@:2}")" \
@@ -87,7 +87,7 @@ api() {
     esac
 }
 api_any() { timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "${trusted[@]}" "http://127.0.0.1:18095$1" "${@:2}"; }
-trusted=(-H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret')
+trusted=(-H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789')
 
 step 'desktop image: desktop-base + the media-bridge component'
 docker build --quiet --tag "$consumer" --build-arg "BRIDGE_IMAGE=$bridge_image" \
@@ -120,7 +120,7 @@ timeout -k 10 120 docker create --name "$id-desktop" --network "$id" --network-a
 put_dir "$id-desktop" "$here" /e2e
 timeout -k 10 120 docker start "$id-desktop" >/dev/null
 docker exec "$id-desktop" sh -c 'chmod u+rwx /tmp/e2e; umask 077; : > /tmp/e2e/headers'
-printf 'X-Forwarded-User: e2e-operator\nX-Proxy-Secret: e2e-proxy-secret\n' | docker exec -i "$id-desktop" sh -c 'cat > /tmp/e2e/headers'
+printf 'X-Forwarded-User: e2e-operator\nX-Proxy-Secret: e2e-proxy-secret-0123456789\n' | docker exec -i "$id-desktop" sh -c 'cat > /tmp/e2e/headers'
 docker exec "$id-desktop" sh -c 'test -r /tmp/e2e/headers && test -s /tmp/e2e/headers && test -w /tmp/e2e/headers' || fail 'bridge auth header file is not readable/writable/populated'
 
 step 'start obs-control, sending to the bridge'
@@ -133,6 +133,9 @@ timeout -k 10 120 docker create --name "$id-obs" --network "$id" --network-alias
     -e 'MALRUNAR_OBS_OUTPUT_URL=udp://desktop:5004?pkt_size=1316' \
     "$obs_image" >/dev/null
 put_dir "$id-obs" "$here" /e2e
+# Proxy secrets are one secret per line. Restrict the file after the generic test-directory copy;
+# the loader rejects group/world-readable secret files.
+docker exec "$id-obs" sh -c 'chmod 0600 /e2e/proxy-secret && test "$(stat -c %a /e2e/proxy-secret)" = 600' || fail 'proxy secret file permissions are not private'
 timeout -k 10 120 docker start "$id-obs" >/dev/null
 ready=false
 for _ in $(seq 1 120); do

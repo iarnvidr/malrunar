@@ -4,10 +4,9 @@
 trusted_proxies = ["127.0.0.0/8"]
 identity_header = "X-Forwarded-User"
 proxy_secret_header = "X-Proxy-Secret"
-proxy_secret = "e2e-proxy-secret"
+proxy_secret_file = "/e2e/proxy-secret"
 
-[access.users.e2e-operator]
-role = "admin"
+# With trust configured and no [access.groups], every authenticated user is an operator.
 
 [plugin.takes]
 camera_url = "file:///e2e/take-camera.html"
