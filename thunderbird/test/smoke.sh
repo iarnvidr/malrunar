@@ -157,7 +157,13 @@ for _ in $(seq 1 90); do
 done
 xwininfo -display :77 -root -tree | grep -qi 'thunderbird' || { xwininfo -display :77 -root -tree; echo 'no Thunderbird window on the display'; exit 1; }
 grep -q 'display :77' /tmp/supervisord.out || { echo 'the launcher did not report the display it found'; exit 1; }
-supervisorctl -c /etc/supervisor/supervisord.conf status thunderbird | grep -q RUNNING
+# supervisord reports RUNNING once the program has stayed up for startsecs
+for _ in $(seq 1 15); do
+    supervisorctl -c /etc/supervisor/supervisord.conf status thunderbird | grep -q RUNNING && exit 0
+    sleep 1
+done
+supervisorctl -c /etc/supervisor/supervisord.conf status thunderbird
+exit 1
 DISPLAYTEST
 chmod 755 "$work/display.sh"
 run --shm-size 512m -v "$work:/work:ro" "$withx" /work/display.sh || fail 'supervised Thunderbird on a display'
