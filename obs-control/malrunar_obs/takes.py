@@ -493,25 +493,17 @@ class Takes:
         # StopRecord's response acknowledges the request, not encoder teardown.
         # The program recording and the take stream both own video encoders.
         await self.ctl.obs_client.stop_record_and_wait()
-        last_error: Exception | None = None
-        for _attempt in range(3):
-            try:
-                logger.info("take canvas stage=SetVideoSettings attempt=%d", _attempt + 1)
-                await self.ctl.obs(
-                    (
-                        "SetVideoSettings",
-                        {"baseWidth": size[0], "baseHeight": size[1], "outputWidth": output[0], "outputHeight": output[1]},
-                    )
+        try:
+            logger.info("take canvas stage=SetVideoSettings")
+            await self.ctl.obs(
+                (
+                    "SetVideoSettings",
+                    {"baseWidth": size[0], "baseHeight": size[1], "outputWidth": output[0], "outputHeight": output[1]},
                 )
-                last_error = None
-                break
-            except Exception as exc:
-                last_error = exc
-                await asyncio.sleep(0.3)
-        logger.info("take canvas stage=restart_program_output")
-        started = await self._start_program_output()
-        if last_error:
-            raise last_error
+            )
+        finally:
+            logger.info("take canvas stage=restart_program_output")
+            started = await self._start_program_output()
         if not started:
             raise RuntimeError("OBS did not restart the program output after the canvas change")
 
