@@ -75,11 +75,9 @@ run() { timeout -k 10 300 docker run --rm --entrypoint '' "$@"; }
 run "$consumer" bash -c '! command -v node >/dev/null && ! command -v npm >/dev/null && ! command -v xdotool >/dev/null && ! test -e /opt/malrunar/work-browser' \
     || fail 'node, xdotool or work-browser is present in the test consumer; the component must not need them'
 
-echo '== unit tests inside desktop-base (as the desktop user, and as root)'
+echo '== unit tests inside desktop-base (as the desktop user; the root path is exercised below)'
 run -v "$here:/opt/malrunar/session-kit/test:ro" --user 1000:1000 -e HOME=/home/tester "$consumer" \
     python3 -m unittest discover -s /opt/malrunar/session-kit/test -v 2>&1 | tail -n 15 || fail 'unit tests as the desktop user'
-run -v "$here:/opt/malrunar/session-kit/test:ro" --user 0:0 -e PYTHONDONTWRITEBYTECODE=1 "$consumer" \
-    python3 -m unittest discover -s /opt/malrunar/session-kit/test 2>&1 | tail -n 5 || fail 'unit tests as root'
 
 echo '== without xdotool and without work-browser: each tool says what it needs, the rest works'
 cat > "$work/gating.sh" <<'GATING'
