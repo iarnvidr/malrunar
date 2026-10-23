@@ -666,7 +666,11 @@ class Takes:
 
     # ------------------------------------------------------------------ layout and slide
     async def get_status(self, request: web.Request) -> web.Response:
-        return web.json_response(self.status_payload(self.user(request)))
+        user = self.user(request)
+        payload = self.status_payload(user)
+        camera_ready, _ = await self.camera_picture_ok()
+        payload["camera_ready"] = camera_ready
+        return web.json_response(payload)
 
     async def set_layout(self, request: web.Request) -> web.Response:
         user = self.user(request)

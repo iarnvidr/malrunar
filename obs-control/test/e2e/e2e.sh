@@ -211,6 +211,22 @@ desk tone 1000 90 || fail 'no tone after the bridge restarted the output'
 
 step 'takes: slide upload, then 10 event-verified arm/record/stop/assemble/disarm cycles (660 Hz)'
 api /api/takes/status | grep -q '"armed": false' || fail 'the takes plugin is not loaded'
+# OBS browser sources load asynchronously. Wait on the real take-camera signal reported by
+# arm (camera_ready), not a fixed delay or repeated arm POSTs; keep program silence assertion intact.
+wait_take_camera_ready() {
+    local status ready=false
+    for _ in $(seq 1 120); do
+        status="$(api /api/takes/status)" || fail 'could not read takes status while waiting for camera'
+        if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("camera_ready") is True else 1)' <<<"$status"; then
+            ready=true
+            break
+        fi
+        docker inspect -f '{{.State.Running}}' "$id-obs" 2>/dev/null | grep -q true || break
+        sleep 1
+    done
+    [ "$ready" = true ] || fail "take camera did not become ready; last status: $status"
+}
+wait_take_camera_ready
 timeout -k 10 60 docker exec "$id-obs" ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
     -i color=c=0x2060a0:size=800x450 -frames:v 1 -y /tmp/slide.png || fail 'could not make a slide picture'
 slides="$(timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 -F name=Slide -F file=@/tmp/slide.png "${trusted[@]}" \
