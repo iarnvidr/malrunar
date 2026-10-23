@@ -239,12 +239,14 @@ for cycle in $(seq 1 10); do
     wait_take_camera_ready
     api /api/takes/start -X POST -H 'Content-Type: application/json' -d "{\"take_id\": \"$take_id\"}" \
         | grep -q "\\\"take_id\\\": \\\"$take_id\\\"" || fail "POST /api/takes/start ($take_id)"
-    # Give OBS a short real recording interval; stop is then verified against the finalized media.
+    # Record long enough for the assembled audio segment and its detector window. Keep the
+    # silence check during recording; assembly puts a short silent slide before the audible take.
     sleep 2
     desk silence 3 || fail "program was not silent while recording ($take_id)"
+    sleep 2
     take="$(api /api/takes/stop -X POST)" || fail "POST /api/takes/stop ($take_id)"
     printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail "take has no audio ($take_id)"; }
-    job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take $cycle\", \"items\": [{\"type\": \"take\", \"take_id\": \"$take_id\", \"start\": 0.5, \"end\": 1.5}, {\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}]}")" || fail "POST /api/takes/assemble ($take_id)"
+    job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take $cycle\", \"items\": [{\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}, {\"type\": \"take\", \"take_id\": \"$take_id\", \"start\": 0, \"end\": 4}]}")" || fail "POST /api/takes/assemble ($take_id)"
     job_id="$(printf '%s' "$job" | field 'd["job"]["job_id"]')"
     state=running
     for _ in $(seq 1 60); do
@@ -257,7 +259,9 @@ for cycle in $(seq 1 10); do
     take_clip="$(printf '%s' "$result" | field 'd["job"]["clip"]["id"]')"
     api /api/takes/disarm -X POST | grep -q '"armed": false' || fail "POST /api/takes/disarm ($take_id)"
     api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
-    desk tone 660 30 || fail "prepared take audio failed ($take_id)"
+    # OBS can acknowledge the scene switch before the media source has begun emitting.
+    # Allow a bounded, event-driven tone check window for playback startup.
+    desk tone 660 60 || fail "prepared take audio failed ($take_id)"
     api_any /health | grep -q '"healthy": true' || fail 'the output is not healthy after the take'
 done
 
