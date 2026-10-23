@@ -245,16 +245,16 @@ for cycle in $(seq 1 10); do
     take="$(api /api/takes/stop -X POST)" || fail "POST /api/takes/stop ($take_id)"
     printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail "take has no audio ($take_id)"; }
     job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take $cycle\", \"items\": [{\"type\": \"take\", \"take_id\": \"$take_id\", \"start\": 0.5, \"end\": 1.5}, {\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}]}")" || fail "POST /api/takes/assemble ($take_id)"
-    job_id="$(printf '%s' "$job" | field 'd[\"job\"][\"job_id\"]')"
+    job_id="$(printf '%s' "$job" | field 'd["job"]["job_id"]')"
     state=running
     for _ in $(seq 1 60); do
         result="$(api "/api/takes/jobs/$job_id")"
-        state="$(printf '%s' "$result" | field 'd[\"job\"][\"state\"]')"
+        state="$(printf '%s' "$result" | field 'd["job"]["state"]')"
         [ "$state" = running ] || break
         sleep 2
     done
     [ "$state" = "done" ] || { echo "$result" >&2; fail "assembly failed ($take_id)"; }
-    take_clip="$(printf '%s' "$result" | field 'd[\"job\"][\"clip\"][\"id\"]')"
+    take_clip="$(printf '%s' "$result" | field 'd["job"]["clip"]["id"]')"
     api /api/takes/disarm -X POST | grep -q '"armed": false' || fail "POST /api/takes/disarm ($take_id)"
     api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
     desk tone 660 30 || fail "prepared take audio failed ($take_id)"
