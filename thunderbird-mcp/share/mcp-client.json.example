@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "thunderbird": {
+      "command": "/opt/malrunar/thunderbird-mcp/bin/malrunar-thunderbird-mcp"
+    }
+  }
+}

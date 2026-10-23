@@ -19,7 +19,7 @@ import malrunar_image as mi  # noqa: E402
 
 IGNORE = shutil.ignore_patterns(".git", "__pycache__", "node_modules")
 # Images that use no root pin at all, or only the one named in the test.
-NO_ROOT_PINS = ("media-bridge", "work-browser", "session-kit", "node", "tail-browser-mcp")
+NO_ROOT_PINS = ("media-bridge", "work-browser", "session-kit", "node", "tail-browser-mcp", "thunderbird", "thunderbird-mcp")
 
 
 def edit_pin(root, key, value):
@@ -105,12 +105,12 @@ class PlanTest(CopyCase):
 
     def test_test_only_change_retests_that_image(self):
         (self.head / "node" / "test" / "x").write_text("x")
-        self.assertEqual(self.run_plan(["node/test/x"]), ["node"])
+        self.assertEqual(self.run_plan(["node/test/x"]), ["node", "thunderbird-mcp"])   # thunderbird-mcp is tested with node
 
     def test_components_follow_desktop_base(self):
         (self.head / "desktop-base" / "share" / "new").write_text("x")
         changed = self.run_plan(["desktop-base/share/new"])
-        self.assertEqual(set(changed), {"desktop-base", "obs-runtime", "obs-control", "media-bridge", "work-browser", "session-kit"})
+        self.assertEqual(set(changed), {"desktop-base", "obs-runtime", "obs-control", "media-bridge", "work-browser", "session-kit", "thunderbird", "thunderbird-mcp"})
         self.assertNotIn("node", changed)
         self.assertNotIn("guacd", changed)
 
@@ -140,7 +140,7 @@ class PlanTest(CopyCase):
 
     def test_every_image_is_in_a_build_group_or_has_a_job(self):
         grouped = {image for group in ci.BUILD_GROUPS for image in group}
-        has_job = {"media-bridge", "work-browser", "session-kit"}
+        has_job = {"media-bridge", "work-browser", "session-kit", "thunderbird", "thunderbird-mcp"}
         self.assertEqual(grouped | has_job, set(mi.IMAGES))
         self.assertFalse(grouped & has_job)
 

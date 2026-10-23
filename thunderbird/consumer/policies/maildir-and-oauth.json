@@ -1,0 +1,18 @@
+{
+  "policies": {
+    "Preferences": {
+      "mail.serverDefaultStoreContractID": {
+        "Value": "@mozilla.org/msgstore/maildirstore;1",
+        "Status": "locked"
+      },
+      "mailnews.oauth.useExternalBrowser": {
+        "Value": false,
+        "Status": "locked"
+      },
+      "mail.server.default.oauth2.useExternalBrowser": {
+        "Value": false,
+        "Status": "locked"
+      }
+    }
+  }
+}

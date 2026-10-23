@@ -115,10 +115,39 @@ and the Firefox extension. The npm dependencies compiled into the bundles keep t
 `/opt/malrunar/tail-browser-mcp/THIRD-PARTY-LICENSES.txt`, and `SOURCE.txt` records the source
 commit.
 
+## Thunderbird (thunderbird): MPL-2.0
+
+Mozilla's official, unmodified Thunderbird Linux build (`THUNDERBIRD_VERSION` in `thunderbird/pins.env`),
+downloaded from https://archive.mozilla.org/pub/thunderbird/releases/ and checked against the release's
+PGP-signed `SHA256SUMS` (signed by a subkey of the "Mozilla Software Releases" key, fingerprint
+`14F26682D0916CDD81E37B6D61B7B526D98F0353`, key file `thunderbird/mozilla-release-keys.asc`) and against
+the pinned sha256. Thunderbird is licensed under the Mozilla Public License 2.0 together with the licences of
+the components it bundles (see `about:license` inside Thunderbird). The licence text is in the image as
+`/opt/malrunar/thunderbird/LICENSE-MPL-2.0` and the exact source is named in
+`/opt/malrunar/thunderbird/SOURCE.txt`: https://archive.mozilla.org/pub/thunderbird/releases/<version>/source/
+and https://hg.mozilla.org/releases/comm-release/. This repository does not modify Thunderbird in any image.
+Thunderbird and its logo are Mozilla trademarks; see the README for what that means for derived images.
+
+Everything under `thunderbird/consumer/` runs only in a consumer's own build and is never applied to a published
+image. `oauth_shared_mailbox.py` contains replacement text for Mozilla's `OAuth2Module.sys.mjs` (an MPL-2.0
+file) and is offered under MPL-2.0; the rest of the directory is Apache-2.0. `addons.json` pins two third-party
+add-ons that the consumer tool can download from addons.thunderbird.net: TbSync (MPL-2.0, John Bieling) and
+Provider for Exchange ActiveSync (MPL-2.0, John Bieling). They are not in any image of this repository.
+
+## Thunderbird MCP (thunderbird-mcp): MIT
+
+thunderbird-mcp, https://github.com/TKasperczyk/thunderbird-mcp, version 0.7.4 at the commit pinned in
+`thunderbird-mcp/pins.env` (MIT, copyright 2025 Tomasz Kasperczyk; licence in the image as
+`/opt/malrunar/thunderbird-mcp/UPSTREAM-LICENSE`, `SOURCE.txt` records the commit). `mcp-bridge.cjs` and
+`package.json` are included as upstream publishes them. The add-on `thunderbird-mcp.xpi` is packed from the
+same commit with two constants changed (the inline-image limits) and its version number extended; the
+wrapper `bin/malrunar-thunderbird-mcp` and the recipe are Apache-2.0. The bridge runs under the `node`
+component and uses no npm dependencies. The component contains no Thunderbird.
+
 ## Build-time only (not shipped in the images)
 
 Node.js (MIT, official `node` image), esbuild (MIT), gcc/make/autotools and other build tools from
-Debian/Ubuntu. Container base images: `ubuntu` (various licences, per-package copyright files) and
+Debian/Ubuntu, and gnupg, xz-utils, git and python3 in the build stages of `thunderbird` and `thunderbird-mcp`. Container base images: `ubuntu` (various licences, per-package copyright files) and
 `node` (Debian bookworm-slim + Node.js).
 
 ## media-bridge

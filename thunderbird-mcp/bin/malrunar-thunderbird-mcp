@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run the Thunderbird MCP bridge (a stdio MCP server) with the node of this image.
+#   malrunar-thunderbird-mcp            serve MCP on stdin/stdout, for an MCP client to start
+#   malrunar-thunderbird-mcp --check    check that node is usable and print what would run, then exit
+# The bridge itself is upstream's mcp-bridge.cjs, unmodified. Settings are MALRUNAR_THUNDERBIRD_MCP_*
+# environment variables (see ../README.md); this wrapper maps them to the names the bridge reads.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EX_CONFIG=78   # sysexits EX_CONFIG: this image or its settings cannot run the component
+die() { printf 'malrunar-thunderbird-mcp: %s\n' "$*" >&2; exit "$EX_CONFIG"; }
+
+node="${MALRUNAR_THUNDERBIRD_MCP_NODE:-}"
+if [ -z "$node" ]; then
+    if command -v node >/dev/null 2>&1; then
+        node="$(command -v node)"
+    elif [ -x /opt/malrunar/node/bin/node ]; then
+        node=/opt/malrunar/node/bin/node
+    fi
+fi
+hint='thunderbird-mcp needs node: copy the node component into your image (COPY --link --from=ghcr.io/iarnvidr/node:<tag> / /), or set MALRUNAR_THUNDERBIRD_MCP_NODE to a node (version 18 or newer)'
+[ -n "$node" ] && [ -x "$node" ] || die "no node found. $hint"
+major="$("$node" -p 'process.versions.node.split(".")[0]' 2>/dev/null)" || die "$node does not run. $hint"
+[ "$major" -ge 18 ] 2>/dev/null || die "$node is version $("$node" --version), the bridge needs 18 or newer. $hint"
+[ -r "$here/mcp-bridge.cjs" ] || die "$here/mcp-bridge.cjs is missing"
+
+if [ -n "${MALRUNAR_THUNDERBIRD_MCP_CONNECTION_FILE:-}" ]; then
+    export THUNDERBIRD_MCP_CONNECTION_FILE="$MALRUNAR_THUNDERBIRD_MCP_CONNECTION_FILE"
+fi
+if [ "${MALRUNAR_THUNDERBIRD_MCP_DEBUG:-0}" = 1 ]; then
+    export THUNDERBIRD_MCP_DEBUG=1
+fi
+if [ "${1:-}" = --check ]; then
+    printf 'node %s (%s), bridge %s\n' "$("$node" --version)" "$node" "$here/mcp-bridge.cjs"
+    exit 0
+fi
+exec "$node" "$here/mcp-bridge.cjs"

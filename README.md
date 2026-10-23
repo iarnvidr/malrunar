@@ -26,6 +26,8 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`node`](node/) | A Node.js runtime in any image | Node.js 24 LTS, the unmodified nodejs.org release, in `/opt/malrunar/node`. A `FROM scratch` layer you copy into your image; it depends on nothing |
 | [`work-browser`](work-browser/) | A persistent Firefox for the desktop user | A launcher, an open-URL helper and a supervisord program for the unmodified Firefox of `desktop-base`, with the profile, preferences and policies supplied by you. A `FROM scratch` layer; it needs `desktop-base` only |
 | [`session-kit`](session-kit/) | Desktop session tools: workspaces, window placement, session check, default-browser launchers | `malrunar-session` and a supervisord program in `/opt/malrunar/session-kit`: names the XFCE workspaces and places windows on them, restores a Firefox profile's tabs, checks the session and registers the desktop's web browser. A `FROM scratch` layer; it needs `desktop-base` (and `xdotool`, installed by you) and uses the work browser only when that component is present |
+| [`thunderbird`](thunderbird/) | A mail client in the desktop | Mozilla's official Thunderbird 158.0.1, **unmodified** (the release tarball, checked against Mozilla's signed checksums), and a supervisord program that keeps it running on a persistent profile. The changes some setups need (an OAuth patch for shared mailboxes, add-ons, policies) are scripts you run at your own build, in `thunderbird/consumer/`. A `FROM scratch` layer; it needs `desktop-base` only |
+| [`thunderbird-mcp`](thunderbird-mcp/) | Letting an AI agent work in the mailbox | The [Thunderbird MCP](https://github.com/TKasperczyk/thunderbird-mcp) bridge and add-on in `/opt/malrunar/thunderbird-mcp`, with a wrapper. A `FROM scratch` layer with no Thunderbird in it; it needs the `node` component and talks to a Thunderbird that has the add-on installed |
 
 ## Using them
 
@@ -123,6 +125,13 @@ preferences. Customise it in your own image, for example with
 [Mozilla's trademark policy](https://www.mozilla.org/foundation/trademarks/distribution-policy/),
 and that applies to your image, not this one.
 
+### Thunderbird
+
+The same holds for [`thunderbird`](thunderbird/): it is Mozilla's latest stable release as Mozilla builds it.
+Policies, add-ons and the OAuth patch for shared mailboxes are not in the image; `thunderbird/consumer/`
+has the scripts (and a Dockerfile snippet in its README) that you run in your own build, and CI applies them
+to a copy of the unmodified release in a throwaway image that is never published.
+
 ## Apps
 
 Not everything here is an image. [`apps/desktop-wrapper`](apps/desktop-wrapper/) is a macOS desktop
@@ -149,6 +158,8 @@ examples of how the parts combine (no product is implied; take the rows you need
 | [`tail-browser-mcp`](tail-browser-mcp/) | component (`COPY --from`) | `node` at run time | optional | optional |
 | [`work-browser`](work-browser/) | component (`COPY --from`, with a supervisord program) | `desktop-base` | optional | yes |
 | [`session-kit`](session-kit/) | component (`COPY --from`, with a supervisord program) | `desktop-base`, `xdotool` for window tools; `work-browser` optional | yes (workspaces, session check) | yes (with `work-browser`: reopen tabs, default browser) |
+| [`thunderbird`](thunderbird/) | component (`COPY --from`, with a supervisord program) | `desktop-base` | no | optional (a mail client) |
+| [`thunderbird-mcp`](thunderbird-mcp/) | component (`COPY --from`) | `node` at run time; a Thunderbird with its add-on installed (for example `thunderbird`) | no | optional (agent access to the mailbox) |
 
 ```dockerfile
 # a calls desktop: it receives the stream OBS (in its own container) sends, for a call app to use
@@ -160,9 +171,16 @@ COPY --link --from=ghcr.io/iarnvidr/media-bridge:0.1.0 / /
 FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
 COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
 # your user (MALRUNAR_WORK_BROWSER_USER), policies and preferences on top, see work-browser/README.md
+
+# a work desktop with a mail client an agent can use: the components you ask for and nothing more
+FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
+COPY --link --from=ghcr.io/iarnvidr/thunderbird:158.0.1 / /
+COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
+COPY --link --from=ghcr.io/iarnvidr/thunderbird-mcp:0.7.4 / /
+# your user (MALRUNAR_THUNDERBIRD_USER) and, if you want the add-on installed, the policy fragment, see thunderbird-mcp/README.md
 ```
 
-Components that run a program as part of the desktop (`work-browser`) ship it as a supervisord
+Components that run a program as part of the desktop (`work-browser`, `thunderbird`) ship it as a supervisord
 fragment, `/etc/supervisor/conf.d/malrunar-<component>.conf`, which is in the image exactly when the
 component was copied in. The convention is in [CONVENTIONS.md](CONVENTIONS.md#supervisord-programs-of-components).
 Add `node` next to anything that runs JavaScript, such as `tail-browser-mcp`:
@@ -229,6 +247,8 @@ scripts/build.sh office-convert --load && scripts/smoke.sh office-convert
 scripts/build.sh guacamole-tunnel --load && scripts/smoke.sh guacamole-tunnel
 scripts/build.sh node --load && scripts/smoke.sh node
 scripts/build.sh work-browser --load && scripts/smoke.sh work-browser   # the smoke test needs desktop-base built
+scripts/build.sh node --load && scripts/build.sh thunderbird --load && scripts/smoke.sh thunderbird   # needs desktop-base and node built
+scripts/build.sh thunderbird-mcp --load && scripts/smoke.sh thunderbird-mcp   # needs desktop-base, node and thunderbird built
 python3 -m unittest discover -s scripts/test    # hashes and pull request planning, and the tests of tools/
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
@@ -240,5 +260,5 @@ To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 The build recipes are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The images contain
 third-party software under its own licences, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Among them
 are OBS Studio (GPL-2.0), the Chromium Embedded Framework bundled with it, FreeRDP and Guacamole
-(Apache-2.0), Firefox (MPL-2.0) and Tail (MIT). `media-bridge` and `work-browser` add only scripts; `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
+(Apache-2.0), Firefox and Thunderbird (MPL-2.0), Tail and thunderbird-mcp (MIT). `media-bridge` and `work-browser` add only scripts; `thunderbird` adds Mozilla's unmodified Thunderbird (MPL-2.0) and scripts, and `thunderbird-mcp` adds the upstream bridge and add-on (MIT); `node` adds the unmodified Node.js release (MIT); `office-convert` adds LibreOffice (MPL-2.0 and others) and its own Python script; `obs-control` adds Python code of its own (Apache-2.0) and aiohttp and websockets. The images keep each Ubuntu package's copyright file.
 The exact OBS package and its source are attached to the `obs-<debian version>` release (with `~` written as `-`).
