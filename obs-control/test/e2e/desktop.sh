@@ -35,6 +35,7 @@ serve)
     for _ in $(seq 1 30); do pactl info >/dev/null 2>&1 && break; sleep 1; done
     if [ "$video" = file ]; then sink="file:$work/video.yuv"; else sink=v4l2; fi
     MALRUNAR_BRIDGE_UDP_PORT="${E2E_UDP_PORT:-5004}" MALRUNAR_BRIDGE_BIND=0.0.0.0 \
+        MALRUNAR_BRIDGE_FILE_MAX_BYTES="${E2E_FILE_MAX_BYTES:-33554432}" \
         MALRUNAR_BRIDGE_VIDEO_SINK="$sink" MALRUNAR_BRIDGE_VIDEO_DEVICE="${video/file//dev/video10}" \
         MALRUNAR_BRIDGE_SIZE="$size" MALRUNAR_BRIDGE_FPS="$fps" \
         MALRUNAR_BRIDGE_MIC_NAME="$mic" MALRUNAR_BRIDGE_MIC_DESCRIPTION='E2E Microphone' \
@@ -66,10 +67,24 @@ tone)
 frame)
     name="${2:?name}"
     if [ "$video" = file ]; then
+        # The bridge keeps a ring of two files: video.yuv (being written) and video.yuv.1 (the
+        # previous full segment, a whole number of frames). Right after a rotation video.yuv is
+        # short, so the newest frames are the tail of video.yuv.1 followed by video.yuv.
         file="$work/video.yuv"
-        count=$(( $(stat -c %s "$file") / frame_bytes ))
-        [ "$count" -ge 5 ] || { echo "only $count frames in $file" >&2; exit 1; }
-        dd if="$file" of="$work/$name.yuv" bs="$frame_bytes" skip=$(( count - 2 )) count=1 status=none
+        prev="$file.1"
+        cur_count=$(( $(stat -c %s "$file" 2>/dev/null || echo 0) / frame_bytes ))
+        prev_count=0
+        if [ -f "$prev" ]; then prev_count=$(( $(stat -c %s "$prev") / frame_bytes )); fi
+        count=$(( cur_count + prev_count ))
+        [ "$cur_count" -ge 5 ] || [ "$count" -ge 5 ] || { echo "only $count frames in $file and $prev" >&2; exit 1; }
+        # the second-newest frame: the newest may still be incomplete in the pipe
+        want=$(( count - 2 ))
+        if [ "$want" -ge "$prev_count" ]; then
+            src="$file"; index=$(( want - prev_count ))
+        else
+            src="$prev"; index="$want"
+        fi
+        dd if="$src" of="$work/$name.yuv" bs="$frame_bytes" skip="$index" count=1 status=none
     else
         timeout 60 ffmpeg -nostdin -hide_banner -loglevel error -y -f v4l2 -i "$video" -frames:v 3 \
             -f rawvideo -pix_fmt yuv420p "$work/$name.all"

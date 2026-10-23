@@ -2,6 +2,7 @@
 #
 # The image is FROM scratch and holds only /opt/malrunar/media-bridge:
 #   bin/malrunar-media-bridge      UDP MPEG-TS -> ffmpeg -> v4l2loopback camera + PipeWire microphone
+#   bin/malrunar-bridge-logfilter.sh  hides expected decoder noise from the bridge log at startup
 #   bin/malrunar-xrdp-audio-tune   xrdp audio settings and default speaker/microphone
 #   bin/malrunar-media-profile     prints a browser policy limiting camera/microphone to given sites
 #   host/setup-v4l2loopback.sh     creates the camera devices on the HOST (kernel module)

@@ -27,6 +27,7 @@ COPY --link --from=ghcr.io/iarnvidr/media-bridge:0.1.0 / /
 | Path (under `/opt/malrunar/media-bridge`) | What it is |
 |---|---|
 | `bin/malrunar-media-bridge` | The receiver. Configured by environment, see below |
+| `bin/malrunar-bridge-logfilter.sh` | Log filter used by the bridge; hides expected decoder noise at startup |
 | `bin/malrunar-xrdp-audio-tune` | xrdp audio settings and default speaker/microphone, for xrdp sessions |
 | `bin/malrunar-media-profile` | Prints a Chromium or Firefox policy that lets only given sites use the camera and microphone |
 | `host/setup-v4l2loopback.sh` | Creates the camera devices **on the host** |
@@ -57,14 +58,35 @@ keeps its number, so with `docker run --device /dev/video10:/dev/video10` the de
 The container user must be able to write to the device (a group, see `--group-add` above). When the
 device is missing or not writable, the bridge says so, explains the host step and exits with status 3.
 
-### No camera device: the file sink
+### No camera device: the null and file sinks
 
-Where the module cannot be loaded (some hosted CI runners, locked-down hosts), set
-`MALRUNAR_BRIDGE_VIDEO_SINK=file:/some/path`. The same ffmpeg graph runs, but the scaled,
-frame-rate-converted frames are written to that file as raw `yuv420p` instead of to a device, so the
-audio path, the stream handling and the picture can still be tested. It is a test fallback, not a
-camera: applications cannot use a file as a camera. The file grows without bound; use it for short
-runs or point it at a path you rotate.
+Where the module cannot be loaded (some hosted CI runners, locked-down hosts), pick another video
+sink with `MALRUNAR_BRIDGE_VIDEO_SINK`. Neither is a camera: applications cannot use them.
+
+- `null`: the same ffmpeg graph runs (decode, scale, frame-rate conversion) and the frames are
+  discarded (`-f null -`). It proves that the stream arrives and decodes, stores nothing and needs no
+  disk. Use it when only the microphone or the stream itself matters.
+- `file:/some/path`: the scaled frames are also written as raw `yuv420p` (about 40 MB/s at
+  1280x720, 30 fps), so the picture can be inspected. The output is **bounded**: it is kept in a
+  ring of two files, `/some/path` (being written) and `/some/path.1` (the previous, complete
+  segment). A segment is `MALRUNAR_BRIDGE_FILE_MAX_BYTES` (default 64 MiB), rounded down to a whole
+  number of frames (but never less than one frame); when `/some/path` reaches that size it becomes
+  `/some/path.1`, replacing the older one, and writing starts again in a new `/some/path`. Disk use
+  never exceeds twice `MALRUNAR_BRIDGE_FILE_MAX_BYTES`, however long the bridge runs, and every
+  file starts on a frame boundary. At 1280x720 the default holds the last 1.5 to 3 seconds of
+  video. Restarts of ffmpeg do not reset the ring: the previous `path` is moved to `path.1`
+  first, and an empty `path` is simply overwritten. Both files are left behind when the bridge stops.
+
+## Quiet startup
+
+When the bridge joins an MPEG-TS stream in the middle of a GOP, ffmpeg's decoder complains until the
+first keyframe arrives (`non-existing PPS 0 referenced`, `Error submitting packet to decoder`,
+`no frame!`, `decode_slice_header error`, and similar). That is expected, so for the first
+`MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS` (default 10) of every ffmpeg run, log lines matching those
+known decoder messages are dropped by `bin/malrunar-bridge-logfilter.sh`. The quiet period ends early
+at ffmpeg's first `frame=N` progress line (visible at `MALRUNAR_BRIDGE_LOGLEVEL=info`). All other
+lines, such as `Connection refused` or `Unknown encoder`, always appear, and after the quiet period
+everything does. Set it to `0` to see every message.
 
 ## Configuration
 
@@ -75,7 +97,9 @@ All settings are environment variables and all are optional.
 | `MALRUNAR_BRIDGE_UDP_PORT` | `5004` | UDP port the MPEG-TS stream is received on |
 | `MALRUNAR_BRIDGE_BIND` | `0.0.0.0` | Address to listen on; use `127.0.0.1` when the sender is in the same container |
 | `MALRUNAR_BRIDGE_VIDEO_DEVICE` | `/dev/video10` | v4l2loopback device written to |
-| `MALRUNAR_BRIDGE_VIDEO_SINK` | `v4l2` | `v4l2` (the device above) or `file:/path` (raw yuv420p frames, tests) |
+| `MALRUNAR_BRIDGE_VIDEO_SINK` | `v4l2` | `v4l2` (the device above), `null` (decode and discard, stores nothing) or `file:/path` (raw yuv420p frames in a bounded two-file ring, tests) |
+| `MALRUNAR_BRIDGE_FILE_MAX_BYTES` | `67108864` (64 MiB) | File sink only: size of one segment, a positive whole number (`0` is rejected). Disk use stays at or below twice this |
+| `MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS` | `10` | Seconds after each ffmpeg start during which expected decoder noise is hidden; `0` shows everything |
 | `MALRUNAR_BRIDGE_SIZE` | `1280x720` | Output picture size `WxH` (even numbers); the input is scaled to it |
 | `MALRUNAR_BRIDGE_FPS` | `30` | Output frame rate |
 | `MALRUNAR_BRIDGE_MIC_NAME` | `malrunar_virtual_mic` | Source name of the microphone (letters, digits, `_.-`) |

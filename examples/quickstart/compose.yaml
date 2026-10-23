@@ -1,0 +1,86 @@
+# malrunar quickstart: a desktop with a virtual microphone (and, optionally, a virtual camera) fed by
+# OBS, which you drive over HTTP.   docker compose -f examples/quickstart/compose.yaml up -d --build
+# See README.md in this directory.
+#
+# Images are pinned by version tag, as published by this repository (<image>/pins.env VERSION).
+# Pin by digest in production: ghcr.io/iarnvidr/obs-control:0.1.0@sha256:<digest>.
+# Every reference can be replaced from the environment (or a .env file), for example to use images
+# you built from a checkout with scripts/build.sh.
+
+name: malrunar-quickstart
+
+services:
+  # desktop-base + media-bridge + PipeWire for the user "desktop" (desktop/Dockerfile).
+  desktop:
+    build:
+      context: ./desktop
+      args:
+        DESKTOP_BASE: ${MALRUNAR_DESKTOP_BASE_IMAGE:-ghcr.io/iarnvidr/desktop-base:153.5.1esr}
+        MEDIA_BRIDGE: ${MALRUNAR_MEDIA_BRIDGE_IMAGE:-ghcr.io/iarnvidr/media-bridge:0.1.0}
+    image: malrunar-quickstart-desktop:local
+    environment:
+      # Where the bridge asks OBS to start its output (service name "obs" resolves on the network).
+      MALRUNAR_BRIDGE_START_OUTPUT_URL: http://obs:18095/api/start-output
+      # "null": decode the video and discard it, so no kernel module or camera is needed.
+      # compose.camera.yaml replaces this with the real virtual camera.
+      MALRUNAR_BRIDGE_VIDEO_SINK: "null"
+      MALRUNAR_BRIDGE_UDP_PORT: "5004"
+      MALRUNAR_BRIDGE_WAIT: "90"
+    # The healthcheck (in the image) passes once the virtual microphone exists.
+    restart: unless-stopped
+
+  # OBS, headless, with an HTTP API (obs-control). It sends its program to the desktop's bridge.
+  obs:
+    image: ${MALRUNAR_OBS_CONTROL_IMAGE:-ghcr.io/iarnvidr/obs-control:0.1.0}
+    shm_size: 512m         # Chromium (browser sources) needs shared memory
+    depends_on:
+      desktop:
+        condition: service_healthy
+    environment:
+      MALRUNAR_OBS_OUTPUT_URL: udp://desktop:5004?pkt_size=1316
+      # Two scenes to switch between: "live" (the camera page below) and "standby" (a title card
+      # that needs no camera and no media file); see the configs section at the end of this file.
+      MALRUNAR_OBS_CONFIG: /etc/malrunar/obs-control.toml
+      # The camera page OBS shows. The default is a moving test picture with a tone that ships in
+      # the image. For a real camera page, see the VDO.Ninja example below.
+      MALRUNAR_OBS_CAMERA_URL: ${QUICKSTART_CAMERA_URL:-file:///usr/local/share/malrunar/obs-control/examples/test-card.html}
+    configs:
+      - source: obs-control-config
+        target: /etc/malrunar/obs-control.toml
+    volumes:
+      - obs-config:/config
+    ports:
+      # The API has no authentication of its own: publish it on the loopback address only.
+      - "127.0.0.1:18095:18095"
+    restart: unless-stopped
+    # The image has its own healthcheck (GET /ready).
+
+  # Optional: a camera page for the phone or laptop that is the camera. Uncomment this service
+  # and set QUICKSTART_CAMERA_URL to a VDO.Ninja view link, for example
+  #   QUICKSTART_CAMERA_URL='https://vdo.ninja/?view=<stream-id>&cleanoutput&transparent'
+  # then open https://vdo.ninja/?push=<stream-id> on the camera device. Treat the stream id as a
+  # secret. (Self-hosting VDO.Ninja is described at https://github.com/steveseguin/vdo.ninja .)
+  # vdo-ninja:
+  #   image: <your self-hosted VDO.Ninja image>
+  #   ports:
+  #     - "127.0.0.1:8443:443"
+
+# Inline file, not a host bind mount (needs Docker Compose 2.23.1 or newer). The first camera's
+# url is replaced by MALRUNAR_OBS_CAMERA_URL above; the "standby" camera is a title card in a data: URL.
+configs:
+  obs-control-config:
+    content: |
+      [[cameras]]
+      key = "live"
+      scene = "Live Feed"
+      url = "file:///usr/local/share/malrunar/obs-control/examples/test-card.html"
+
+      [[cameras]]
+      key = "standby"
+      scene = "Standby"
+      source = "Standby Card"
+      url = 'data:text/html,<body style="margin:0;background:%23203060;color:white;font:64px sans-serif;display:grid;place-items:center">Standby</body>'
+      reroute_audio = false
+
+volumes:
+  obs-config:

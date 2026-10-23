@@ -5,18 +5,54 @@
 # JPEG and the output stream carries H.264 and AAC. The sample config also enables the takes plugin:
 # upload slides (PNG and a PDF), arm, record a short take from the test card, assemble it with a slide
 # and play the result into the program.
+#
+# Remote-daemon safe: nothing of this machine is bind-mounted. The test files and the sample config
+# reach the containers with `docker cp` between `docker create` and `docker start`.
 set -euo pipefail
 image="${1:?usage: smoke.sh <image-ref>}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "obs-control smoke failed: $*" >&2; exit 1; }
+# Self-check: no host bind mounts (bracket expressions keep this check from matching itself).
+if grep -nE '[-]v[ =]+"?(\$here|\$\{here|\$PWD|\$work|\$\(|/|\./|~)|[-][-]mount|[-][-]volume|type=[b]ind' "${BASH_SOURCE[0]}"; then
+    fail 'the script bind-mounts a host path (not remote-daemon safe)'
+fi
 pin() { grep -h "^$1=" "$here/../../obs-runtime/pins.env" | head -1 | cut -d= -f2-; }
 obs_version="$(pin OBS_UPSTREAM_VERSION)"
 [ -n "$obs_version" ] || fail 'OBS_UPSTREAM_VERSION pin missing'
 # Every container run is bounded so a hung GUI process can never stall CI.
 run() { timeout -k 10 300 docker run --rm --entrypoint '' "$image" "$@"; }
 name="obs-control-smoke-$$"
-cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+created=()   # containers made with docker create for one-off runs
+cleanup() { docker rm -f "$name" ${created[@]+"${created[@]}"} >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+# put_dir <container> <host dir> <absolute dir in the container>: copy a directory into a created,
+# not yet started container (root-owned, world-readable, whatever the host's umask).
+put_dir() {
+    tar -C "$2" --owner=0 --group=0 --mode='u+rwX,go+rX' --transform "s,^\./*,${3#/}/," -cf - . \
+        | docker cp - "$1:/"
+}
+# put_config <container>: the sample config as /etc/malrunar/obs-control.toml (the default config path).
+put_config() {
+    local stage
+    stage="$(mktemp -d)"
+    mkdir -p "$stage/etc/malrunar"
+    cp "$here/smoke-config.toml" "$stage/etc/malrunar/obs-control.toml"
+    tar -C "$stage" --owner=0 --group=0 --mode='u+rwX,go+rX' -cf - etc | docker cp - "$1:/"
+    rm -rf "$stage"
+}
+# create_run <docker create args...>: create a one-off container, copy the test files in (and the
+# sample config when WITH_CONFIG=1), run it to completion in the foreground (attached, bounded) and
+# remove it.
+create_run() {
+    local cid status=0
+    cid="$(docker create "$@")" || return 1
+    created+=("$cid")
+    put_dir "$cid" "$here" /test || return 1
+    if [ "${WITH_CONFIG:-0}" = 1 ]; then put_config "$cid" || return 1; fi
+    timeout -k 10 300 docker start -a "$cid" || status=$?
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    return "$status"
+}
 exec_in() { timeout -k 10 120 docker exec "$name" "$@"; }
 json() { python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
 api() { exec_in curl -fsS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
@@ -24,7 +60,7 @@ api() { exec_in curl -fsS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
 api_any() { exec_in curl -sS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
 
 echo '== unit tests inside the image'
-if ! output="$(timeout -k 10 300 docker run --rm --entrypoint '' -v "$here:/test:ro" \
+if ! output="$(create_run --entrypoint '' \
     -e PYTHONPATH=/opt/malrunar/obs-control/lib -e PYTHONDONTWRITEBYTECODE=1 "$image" \
     python3 -m unittest discover -s /test -v 2>&1)"; then
     printf '%s\n' "$output" | tail -n 60 >&2
@@ -46,11 +82,12 @@ run bash -c 'python3 -c "import aiohttp, websockets; print(aiohttp.__version__, 
 echo '== configuration errors are reported and stop the start'
 if output="$(timeout -k 10 120 docker run --rm "$image" check 2>&1)"; then fail 'a missing camera URL was accepted'; fi
 printf '%s\n' "$output" | grep -q 'browser-source URL' || { printf '%s\n' "$output" >&2; fail 'unexpected configuration error text'; }
-timeout -k 10 120 docker run --rm -v "$here/smoke-config.toml:/etc/malrunar/obs-control.toml:ro" "$image" check || fail 'sample config does not validate'
+WITH_CONFIG=1 create_run "$image" check || fail 'sample config does not validate'
 
 echo '== OBS starts under Xvfb with the sample config'
-timeout -k 10 120 docker run -d --name "$name" -v "$here:/test:ro" \
-    -v "$here/smoke-config.toml:/etc/malrunar/obs-control.toml:ro" "$image" >/dev/null || fail 'docker run'
+timeout -k 10 120 docker create --name "$name" "$image" >/dev/null || fail 'docker create'
+put_dir "$name" "$here" /test && put_config "$name" || fail 'copying the test files into the container'
+timeout -k 10 120 docker start "$name" >/dev/null || fail 'docker start'
 # Receive the output stream before the output starts (UDP to a closed port would make FFmpeg stop).
 exec_in bash -c 'nohup python3 /test/udp-capture.py /tmp/out.ts 18096 240 >/tmp/capture.log 2>&1 &' || fail 'capture start'
 ready=false

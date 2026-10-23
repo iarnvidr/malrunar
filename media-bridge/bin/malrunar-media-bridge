@@ -12,7 +12,10 @@
 #   MALRUNAR_BRIDGE_UDP_PORT          5004
 #   MALRUNAR_BRIDGE_BIND              0.0.0.0
 #   MALRUNAR_BRIDGE_VIDEO_DEVICE      /dev/video10
-#   MALRUNAR_BRIDGE_VIDEO_SINK        v4l2 (default) or file:/path (raw yuv420p frames, for tests)
+#   MALRUNAR_BRIDGE_VIDEO_SINK        v4l2 (default), null (decode and discard), or file:/path
+#                                     (raw yuv420p frames, for tests; bounded, see FILE_MAX_BYTES)
+#   MALRUNAR_BRIDGE_FILE_MAX_BYTES    67108864 (64 MiB; segment size at which the file sink rotates)
+#   MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS  10 (hide expected decoder noise this long after ffmpeg starts; 0 = off)
 #   MALRUNAR_BRIDGE_SIZE              1280x720
 #   MALRUNAR_BRIDGE_FPS               30
 #   MALRUNAR_BRIDGE_MIC_NAME          malrunar_virtual_mic
@@ -46,6 +49,8 @@ wait_seconds="${MALRUNAR_BRIDGE_WAIT:-60}"
 restart="${MALRUNAR_BRIDGE_RESTART:-1}"
 restart_delay="${MALRUNAR_BRIDGE_RESTART_DELAY:-1}"
 loglevel="${MALRUNAR_BRIDGE_LOGLEVEL:-warning}"
+file_max_bytes="${MALRUNAR_BRIDGE_FILE_MAX_BYTES:-67108864}"
+quiet_seconds="${MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS:-10}"
 pipe_root="${MALRUNAR_BRIDGE_PIPE_DIR:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}}"
 
 # --- validate the configuration before touching anything --------------------------------------
@@ -66,6 +71,8 @@ description_re='^[^"\\[:cntrl:]]+$'
 [[ "$wait_seconds" =~ ^[0-9]+$ ]] || die "MALRUNAR_BRIDGE_WAIT must be a whole number of seconds, got '$wait_seconds'"
 [[ "$restart_delay" =~ ^[0-9]+$ ]] || die "MALRUNAR_BRIDGE_RESTART_DELAY must be a whole number of seconds, got '$restart_delay'"
 [[ "$loglevel" =~ ^[a-z]+$ ]] || die "MALRUNAR_BRIDGE_LOGLEVEL must be an ffmpeg log level such as warning, got '$loglevel'"
+[[ "$file_max_bytes" =~ ^[1-9][0-9]{0,14}$ ]] || die "MALRUNAR_BRIDGE_FILE_MAX_BYTES must be a positive whole number of bytes (0 is not allowed), got '$file_max_bytes'"
+[[ "$quiet_seconds" =~ ^[0-9]+$ ]] || die "MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS must be a whole number of seconds (0 = off), got '$quiet_seconds'"
 [[ -d "$pipe_root" && -w "$pipe_root" ]] || die "audio pipe directory '$pipe_root' is not a writable directory (set MALRUNAR_BRIDGE_PIPE_DIR)"
 if [[ -n "$start_url" ]]; then
     [[ "$start_url" =~ ^https?://[^[:space:]]+$ ]] || die "MALRUNAR_BRIDGE_START_OUTPUT_URL must be an http(s) URL"
@@ -77,12 +84,21 @@ case "$video_sink" in
         video_target="$video_device"
         video_format=v4l2
         ;;
-    file:?*)
-        video_target="${video_sink#file:}"
-        video_format=rawvideo
-        [[ -d "$(dirname -- "$video_target")" ]] || die "MALRUNAR_BRIDGE_VIDEO_SINK: directory of '$video_target' does not exist"
+    null)
+        video_target=-
+        video_format=null
         ;;
-    *) die "MALRUNAR_BRIDGE_VIDEO_SINK must be 'v4l2' or 'file:/path', got '$video_sink'" ;;
+    file:?*)
+        file_path="${video_sink#file:}"
+        video_target="$file_path"
+        video_format=rawvideo
+        [[ -d "$(dirname -- "$file_path")" ]] || die "MALRUNAR_BRIDGE_VIDEO_SINK: directory of '$file_path' does not exist"
+        # Rotation keeps whole frames: a segment is a whole number of frames, at least one.
+        frame_bytes=$(( width * height * 3 / 2 ))
+        segment_bytes=$(( file_max_bytes / frame_bytes * frame_bytes ))
+        (( segment_bytes > 0 )) || segment_bytes=$frame_bytes
+        ;;
+    *) die "MALRUNAR_BRIDGE_VIDEO_SINK must be 'v4l2', 'null' or 'file:/path', got '$video_sink'" ;;
 esac
 for tool in ffmpeg pactl; do
     command -v "$tool" >/dev/null || die "'$tool' not found in PATH (the bridge needs ffmpeg and pulseaudio-utils; desktop-base has both)"
@@ -107,7 +123,7 @@ if [[ "$video_sink" == v4l2 ]]; then
   The virtual camera is a v4l2loopback device, which is created on the HOST by loading a kernel module;
   a container cannot do that. On the host run host/setup-v4l2loopback.sh (installed next to this script),
   then give the container the device, for example: docker run --device $video_device ...
-  To run without a camera device, set MALRUNAR_BRIDGE_VIDEO_SINK=file:/some/path (frames are written to a file)." 3
+  To run without a camera device, set MALRUNAR_BRIDGE_VIDEO_SINK=null (decode and discard) or file:/some/path (a bounded file)." 3
     fi
     if [[ ! -w "$video_device" ]]; then
         die "video device $video_device exists but is not writable by uid $(id -u) (groups: $(id -G)); fix the device permissions or add the container user to the device's group (docker run --group-add \$(stat -c %g $video_device))" 3
@@ -126,6 +142,8 @@ audio_dir="$(mktemp -d "$pipe_root/malrunar-bridge.XXXXXX")"
 audio_fifo="$audio_dir/audio"
 source_id=""
 ffmpeg_pid=""
+rotator_pid=""
+filter_pid=""
 
 cleanup() {
     if [[ "$ffmpeg_pid" =~ ^[0-9]+$ ]]; then
@@ -137,8 +155,11 @@ cleanup() {
         kill -KILL "$ffmpeg_pid" >/dev/null 2>&1 || true
         wait "$ffmpeg_pid" 2>/dev/null || true
     fi
+    for helper_pid in "$rotator_pid" "$filter_pid"; do
+        if [[ "$helper_pid" =~ ^[0-9]+$ ]]; then kill "$helper_pid" >/dev/null 2>&1 || true; fi
+    done
     if [[ "$source_id" =~ ^[0-9]+$ ]]; then pactl unload-module "$source_id" >/dev/null 2>&1 || true; fi
-    rm -f "$audio_fifo"
+    rm -f "$audio_fifo" "$audio_dir/video" "$audio_dir/log"
     rmdir "$audio_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -156,16 +177,46 @@ fi
 log "virtual microphone '$mic_name' ($mic_description) ready"
 
 # --- receive loop -----------------------------------------------------------------------------
+# File sink: ffmpeg writes raw frames into a fifo and rotate_video keeps them in a ring of two
+# files, "path" (being written) and "path.1" (the previous, full segment): at most
+# 2 x segment_bytes on disk, whatever the run time.
+rotate_video() {
+    local size
+    while :; do
+        if [[ -s "$file_path" ]]; then mv -f -- "$file_path" "$file_path.1"; fi
+        head -c "$segment_bytes" > "$file_path" || return 0
+        size="$(stat -c %s -- "$file_path")"
+        (( size >= segment_bytes )) || return 0   # input ended inside a segment
+    done
+}
+
+# ffmpeg's log passes through malrunar-bridge-logfilter.sh, which drops the expected decoder noise of
+# joining a stream mid-GOP for the first MALRUNAR_BRIDGE_STARTUP_QUIET_SECONDS of each run.
+filter="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/malrunar-bridge-logfilter.sh"
+[[ -x "$filter" ]] || die "log filter '$filter' is missing or not executable"
+mkfifo "$audio_dir/log"
+ffmpeg_video_out="$video_target"
+if [[ "$video_format" == rawvideo ]]; then
+    mkfifo "$audio_dir/video"
+    ffmpeg_video_out="$audio_dir/video"
+fi
+
 # UDP fifo_size counts 188-byte packets: bounded backlog (queue size is not an end-to-end latency
 # guarantee). timeout is in microseconds.
 input_url="udp://${bind_addr}:${udp_port}?fifo_size=4096&overrun_nonfatal=0&timeout=$(( input_timeout * 1000000 ))"
 while true; do
     log "listening on udp://${bind_addr}:${udp_port}; video -> ${video_format} ${video_target} (${size}@${fps}); audio -> ${mic_name}"
+    if [[ "$video_format" == rawvideo ]]; then
+        rotate_video < "$audio_dir/video" &
+        rotator_pid=$!
+    fi
+    "$filter" "$quiet_seconds" < "$audio_dir/log" >&2 &
+    filter_pid=$!
     ffmpeg -nostdin -y -hide_banner -loglevel "$loglevel" \
         -fflags nobuffer -flags low_delay -probesize 128k -analyzeduration 200000 \
         -i "$input_url" \
-        -map 0:v:0 -vf "fps=${fps},scale=${width}:${height},format=yuv420p" -f "$video_format" "$video_target" \
-        -map 0:a:0 -ac 2 -ar 48000 -flush_packets 1 -f s16le "$audio_fifo" &
+        -map 0:v:0 -vf "fps=${fps},scale=${width}:${height},format=yuv420p" -f "$video_format" "$ffmpeg_video_out" \
+        -map 0:a:0 -ac 2 -ar 48000 -flush_packets 1 -f s16le "$audio_fifo" 2> "$audio_dir/log" &
     ffmpeg_pid=$!
 
     if [[ -n "$start_url" ]]; then
@@ -182,6 +233,16 @@ while true; do
     status=0
     wait "$ffmpeg_pid" || status=$?
     ffmpeg_pid=""
+    # The helpers end at EOF; wait for them so the log is complete. A rotator that ffmpeg never
+    # connected to is stopped after a moment.
+    wait "$filter_pid" 2>/dev/null || true
+    filter_pid=""
+    if [[ -n "$rotator_pid" ]]; then
+        for _ in $(seq 1 20); do kill -0 "$rotator_pid" 2>/dev/null || break; sleep 0.1; done
+        kill "$rotator_pid" >/dev/null 2>&1 || true
+        wait "$rotator_pid" 2>/dev/null || true
+        rotator_pid=""
+    fi
     if [[ "$restart" != 1 ]]; then
         log "ffmpeg exited with status $status; MALRUNAR_BRIDGE_RESTART=0, stopping"
         exit "$status"

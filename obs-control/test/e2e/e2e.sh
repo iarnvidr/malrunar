@@ -15,15 +15,29 @@
 # The video sink is a file; with a v4l2loopback device given as the fourth argument it is that
 # device (mapped into the desktop container), so the whole chain including the virtual camera runs.
 # Audio is checked in both cases. Every container run is bounded.
+#
+# The Docker daemon may be remote (DOCKER_HOST, a remote context): nothing here mounts a path of the
+# machine running this script. The test files reach the containers with `docker cp` between
+# `docker create` and `docker start`, the desktop recipe is sent as a build context, and the only
+# volume is a named one that lives on the daemon.
 set -euo pipefail
 obs_image="${1:?usage: e2e.sh <obs-control image> <media-bridge image> <desktop-base image> [/dev/videoN]}"
 bridge_image="${2:?media-bridge component image}"
 desktop_base="${3:?desktop-base image}"
 v4l2_device="${4:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Self-check: this script must not bind-mount host paths (they do not exist on a remote daemon).
+# The patterns are written with bracket expressions so that this check does not match itself.
+if grep -nE '[-]v[ =]+"?(\$here|\$\{here|\$PWD|\$root|\$\(|/|\./|~)|[-][-]mount|[-][-]volume|type=[b]ind' "${BASH_SOURCE[0]}"; then
+    echo 'obs-control e2e failed: the script bind-mounts a host path (not remote-daemon safe)' >&2
+    exit 1
+fi
+echo 'E2E: remote-daemon-safe (no host bind mounts)'
 root="$(cd "$here/../../.." && pwd)"
 id="obs-control-e2e-$$"
 consumer="malrunar-test/obs-control-e2e-desktop:$$"
+# The bridge's file video sink is a bounded ring of two files (see desktop.sh); the cap is set explicitly.
+file_max_bytes=33554432
 fail() { echo "obs-control e2e failed: $*" >&2; exit 1; }
 step() { echo "== $*"; }
 [ -d "$root/media-bridge/test/consumer" ] || fail 'media-bridge/test/consumer is missing (the e2e reuses its desktop image recipe)'
@@ -44,6 +58,14 @@ cleanup() {
     docker rmi -f "$consumer" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+# put_dir <container> <host dir> <absolute dir in the container>: copy a directory into a container
+# that has been created but not started, with root ownership and world-readable modes (the files are
+# used by an unprivileged user and the host's umask or owner must not matter).
+put_dir() {
+    tar -C "$2" --owner=0 --group=0 --mode='u+rwX,go+rX' --transform "s,^\./*,${3#/}/," -cf - . \
+        | docker cp - "$1:/"
+}
 
 field() { python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
 desk() { timeout -k 10 150 docker exec --user 1000:1000 "$id-desktop" /e2e/desktop.sh "$@"; }
@@ -67,24 +89,31 @@ step 'start the desktop (PipeWire and the bridge)'
 device_args=()
 video='file'
 if [ -n "$v4l2_device" ]; then
-    [ -c "$v4l2_device" ] || fail "$v4l2_device is not a character device"
-    device_args=(--device "$v4l2_device" --group-add "$(stat -c %g "$v4l2_device")")
+    # Probe the device on the daemon's host, not on this machine.
+    device_gid="$(timeout -k 10 120 docker run --rm --entrypoint '' --device "$v4l2_device" "$consumer" \
+        bash -c 'test -c "$1" && stat -c %g "$1"' _ "$v4l2_device")" || fail "$v4l2_device is not a character device on the Docker host"
+    device_args=(--device "$v4l2_device" --group-add "$device_gid")
     video="$v4l2_device"
 fi
-timeout -k 10 120 docker run -d --name "$id-desktop" --network "$id" --network-alias desktop \
-    --user 1000:1000 --entrypoint '' "${device_args[@]}" -v "$here:/e2e:ro" \
+timeout -k 10 120 docker create --name "$id-desktop" --network "$id" --network-alias desktop \
+    --user 1000:1000 --entrypoint '' "${device_args[@]}" \
     -e "E2E_VIDEO=$video" -e E2E_START_URL=http://obs:18095/api/start-output \
+    -e "E2E_FILE_MAX_BYTES=$file_max_bytes" \
     "$consumer" dbus-run-session -- /e2e/desktop.sh serve >/dev/null
+put_dir "$id-desktop" "$here" /e2e
+timeout -k 10 120 docker start "$id-desktop" >/dev/null
 
 step 'start obs-control, sending to the bridge'
-timeout -k 10 120 docker run -d --name "$id-obs" --network "$id" --network-alias obs --shm-size 512m \
-    -v "$id-media:/media:ro" -v "$here:/e2e:ro" \
+timeout -k 10 120 docker create --name "$id-obs" --network "$id" --network-alias obs --shm-size 512m \
+    -v "$id-media:/media:ro" \
     -e MALRUNAR_OBS_CONFIG=/e2e/obs-e2e.toml -e MALRUNAR_OBS_FEATURES_TAKES=true \
     -e MALRUNAR_OBS_CAMERA_URL=file:///usr/local/share/malrunar/obs-control/examples/test-card.html \
     -e MALRUNAR_OBS_MEDIA_FILE=/media/e2e.mp4 -e MALRUNAR_OBS_START_SCENE=video \
     -e MALRUNAR_OBS_BROLL_ENABLED=false \
     -e 'MALRUNAR_OBS_OUTPUT_URL=udp://desktop:5004?pkt_size=1316' \
     "$obs_image" >/dev/null
+put_dir "$id-obs" "$here" /e2e
+timeout -k 10 120 docker start "$id-obs" >/dev/null
 ready=false
 for _ in $(seq 1 120); do
     if api /ready 2>/dev/null | grep -q '"ready": true'; then ready=true; break; fi
@@ -167,6 +196,20 @@ api /api/takes/disarm -X POST | grep -q '"armed": false' || fail 'POST /api/take
 api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
 desk tone 660 120 || fail 'the prepared take did not reach the virtual microphone with its 660 Hz tone'
 api_any /health | grep -q '"healthy": true' || fail 'the output is not healthy after the take'
+
+if [ "$video" = file ]; then
+    step 'the bounded video sink ring (video.yuv and video.yuv.1) is within the cap'
+    # The bridge rotates the file sink: the segment being written and the previous one, each at
+    # most the cap. Right after a rotation the current one can be tiny or empty.
+    sizes="$(docker exec "$id-desktop" sh -c 'for f in /tmp/e2e/video.yuv /tmp/e2e/video.yuv.1; do if [ -e "$f" ]; then stat -c %s "$f"; else echo 0; fi; done')" \
+        || fail 'could not stat the video sink files'
+    cur_size="$(echo "$sizes" | sed -n 1p)"
+    prev_size="$(echo "$sizes" | sed -n 2p)"
+    echo "video sink: video.yuv $cur_size bytes, video.yuv.1 $prev_size bytes (cap $file_max_bytes each)"
+    [ $(( cur_size + prev_size )) -gt 0 ] || fail 'both video sink files are empty or missing'
+    [ "$cur_size" -le "$file_max_bytes" ] || fail "video.yuv ($cur_size bytes) exceeds the cap"
+    [ "$prev_size" -le "$file_max_bytes" ] || fail "video.yuv.1 ($prev_size bytes) exceeds the cap"
+fi
 
 step 'logs are clean'
 if docker logs "$id-obs" 2>&1 | grep -E 'Traceback|Error in plugin'; then fail 'obs-control logged a traceback'; fi
