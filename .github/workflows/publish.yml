@@ -23,6 +23,9 @@ env:
 
 jobs:
   publish:
+    # A manual run on any other ref (a scratch branch of scripts/ci-try.sh, a pull request branch) must never
+    # push: images are published from main only, and the cosign identity checks below name main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

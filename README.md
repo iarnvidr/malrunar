@@ -281,6 +281,10 @@ python3 -m unittest discover -s scripts/test    # hashes and pull request planni
 python3 scripts/malrunar_image.py tags guacd    # the tags this checkout would publish
 ```
 
+No Docker on your machine? `scripts/ci-try.sh <component>` runs the build and tests of the components you
+changed on GitHub Actions and prints what failed (see [CONVENTIONS.md](CONVENTIONS.md#no-local-docker-use-scriptsci-trysh);
+free for this public repository, but counted against the minutes of a private copy, so name only what you changed).
+
 To add or change an image, see [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Licences
