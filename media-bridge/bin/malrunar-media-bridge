@@ -123,7 +123,7 @@ if [[ "$video_sink" == v4l2 ]]; then
   The virtual camera is a v4l2loopback device, which is created on the HOST by loading a kernel module;
   a container cannot do that. On the host run host/setup-v4l2loopback.sh (installed next to this script),
   then give the container the device, for example: docker run --device $video_device ...
-  To run without a camera device, set MALRUNAR_BRIDGE_VIDEO_SINK=null (decode and discard) or file:/some/path (a bounded file)." 3
+  To run without a camera device, set MALRUNAR_BRIDGE_VIDEO_SINK=null (decode and discard) or MALRUNAR_BRIDGE_VIDEO_SINK=file:/path (a bounded file)." 3
     fi
     if [[ ! -w "$video_device" ]]; then
         die "video device $video_device exists but is not writable by uid $(id -u) (groups: $(id -G)); fix the device permissions or add the container user to the device's group (docker run --group-add \$(stat -c %g $video_device))" 3

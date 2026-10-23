@@ -49,6 +49,8 @@ cleanup() {
             echo "--- logs: $name" >&2
             docker logs "$id-$name" 2>&1 | tail -n 50 >&2 || true
         done
+        echo '--- logs: obs-control (the OBS lines left out)' >&2
+        docker logs "$id-obs" 2>&1 | grep -v -E '^(info|warning|debug): |obs-websocket|^\s' | tail -n 80 >&2 || true
         echo '--- bridge log' >&2
         docker exec "$id-desktop" tail -n 30 /tmp/e2e/bridge.log >&2 2>/dev/null || true
     fi
@@ -69,7 +71,20 @@ put_dir() {
 
 field() { python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
 desk() { timeout -k 10 150 docker exec --user 1000:1000 "$id-desktop" /e2e/desktop.sh "$@"; }
-api() { timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
+# api <path> [curl args]: prints the response body on success. On an HTTP error status (or a curl
+# failure) it prints the status and the response body to stderr and returns non-zero, so that a failing
+# call says why (the server's JSON error) instead of only "returned error: 503".
+api() {
+    local out status
+    out="$(timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 -w '\n%{http_code}' "http://127.0.0.1:18095$1" "${@:2}")" \
+        || { echo "curl failed for $1: ${out:-no response}" >&2; return 1; }
+    status="${out##*$'\n'}"
+    out="${out%$'\n'*}"
+    case "$status" in
+        2??) printf '%s\n' "$out" ;;
+        *) echo "HTTP $status from $1: $out" >&2; return 22 ;;
+    esac
+}
 api_any() { timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
 
 step 'desktop image: desktop-base + the media-bridge component'
