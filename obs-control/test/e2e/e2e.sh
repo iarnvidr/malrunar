@@ -94,8 +94,8 @@ docker build --quiet --tag "$consumer" --build-arg "BRIDGE_IMAGE=$bridge_image" 
     --build-arg "DESKTOP_BASE=$desktop_base" "$root/media-bridge/test/consumer" >/dev/null
 
 step 'test media: video with a 1000 Hz tone (the scene "video"); the camera page carries 440 Hz'
-# Pin the isolated bridge subnet so obs-control can trust the desktop peer precisely.
-docker network create --driver bridge --subnet 172.30.240.0/24 "$id" >/dev/null
+# Docker chooses an isolated bridge subnet; proxy-secret trust does not depend on peer addressing.
+docker network create --driver bridge "$id" >/dev/null
 docker volume create "$id-media" >/dev/null
 timeout -k 10 300 docker run --rm --user 0 --entrypoint '' -v "$id-media:/media" "$obs_image" bash -c '
     ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i "testsrc=size=640x360:rate=24" \
@@ -146,6 +146,20 @@ for _ in $(seq 1 120); do
     sleep 2
 done
 [ "$ready" = true ] || fail 'obs-control did not become ready'
+
+step 'access: authenticate remote and loopback operator requests, reject missing/wrong secrets'
+# Validate the config the process actually loaded, then exercise real API middleware from both peers.
+docker exec "$id-obs" python3 -c 'from malrunar_obs.config import load_config; c=load_config(); assert c.access.proxy_secret_header == "X-Proxy-Secret" and not c.access.trusted_proxies; assert c.identity_config().mode == "secret"'
+for peer in loopback remote; do
+    if [ "$peer" = loopback ]; then who="$id-obs"; url=http://127.0.0.1:18095/api/clips; else who="$id-desktop"; url=http://obs:18095/api/clips; fi
+    timeout -k 10 60 docker exec "$who" curl -fsS --max-time 20 -H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789' "$url" >/dev/null || fail "authenticated $peer request rejected"
+    for secret in absent wrong; do
+        args=(-H 'X-Forwarded-User: e2e-operator')
+        [ "$secret" = absent ] || args+=(-H 'X-Proxy-Secret: wrong-secret-value-0123456789')
+        status="$(docker exec "$who" curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${args[@]}" "$url")"
+        [ "$status" = 403 ] || fail "$peer $secret-secret request returned HTTP $status"
+    done
+done
 
 step 'the media scene reaches the virtual microphone (1000 Hz) and the video sink'
 desk tone 1000 180 || fail 'no 1000 Hz tone at the virtual microphone'
