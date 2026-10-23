@@ -173,7 +173,7 @@ case "$conclusion" in
             gh run view --job "$job_id" -R "$repo" --log-failed 2>&1 |
                 sed "s/${esc}\\[[0-9;?]*[A-Za-z]//g" | cut -f3- |
                 sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ?//' |
-                grep -vE '^(##\[(debug|group|endgroup)\]|\s*$)' | tail -n "$tail_n" || true
+                grep -vE '^(##\[(debug|group|endgroup)\]|\s*$|frame= *[0-9]+ fps=)' | tail -n "$tail_n" || true
         done
         ;;
     *) status=2; echo "ci-try: the run ended as '$conclusion' (cancelled or infrastructure problem), not as a test failure" >&2 ;;
