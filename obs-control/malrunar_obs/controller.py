@@ -96,7 +96,7 @@ class Controller:
         self.levels = levels_module.Levels(self)
         self.app = web.Application(
             client_max_size=1024 * 1024 * 1024,
-            middlewares=[self._errors, self._access],
+            middlewares=[self._errors],
         )
         self.app[CONTROLLER_KEY] = self
         self._add_routes()
@@ -155,11 +155,11 @@ class Controller:
         return clips_module.clean_display_name(value)
 
     def identity(self, request: web.Request) -> str | None:
-        """Who made the request: the trusted header if one is configured, else ``?user=``."""
-        access = self.config.access
-        if access.identity_header:
-            return request.headers.get(access.identity_header) or None
-        return request.query.get("user") or None
+        """The identity the reverse proxy put in the configured header (None: no header configured or sent).
+
+        Only used to keep per-user state apart; authentication and authorization are external."""
+        header = self.config.access.identity_header
+        return (request.headers.get(header) or None) if header else None
 
     # ------------------------------------------------------------------ middleware
     @web.middleware
@@ -169,15 +169,6 @@ class Controller:
         except (ObsError, OSError, asyncio.TimeoutError, WebSocketException) as exc:
             # OBS is down, restarting or refused the request.
             return web.json_response({"ok": False, "error": str(exc) or type(exc).__name__}, status=503)
-
-    @web.middleware
-    async def _access(self, request: web.Request, handler):
-        access = self.config.access
-        if access.enforce and request.path not in ("/health", "/ready"):
-            identity = request.headers.get(access.identity_header) or None
-            if identity not in access.allowed_identities:
-                return web.json_response({"ok": False, "error": "Not an allowed identity"}, status=403)
-        return await handler(request)
 
     # ------------------------------------------------------------------ routes
     def _add_routes(self) -> None:
@@ -583,8 +574,8 @@ class Controller:
         try:
             body = await request.json()
             healthy = body.get("healthy", not program_control)
-            if healthy and body.get("user") in self.config.access.allowed_identities:
-                self.sender_user = body["user"]
+            if healthy and self.config.access.identity_header:
+                self.sender_user = self.identity(request)
         except Exception:
             healthy = not program_control
         self.sender_last_seen = datetime.now().timestamp() if healthy else 0

@@ -86,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
         "min_segment_seconds": 6.0,
         "preview_url": "",
     },
-    "access": {"identity_header": "", "allowed_identities": [], "enforce": False},
+    "access": {"identity_header": ""},
     "storage": {"recordings_dir": "/config/recordings", "state_dir": "/config/state"},
     "relay": {
         "control_url": "http://127.0.0.1:18097",
@@ -211,7 +211,7 @@ class Config:
 
     @property
     def per_identity_broll(self) -> bool:
-        return bool(self.access.allowed_identities)
+        return bool(self.access.identity_header)
 
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self.data)
@@ -427,9 +427,6 @@ def validate(data: dict[str, Any], *, cameras: bool = True) -> None:
         raise ConfigError(f"[stopped] color must look like #rrggbb (got {color!r})")
     if not data["output"]["url"]:
         raise ConfigError("[output] url is required (MALRUNAR_OBS_OUTPUT_URL)")
-    access = data["access"]
-    if access["enforce"] and not (access["identity_header"] and access["allowed_identities"]):
-        raise ConfigError("[access] enforce needs identity_header and allowed_identities")
     start = data["obs"]["start_scene"]
     if start and start != "stopped" and start not in keys and start not in scenes:
         raise ConfigError(f"[obs] start_scene {start!r} is not a scene key or scene name")

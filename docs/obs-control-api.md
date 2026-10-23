@@ -181,9 +181,11 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 
 | Key | Default | Environment variable | Meaning |
 |---|---|---|---|
-| `identity_header` | (empty) | `MALRUNAR_OBS_ACCESS_IDENTITY_HEADER` | Header carrying the caller's identity, set by a trusted reverse proxy (for example `X-Forwarded-User`). Empty: identity comes from the `user` query parameter |
-| `allowed_identities` | `[]` | `MALRUNAR_OBS_ACCESS_ALLOWED_IDENTITIES` | Identities that may own b-roll. Non-empty (with `features.program_control`): b-roll is kept per identity and a request without an allowed identity gets 400 |
-| `enforce` | `false` | `MALRUNAR_OBS_ACCESS_ENFORCE` | Reject every request except `/health` and `/ready` unless the trusted header names an allowed identity (403) |
+| `identity_header` | (empty) | `MALRUNAR_OBS_ACCESS_IDENTITY_HEADER` | Header in which a trusted reverse proxy passes the caller's identity (for example `X-Forwarded-User`). Set (with `features.program_control`): per-user state such as b-roll is kept per identity, and any identity the proxy passes gets its own. Empty: no identities, b-roll is shared. Not an access control: obs-control never rejects a request for its identity |
+
+Authentication and authorization are external (an authenticating reverse proxy). `access.enforce` and
+`access.allowed_identities` (and their `MALRUNAR_OBS_ACCESS_*` variables) were removed; a configuration
+that still sets them fails to load with `unknown setting(s)`.
 
 #### `[storage]`
 
@@ -325,7 +327,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `GET /api/recording/status` | relay capture status | same, via `relay.control_url` | none | `MALRUNAR_OBS_RELAY_CONTROL_URL` replaces the old variable |
 | `POST /api/recording/start` | `{name}` starts a relay capture | same | none | none |
 | `POST /api/recording/stop` | stops, remuxes to MP4, creates the clip scene | same | none | none |
-| `GET /api/daily-fallback/status` | b-roll state; in the product mode `?user=` had to be one of two hard-coded names | same state machine and fields; the owner comes from `access.*` (below); `url` is `broll.preview_url`, else `api/daily-fallback/preview` in program control, `media/3-minute-video.mp4` otherwise; `{"enabled": false, "state": "disabled"}` when `broll.enabled = false` | identity handling; the product mode reported `api/obs/daily-fallback/preview` as `url` | Set `broll.preview_url` to the old value if a client relies on it; list identities in `access.allowed_identities` (per-identity b-roll applies in program control, as before) |
+| `GET /api/daily-fallback/status` | b-roll state; in the product mode `?user=` had to be one of two hard-coded names | same state machine and fields; the owner is the `access.identity_header` identity (below); `url` is `broll.preview_url`, else `api/daily-fallback/preview` in program control, `media/3-minute-video.mp4` otherwise; `{"enabled": false, "state": "disabled"}` when `broll.enabled = false` | identity handling; the product mode reported `api/obs/daily-fallback/preview` as `url` | Set `broll.preview_url` to the old value if a client relies on it; set `access.identity_header` (per-identity b-roll applies in program control, as before; no list of identities is needed) |
 | `GET /api/daily-fallback/preview` | today's b-roll for the owner | same | none | none |
 | `POST /api/daily-fallback/ensure` | 202, starts capture; product mode: 409 unless the owner's camera is live | same | `409 {"error": "Automatic b-roll is disabled"}` when disabled | none |
 | `POST /api/daily-fallback/cancel` | cancels the owner's capture | same | none | none |
@@ -338,7 +340,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `POST /api/call/microphone` | `{"muted": bool}` gates the live audio | same; applies to every camera source | flag name | as above |
 | `POST /api/call/clip-audio` | `{"muted": bool}` gates the clip audio | same | flag name | as above |
 | `POST /api/call/video-profile` | `{"profile": "360p"\|"540p"\|"720p"}`; response had `scale` and `viewer_kbps` | profiles come from `[profiles.*]`; response `{ok, profile, width, height, encoder_kbps, camera_query}`; needs `features.program_control` and `features.video_profiles`; 409 while a plugin holds the program | the viewer-side `scale`/`viewer_kbps` were sender-specific and became the generic `camera_query` | Put `scale` and `videobitrate` (or whatever the sender understands) in `profiles.<name>.camera_query` |
-| `POST /api/sender-heartbeat` | `{"healthy": bool, "user": name}`; simple mode starts the b-roll | same; `user` is accepted only if listed in `access.allowed_identities` | no hard-coded names | none |
+| `POST /api/sender-heartbeat` | `{"healthy": bool, "user": name}`; simple mode starts the b-roll | same; with `access.identity_header` set, the sender's user is the header identity and the body `user` is ignored; without a header the body `user` is ignored too (no user) | no hard-coded names | none |
 | `POST /api/restart-live` | refreshed the product's receiver input | refreshes the first camera's browser source (`?key=<camera key>` for another one); falls back to resetting its URL | optional `key` parameter | none |
 | `POST /api/restart-output` | stop (if running), start | same | none | none |
 | `POST /api/stop-output` | stop if running | same | none | none |
@@ -351,23 +353,23 @@ Error responses keep the old shapes: `{"ok": false, "error": "..."}` with 400 (b
 
 ## Identity and security
 
-The HTTP API has **no authentication of its own**. Publish its port only to networks you trust, or
-put an authenticating reverse proxy in front of it and tell obs-control which header the proxy
-sets:
+The HTTP API has **no authentication or authorization of its own**: both are handled externally by a
+reverse proxy (for example an SSO forward-auth service). Publish its port only to networks you trust, or put the
+authenticating proxy in front of it. obs-control reads one trusted header, only to keep per-user state
+(ownership) apart, and never keeps an allow-list or rejects a user:
 
 ```toml
 [access]
 identity_header = "X-Forwarded-User"     # set (and any client value overwritten) by the proxy
-allowed_identities = ["ann", "bob"]      # who may own b-roll
-enforce = true                           # also reject any other request, except /health and /ready (403)
 ```
 
-- With `allowed_identities` empty (the default), or without `features.program_control`, there are no
-  identities: b-roll is shared and the heartbeat's `user` is ignored.
-- With identities listed and `identity_header` empty, the identity is the `user` query parameter
-  (the old behaviour): that is only a label, not a trust boundary.
-- `enforce` requires `identity_header` and `allowed_identities`, and then trusts the header: the proxy
-  must strip it from client requests.
+- The proxy **must set this header on every request and overwrite any value the client sent**;
+  otherwise a client can choose whose b-roll it uses. Do not publish the port without the proxy.
+- With the header configured (and `features.program_control`), b-roll is kept per identity; any
+  identity the proxy passes gets its own. A request without the header gets 400 from the b-roll
+  routes. `POST /api/sender-heartbeat` takes the sender's user from the header.
+- Without `identity_header`, or without `features.program_control`, there are no identities: b-roll
+  is shared and the heartbeat's `user` is ignored. The `user` query parameter is no longer read.
 
 obs-websocket is protected with a password (generated on first start, or `obs.websocket_password`)
 and is not published by the image. The relay's control API is unauthenticated and binds to
@@ -510,7 +512,8 @@ Names that were fixed in code are configuration now. To keep the old scene and s
 existing OBS volume, set them: `cameras[0].scene`, `cameras[0].source`, `media.scene`, `media.source`,
 `stopped.scene`, `stopped.source` (the defaults are generic names, and the OBS configuration is
 regenerated on every start). The profile and collection names (`obs.profile`, `obs.collection`)
-default to `malrunar`. The hard-coded allowlist of two users is `access.allowed_identities`; the
+default to `malrunar`. The hard-coded allowlist of two users is gone (authorization is external; see
+[Identity and security](#identity-and-security)); the
 heartbeat's sender lease is `features.sender_lease` and `sender.lease_seconds`. The OBS image runs as
 uid/gid 1000 with home `/config`, like the previous container; obs-websocket now needs a password
 (generated and stored in the OBS configuration, nothing to do for the controller).

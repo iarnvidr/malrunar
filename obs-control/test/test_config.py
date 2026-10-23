@@ -119,9 +119,10 @@ class FileTests(TempDir, unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "true or false"):
             make_config(self.tmp, cameras=[{"url": "http://x/", "restart_when_active": "yes"}])
 
-    def test_access_enforce_needs_header_and_identities(self):
-        with self.assertRaisesRegex(ConfigError, "enforce"):
-            make_config(self.tmp, access={"enforce": True})
+    def test_removed_access_settings_are_unknown(self):
+        for key, value in (("enforce", True), ("allowed_identities", ["ann"])):
+            with self.assertRaisesRegex(ConfigError, key):
+                make_config(self.tmp, access={key: value})
 
     def test_missing_explicit_file_is_an_error(self):
         with self.assertRaisesRegex(ConfigError, "not found"):
@@ -139,14 +140,14 @@ class EnvTests(TempDir, unittest.TestCase):
                 "MALRUNAR_OBS_VIDEO_FPS": "30",
                 "MALRUNAR_OBS_FEATURES_PROGRAM_CONTROL": "true",
                 "MALRUNAR_OBS_BROLL_SILENCE_DB": "-40.5",
-                "MALRUNAR_OBS_ACCESS_ALLOWED_IDENTITIES": "a, b",
+                "MALRUNAR_OBS_ACCESS_IDENTITY_HEADER": "X-User",
             }
         )
         self.assertEqual(config.output.url, "udp://203.0.113.5:9000")
         self.assertEqual(config.video.fps, 30)
         self.assertTrue(config.features.program_control)
         self.assertEqual(config.broll.silence_db, -40.5)
-        self.assertEqual(config.access.allowed_identities, ["a", "b"])
+        self.assertEqual(config.access.identity_header, "X-User")
 
     def test_aliases_and_first_camera_variables(self):
         config = self.load(

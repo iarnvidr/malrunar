@@ -20,13 +20,15 @@ a Guacamole web application to talk to (yours; the version tested against is the
 proxy that authenticates users and sets the identity header (below). The smoke test runs the image
 with nothing else in it and fails if `guacd` or any other component is present.
 
-## Security: the identity header is trusted
+## Security: authentication and authorization are external
 
-The service believes the user name in the header named by `MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER`.
-Your reverse proxy must authenticate the request, **strip that header from client requests** and set it itself,
-and only the proxy may reach this service's port (a private network or `127.0.0.1`). Guacamole itself
+This service does no authentication or authorization and keeps no allow-list. It reads the user name in the
+header named by `MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER` only to keep each user's RDP session separate: a viewer
+joins only a session owned by the same identity. **The tunnel must only be reachable through an authenticating
+reverse proxy that sets this header and overwrites any client-supplied value**, and only the proxy may reach this
+service's port (a private network or `127.0.0.1`). Deciding who may connect is the proxy's job. Guacamole itself
 should be configured to read the same header (header authentication), since the header is forwarded to it
-under the same name. Requests without the header, or (if `ALLOWED_USERS` is set) from other users, get `403`.
+under the same name. A request without the header has no session owner and gets `403`.
 Request URLs are never logged, as they carry Guacamole tokens.
 
 ## Configuration
@@ -35,7 +37,6 @@ Request URLs are never logged, as they carry Guacamole tokens.
 |---|---|---|
 | `MALRUNAR_GUAC_TUNNEL_UPSTREAM` | required | Base URL of the Guacamole web application with its context path, e.g. `http://guacamole:8080/guacamole` |
 | `MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER` | required | Name of the trusted header carrying the user name. No default on purpose |
-| `MALRUNAR_GUAC_TUNNEL_ALLOWED_USERS` | unset | Comma-separated user names allowed to use the tunnel; unset accepts any non-empty identity from the proxy |
 | `MALRUNAR_GUAC_TUNNEL_DATA_SOURCE` | `postgresql` | Guacamole data source whose active connections are looked up; requests for other data sources pass through unjoined |
 | `MALRUNAR_GUAC_TUNNEL_PATH_PREFIX` | path of `UPSTREAM` | Path under which this service answers (`<prefix>/websocket-tunnel`, `<prefix>/tunnel`) |
 | `MALRUNAR_GUAC_TUNNEL_BIND` | `127.0.0.1` (`0.0.0.0` in the image) | Listen address |
@@ -58,6 +59,28 @@ location ~ ^/guacamole/(websocket-tunnel|tunnel)$ {
     proxy_pass http://guacamole-tunnel:8082;
 }
 location /guacamole/ { proxy_pass http://guacamole:8080; }
+```
+
+Example with Traefik and a forward-auth service. The auth service authenticates and authorizes; Traefik copies its
+`Remote-User` response header onto the request, replacing any value the client sent
+(`Remote-User` here is the header configured as `MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER`):
+
+```yaml
+http:
+  middlewares:
+    sso:
+      forwardAuth:
+        address: http://sso:9091/api/authz/forward-auth
+        authResponseHeaders: [Remote-User]
+  routers:
+    guacamole-tunnel:
+      rule: Host(`desktop.example.com`) && (Path(`/guacamole/websocket-tunnel`) || Path(`/guacamole/tunnel`))
+      middlewares: [sso]
+      service: guacamole-tunnel
+  services:
+    guacamole-tunnel:
+      loadBalancer:
+        servers: [{url: http://guacamole-tunnel:8082}]
 ```
 
 ```yaml

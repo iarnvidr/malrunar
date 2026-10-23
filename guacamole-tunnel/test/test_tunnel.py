@@ -61,10 +61,9 @@ class TunnelTests(AioHTTPTestCase):
         await self.upstream.start_server()
         return proxy.create_app(self.config())
 
-    def config(self, allowed='viewer', data_source=''):
+    def config(self):
         env = {'MALRUNAR_GUAC_TUNNEL_UPSTREAM': str(self.upstream.make_url('/guac')),
-               'MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER': HEADER,
-               'MALRUNAR_GUAC_TUNNEL_ALLOWED_USERS': allowed}
+               'MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER': HEADER}
         return proxy.Config.from_env(env)
 
     async def asyncTearDown(self):
@@ -130,9 +129,20 @@ class TunnelTests(AioHTTPTestCase):
         finally:
             await ws.close()
 
-    async def test_user_outside_the_allow_list_is_rejected(self):
+    async def test_other_identity_gets_its_own_session_and_never_joins_anothers(self):
+        first = await self.open()  # 'viewer' owns the session 'shared'
+        try:
+            second = await self.client.ws_connect('/guac/websocket-tunnel', params=self.parameters(),
+                                                  headers={HEADER: 'other'}, protocols=('guacamole',))
+            await second.close()
+            self.assertEqual([o['GUAC_TYPE'] for o in self.opened], ['c', 'c'])
+            self.assertNotIn('shared', [o['GUAC_ID'] for o in self.opened])
+        finally:
+            await first.close()
+
+    async def test_blank_identity_header_is_rejected(self):
         response = await self.client.get('/guac/websocket-tunnel', params=self.parameters(),
-                                         headers={HEADER: 'intruder'})
+                                         headers={HEADER: '  '})
         self.assertEqual(response.status, 403)
         self.assertEqual(self.opened, [])
 
@@ -151,7 +161,6 @@ class ConfigTests(unittest.TestCase):
         config = proxy.Config.from_env(self.BASE)
         self.assertEqual((config.upstream, config.path_prefix, config.data_source, config.port, config.bind),
                          ('http://guacamole:8080/guacamole', '/guacamole', 'postgresql', 8082, '127.0.0.1'))
-        self.assertEqual(config.allowed_users, frozenset())
 
     def test_required_settings_are_named(self):
         for name in self.BASE:
@@ -165,10 +174,6 @@ class ConfigTests(unittest.TestCase):
             env = dict(self.BASE, **{'MALRUNAR_GUAC_TUNNEL_' + name: value})
             with self.assertRaisesRegex(proxy.ConfigError, name):
                 proxy.Config.from_env(env)
-
-    def test_allowed_users_list(self):
-        env = dict(self.BASE, MALRUNAR_GUAC_TUNNEL_ALLOWED_USERS=' a, b ,,')
-        self.assertEqual(proxy.Config.from_env(env).allowed_users, frozenset({'a', 'b'}))
 
     def test_main_reports_configuration_error_with_status_78(self):
         self.assertEqual(proxy.main([], {}), 78)

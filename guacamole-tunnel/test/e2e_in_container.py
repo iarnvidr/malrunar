@@ -37,7 +37,7 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, '127.0.0.1', 18080).start()
     env = dict(os.environ, MALRUNAR_GUAC_TUNNEL_UPSTREAM='http://127.0.0.1:18080/gw',
-               MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER=HEADER, MALRUNAR_GUAC_TUNNEL_ALLOWED_USERS='viewer',
+               MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER=HEADER,
                MALRUNAR_GUAC_TUNNEL_PORT='18082')
     service = subprocess.Popen([sys.executable, '-I', '/opt/malrunar/guacamole-tunnel/guacamole_tunnel.py'], env=env)
     try:

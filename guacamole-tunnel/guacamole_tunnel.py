@@ -17,8 +17,6 @@ Settings (environment):
   MALRUNAR_GUAC_TUNNEL_IDENTITY_HEADER required: name of the trusted header that carries the user
                                       name; it is also forwarded to Guacamole under the same name
                                       (which is what Guacamole's header authentication reads)
-  MALRUNAR_GUAC_TUNNEL_ALLOWED_USERS  optional: comma-separated user names that may use the tunnel;
-                                      unset = any non-empty identity the proxy supplies
   MALRUNAR_GUAC_TUNNEL_DATA_SOURCE    optional: Guacamole data source whose active connections are
                                       looked up, default postgresql
   MALRUNAR_GUAC_TUNNEL_PATH_PREFIX    optional: path this service answers under, default the path of
@@ -56,7 +54,6 @@ class ConfigError(ValueError):
 class Config:
     upstream: str
     identity_header: str
-    allowed_users: frozenset = frozenset()
     data_source: str = 'postgresql'
     path_prefix: str = ''
     bind: str = '127.0.0.1'
@@ -79,7 +76,6 @@ class Config:
         header = get('IDENTITY_HEADER')
         if not all(c.isalnum() or c == '-' for c in header):
             raise ConfigError(f'{PREFIX}IDENTITY_HEADER must be a header name (letters, digits, hyphen)')
-        allowed = frozenset(u.strip() for u in env.get(PREFIX + 'ALLOWED_USERS', '').split(',') if u.strip())
         source = get('DATA_SOURCE', 'postgresql')
         if not all(c.isalnum() or c in '-_.' for c in source):
             raise ConfigError(f'{PREFIX}DATA_SOURCE has characters a data source name cannot have')
@@ -92,7 +88,7 @@ class Config:
             raise ConfigError(f'{PREFIX}PORT must be a number') from None
         if not 1 <= port <= 65535:
             raise ConfigError(f'{PREFIX}PORT must be 1-65535')
-        return cls(upstream, header, allowed, source, prefix, get('BIND', '127.0.0.1'), port)
+        return cls(upstream, header, source, prefix, get('BIND', '127.0.0.1'), port)
 
 
 async def connection_parameters(session, config, parameters, user):
@@ -133,7 +129,7 @@ async def relay(source, target):
 async def tunnel(request):
     config = request.app[CONFIG]
     user = request.headers.get(config.identity_header, '').strip()
-    if not user or (config.allowed_users and user not in config.allowed_users):
+    if not user:  # no identity to own the session; who may connect is the proxy's decision
         raise web.HTTPForbidden()
     root = config.upstream
     headers = {config.identity_header: user}
