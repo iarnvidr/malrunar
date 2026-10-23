@@ -110,7 +110,8 @@ set -euo pipefail
 export PATH=/opt/malrunar/node/bin:$PATH
 export MALRUNAR_THUNDERBIRD_USER=tester MALRUNAR_THUNDERBIRD_RETRY_SECONDS=2
 Xvfb :77 -screen 0 1280x800x24 -ac -nolisten tcp > /tmp/xvfb.out 2>&1 &
-supervisord -n -c /etc/supervisor/supervisord.conf > /tmp/supervisord.out 2>&1 &
+# a pipe, not a file: the program's log is /dev/stdout, and a file would be truncated by every (re)start
+supervisord -n -c /etc/supervisor/supervisord.conf 2>&1 | cat > /tmp/supervisord.out &
 trap 'supervisorctl -c /etc/supervisor/supervisord.conf shutdown >/dev/null 2>&1 || true; sleep 2; tail -n 60 /tmp/supervisord.out' EXIT
 for _ in $(seq 1 120); do
     [ -s /tmp/thunderbird-mcp/connection.json ] && break

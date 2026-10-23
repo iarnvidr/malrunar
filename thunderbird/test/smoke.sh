@@ -98,7 +98,8 @@ cat > "$work/headless.sh" <<'HEADLESS'
 set -euo pipefail
 export MALRUNAR_THUNDERBIRD_USER=tester MALRUNAR_THUNDERBIRD_DISPLAY=none MALRUNAR_THUNDERBIRD_RETRY_SECONDS=2
 profile=/home/tester/.config/malrunar-thunderbird/profile
-supervisord -n -c /etc/supervisor/supervisord.conf > /tmp/supervisord.out 2>&1 &
+# a pipe, not a file: the program's log is /dev/stdout, and a file would be truncated by every (re)start
+supervisord -n -c /etc/supervisor/supervisord.conf 2>&1 | cat > /tmp/supervisord.out &
 trap 'supervisorctl -c /etc/supervisor/supervisord.conf shutdown >/dev/null 2>&1 || true; sleep 2; cat /tmp/supervisord.out' EXIT
 for _ in $(seq 1 90); do
     [ -L "$profile/lock" ] && break
@@ -120,7 +121,8 @@ run --shm-size 512m -v "$work:/work:ro" "$consumer" /work/headless.sh || fail 's
 cat > "$work/nouser.sh" <<'NOUSER'
 #!/usr/bin/env bash
 set -u
-supervisord -n -c /etc/supervisor/supervisord.conf > /tmp/supervisord.out 2>&1 &
+# a pipe, not a file: the program's log is /dev/stdout, and a file would be truncated by every (re)start
+supervisord -n -c /etc/supervisor/supervisord.conf 2>&1 | cat > /tmp/supervisord.out &
 for _ in $(seq 1 40); do
     supervisorctl -c /etc/supervisor/supervisord.conf status thunderbird 2>/dev/null | grep -q FATAL && break
     sleep 1
@@ -141,7 +143,8 @@ set -euo pipefail
 export MALRUNAR_THUNDERBIRD_USER=tester MALRUNAR_THUNDERBIRD_RETRY_SECONDS=2
 profile=/home/tester/.config/malrunar-thunderbird/profile
 Xvfb :77 -screen 0 1280x800x24 -ac -nolisten tcp > /tmp/xvfb.out 2>&1 &
-supervisord -n -c /etc/supervisor/supervisord.conf > /tmp/supervisord.out 2>&1 &
+# a pipe, not a file: the program's log is /dev/stdout, and a file would be truncated by every (re)start
+supervisord -n -c /etc/supervisor/supervisord.conf 2>&1 | cat > /tmp/supervisord.out &
 trap 'supervisorctl -c /etc/supervisor/supervisord.conf shutdown >/dev/null 2>&1 || true; sleep 2; cat /tmp/xvfb.out /tmp/supervisord.out' EXIT
 for _ in $(seq 1 90); do
     [ -L "$profile/lock" ] && break
