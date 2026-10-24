@@ -42,10 +42,18 @@ fail() { echo "obs-control e2e failed: $*" >&2; exit 1; }
 step() { echo "== $*"; }
 [ -d "$root/media-bridge/test/consumer" ] || fail 'media-bridge/test/consumer is missing (the e2e reuses its desktop image recipe)'
 
+secret_tar=""
 cleanup() {
     status=$?
+    [ -z "$secret_tar" ] || rm -f "$secret_tar"
     if [ "$status" -ne 0 ]; then
+        debug_dir="${MALRUNAR_CI_LOG_DIR:-${TMPDIR:-/tmp}/malrunar-e2e-debug}"
+        mkdir -p "$debug_dir"
         for name in obs desktop; do
+            docker inspect --format '{{json .State}}' "$id-$name" > "$debug_dir/$name-state.json" 2>/dev/null || true
+            docker logs "$id-$name" > "$debug_dir/$name.log" 2>&1 || true
+            echo "--- container state: $name" >&2
+            cat "$debug_dir/$name-state.json" >&2 || true
             echo "--- logs: $name" >&2
             docker logs "$id-$name" 2>&1 | tail -n 50 >&2 || true
         done
@@ -74,9 +82,10 @@ desk() { timeout -k 10 150 docker exec --user 1000:1000 "$id-desktop" /e2e/deskt
 # api <path> [curl args]: prints the response body on success. On an HTTP error status (or a curl
 # failure) it prints the status and the response body to stderr and returns non-zero, so that a failing
 # call says why (the server's JSON error) instead of only "returned error: 503".
+trusted=(-H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789')
 api() {
     local out status
-    out="$(timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 -w '\n%{http_code}' "http://127.0.0.1:18095$1" "${@:2}")" \
+    out="$(timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "${trusted[@]}" -w '\n%{http_code}' "http://127.0.0.1:18095$1" "${@:2}")" \
         || { echo "curl failed for $1: ${out:-no response}" >&2; return 1; }
     status="${out##*$'\n'}"
     out="${out%$'\n'*}"
@@ -85,14 +94,16 @@ api() {
         *) echo "HTTP $status from $1: $out" >&2; return 22 ;;
     esac
 }
-api_any() { timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
+api_any() { timeout -k 10 60 docker exec "$id-obs" curl -sS --max-time 20 "${trusted[@]}" "http://127.0.0.1:18095$1" "${@:2}"; }
+trusted=(-H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789')
 
 step 'desktop image: desktop-base + the media-bridge component'
 docker build --quiet --tag "$consumer" --build-arg "BRIDGE_IMAGE=$bridge_image" \
     --build-arg "DESKTOP_BASE=$desktop_base" "$root/media-bridge/test/consumer" >/dev/null
 
 step 'test media: video with a 1000 Hz tone (the scene "video"); the camera page carries 440 Hz'
-docker network create "$id" >/dev/null
+# Docker chooses an isolated bridge subnet; proxy-secret trust does not depend on peer addressing.
+docker network create --driver bridge "$id" >/dev/null
 docker volume create "$id-media" >/dev/null
 timeout -k 10 300 docker run --rm --user 0 --entrypoint '' -v "$id-media:/media" "$obs_image" bash -c '
     ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i "testsrc=size=640x360:rate=24" \
@@ -114,9 +125,12 @@ timeout -k 10 120 docker create --name "$id-desktop" --network "$id" --network-a
     --user 1000:1000 --entrypoint '' "${device_args[@]}" \
     -e "E2E_VIDEO=$video" -e E2E_START_URL=http://obs:18095/api/start-output \
     -e "E2E_FILE_MAX_BYTES=$file_max_bytes" \
-    "$consumer" dbus-run-session -- /e2e/desktop.sh serve >/dev/null
+    -e E2E_START_HEADERS=/tmp/e2e/headers "$consumer" dbus-run-session -- /e2e/desktop.sh serve >/dev/null
 put_dir "$id-desktop" "$here" /e2e
 timeout -k 10 120 docker start "$id-desktop" >/dev/null
+docker exec "$id-desktop" sh -c 'chmod u+rwx /tmp/e2e; umask 077; : > /tmp/e2e/headers'
+printf 'X-Forwarded-User: e2e-operator\nX-Proxy-Secret: e2e-proxy-secret-0123456789\n' | docker exec -i "$id-desktop" sh -c 'cat > /tmp/e2e/headers'
+docker exec "$id-desktop" sh -c 'test -r /tmp/e2e/headers && test -s /tmp/e2e/headers && test -w /tmp/e2e/headers' || fail 'bridge auth header file is not readable/writable/populated'
 
 step 'start obs-control, sending to the bridge'
 timeout -k 10 120 docker create --name "$id-obs" --network "$id" --network-alias obs --shm-size 512m \
@@ -128,6 +142,24 @@ timeout -k 10 120 docker create --name "$id-obs" --network "$id" --network-alias
     -e 'MALRUNAR_OBS_OUTPUT_URL=udp://desktop:5004?pkt_size=1316' \
     "$obs_image" >/dev/null
 put_dir "$id-obs" "$here" /e2e
+# Replace generic directory-copy metadata with the exact secret ownership/mode before startup.
+# Validate the archive locally: docker exec cannot run against a CREATED container.
+secret_tar="$(mktemp)"
+tar -C "$here" --owner=1000 --group=1000 --mode=0600 --transform='s,^,e2e/,' -cf "$secret_tar" proxy-secret
+python3 - "$secret_tar" <<'PY'
+import sys, tarfile
+with tarfile.open(sys.argv[1], "r:") as archive:
+    members = [m for m in archive.getmembers() if m.name == "e2e/proxy-secret"]
+    assert len(members) == 1, "proxy secret archive member is missing or duplicated"
+    member = members[0]
+    assert (member.uid, member.gid, member.mode) == (1000, 1000, 0o600), (
+        f"proxy secret archive metadata is uid={member.uid} gid={member.gid} mode={member.mode:o}"
+    )
+PY
+[ "$?" -eq 0 ] || fail 'proxy secret archive ownership/mode is incorrect'
+docker cp - "$id-obs:/" < "$secret_tar"
+rm -f "$secret_tar"
+secret_tar=""
 timeout -k 10 120 docker start "$id-obs" >/dev/null
 ready=false
 for _ in $(seq 1 120); do
@@ -136,6 +168,20 @@ for _ in $(seq 1 120); do
     sleep 2
 done
 [ "$ready" = true ] || fail 'obs-control did not become ready'
+
+step 'access: authenticate remote and loopback operator requests, reject missing/wrong secrets'
+# Validate the config the process actually loaded, then exercise real API middleware from both peers.
+docker exec "$id-obs" env PYTHONPATH=/opt/malrunar/obs-control/lib python3 -c 'from malrunar_obs.config import load_config; c=load_config(); assert c.access.proxy_secret_header == "X-Proxy-Secret" and not c.access.trusted_proxies; assert c.identity_config().mode == "secret"'
+for peer in loopback remote; do
+    if [ "$peer" = loopback ]; then who="$id-obs"; url=http://127.0.0.1:18095/api/clips; else who="$id-desktop"; url=http://obs:18095/api/clips; fi
+    timeout -k 10 60 docker exec "$who" curl -fsS --max-time 20 -H 'X-Forwarded-User: e2e-operator' -H 'X-Proxy-Secret: e2e-proxy-secret-0123456789' "$url" >/dev/null || fail "authenticated $peer request rejected"
+    for secret in absent wrong; do
+        args=(-H 'X-Forwarded-User: e2e-operator')
+        [ "$secret" = absent ] || args+=(-H 'X-Proxy-Secret: wrong-secret-value-0123456789')
+        status="$(docker exec "$who" curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${args[@]}" "$url")"
+        [ "$status" = 403 ] || fail "$peer $secret-secret request returned HTTP $status"
+    done
+done
 
 step 'the media scene reaches the virtual microphone (1000 Hz) and the video sink'
 desk tone 1000 180 || fail 'no 1000 Hz tone at the virtual microphone'
@@ -151,7 +197,7 @@ echo "mean luma difference between the scenes: $difference"
 python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 8 else 1)" "$difference" || fail 'the picture did not change with the scene'
 
 step 'upload the media as a clip and put its scene on air (1000 Hz again)'
-upload="$(timeout -k 10 120 docker exec "$id-obs" curl -fsS --max-time 100 -F name='E2E clip' -F file=@/media/e2e.mp4 http://127.0.0.1:18095/api/clips/upload)" \
+upload="$(timeout -k 10 120 docker exec "$id-obs" curl -fsS --max-time 100 "${trusted[@]}" -F name='E2E clip' -F file=@/media/e2e.mp4 http://127.0.0.1:18095/api/clips/upload)" \
     || fail 'POST /api/clips/upload'
 clip_id="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['clip']['id'])" "$upload")" || fail "unexpected upload response: $upload"
 api /api/clips | grep -qF "\"$clip_id\"" || fail 'the uploaded clip is not listed'
@@ -169,48 +215,69 @@ done
 [ "$healthy" = true ] || fail 'the bridge did not restart the output'
 desk tone 1000 90 || fail 'no tone after the bridge restarted the output'
 
-step 'takes: slide upload, arm, record a take from its own camera page (660 Hz)'
+step 'takes: slide upload, then 10 event-verified arm/record/stop/assemble/disarm cycles (660 Hz)'
 api /api/takes/status | grep -q '"armed": false' || fail 'the takes plugin is not loaded'
+# OBS browser sources load asynchronously. The camera page may render black until the take
+# scene is active, so only inspect camera_ready after arm; wait on the real signal, not a delay.
+wait_take_camera_ready() {
+    local status ready=false
+    for _ in $(seq 1 120); do
+        status="$(api /api/takes/status)" || fail 'could not read takes status while waiting for camera'
+        if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("camera_ready") is True else 1)' <<<"$status"; then
+            ready=true
+            break
+        fi
+        docker inspect -f '{{.State.Running}}' "$id-obs" 2>/dev/null | grep -q true || break
+        sleep 1
+    done
+    [ "$ready" = true ] || fail "take camera did not become ready; last status: $status"
+}
 timeout -k 10 60 docker exec "$id-obs" ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
     -i color=c=0x2060a0:size=800x450 -frames:v 1 -y /tmp/slide.png || fail 'could not make a slide picture'
-slides="$(timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 -F name=Slide -F file=@/tmp/slide.png \
+slides="$(timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 -F name=Slide -F file=@/tmp/slide.png "${trusted[@]}" \
     http://127.0.0.1:18095/api/takes/slides)" || fail 'POST /api/takes/slides'
 deck="$(printf '%s' "$slides" | field 'd["slides"]["id"]')" || fail "unexpected upload response: $slides"
-api /api/takes/arm -X POST -H 'Content-Type: application/json' \
-    -d "{\"layout\": \"pip\", \"slide\": {\"deck_id\": \"$deck\", \"page\": 1}}" | grep -q '"armed": true' || fail 'POST /api/takes/arm'
-started=false
-for _ in $(seq 1 30); do   # the camera page needs a moment before its picture is not black
-    if api_any /api/takes/start -X POST -H 'Content-Type: application/json' -d '{"take_id": "e2e-take"}' | grep -q '"take_id": "e2e-take"'; then
-        started=true
-        break
+for cycle in $(seq 1 10); do
+    take_id="e2e-take-$cycle"
+    step "cycle $cycle/10: arm and record"
+    timeout 10 docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' "$id-obs" "$id-desktop" || true
+    api /api/takes/arm -X POST -H 'Content-Type: application/json' \
+        -d "{\"layout\": \"pip\", \"slide\": {\"deck_id\": \"$deck\", \"page\": 1}}" | grep -q '"armed": true' || fail 'POST /api/takes/arm'
+    wait_take_camera_ready
+    api /api/takes/start -X POST -H 'Content-Type: application/json' -d "{\"take_id\": \"$take_id\"}" \
+        | grep -q "\\\"take_id\\\": \\\"$take_id\\\"" || fail "POST /api/takes/start ($take_id)"
+    # Record long enough for the assembled audio segment and its detector window. Keep the
+    # silence check during recording; assembly puts a short silent slide before the audible take.
+    sleep 2
+    desk silence 3 || fail "program was not silent while recording ($take_id)"
+    sleep 2
+    take="$(api /api/takes/stop -X POST)" || fail "POST /api/takes/stop ($take_id)"
+    printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail "take has no audio ($take_id)"; }
+    if [ "$cycle" -eq 1 ]; then
+        timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 30 "${trusted[@]}" \
+            -o /tmp/take-audio.mp3 "http://127.0.0.1:18095/api/takes/$take_id/audio.mp3" || fail 'take audio MP3 route'
+        docker exec "$id-obs" ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 /tmp/take-audio.mp3 \
+            | grep -qx 'mp3,16000,1' || fail 'take audio is not a mono 16 kHz MP3'
     fi
-    sleep 2
+    job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take $cycle\", \"items\": [{\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}, {\"type\": \"take\", \"take_id\": \"$take_id\", \"start\": 0, \"end\": 4}]}")" || fail "POST /api/takes/assemble ($take_id)"
+    job_id="$(printf '%s' "$job" | field 'd["job"]["job_id"]')"
+    state=running
+    for _ in $(seq 1 60); do
+        result="$(api "/api/takes/jobs/$job_id")"
+        state="$(printf '%s' "$result" | field 'd["job"]["state"]')"
+        [ "$state" = running ] || break
+        sleep 2
+    done
+    [ "$state" = "done" ] || { echo "$result" >&2; fail "assembly failed ($take_id)"; }
+    take_clip="$(printf '%s' "$result" | field 'd["job"]["clip"]["id"]')"
+    api /api/takes/disarm -X POST | grep -q '"armed": false' || fail "POST /api/takes/disarm ($take_id)"
+    api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
+    # OBS can acknowledge the scene switch before the media source has begun emitting.
+    # Allow a bounded, event-driven tone check window for playback startup.
+    desk tone 660 60 || fail "prepared take audio failed ($take_id)"
+    api_any /health | grep -q '"healthy": true' || fail 'the output is not healthy after the take'
 done
-[ "$started" = true ] || fail 'the take did not start'
-echo 'while recording, the program must stay silent (the take camera feeds audio track 2 only)'
-if desk tone 660 8 >/dev/null 2>&1; then fail 'the take camera tone leaked into the program audio'; fi
-sleep 4
-take="$(api /api/takes/stop -X POST)" || fail 'POST /api/takes/stop'
-printf '%s' "$take" | grep -q '"has_audio": true' || { echo "$take" >&2; fail 'the take has no audio'; }
-
-step 'assemble the take (trimmed) with the slide, leave take mode and play the result into the program'
-job="$(api /api/takes/assemble -X POST -H 'Content-Type: application/json' -d "{\"name\": \"E2E take\", \"items\": [
-    {\"type\": \"take\", \"take_id\": \"e2e-take\", \"start\": 1, \"end\": 9},
-    {\"type\": \"still\", \"deck_id\": \"$deck\", \"page\": 1, \"seconds\": 1}]}")" || fail 'POST /api/takes/assemble'
-job_id="$(printf '%s' "$job" | field 'd["job"]["job_id"]')"
-state=running
-for _ in $(seq 1 60); do
-    result="$(api "/api/takes/jobs/$job_id")"
-    state="$(printf '%s' "$result" | field 'd["job"]["state"]')"
-    [ "$state" = running ] || break
-    sleep 2
-done
-[ "$state" = "done" ] || { echo "$result" >&2; fail 'the assembly did not finish'; }
-take_clip="$(printf '%s' "$result" | field 'd["job"]["clip"]["id"]')"
-api /api/takes/disarm -X POST | grep -q '"armed": false' || fail 'POST /api/takes/disarm'
-api "/api/clip/$take_clip/scene" -X POST | grep -q '"ok": true' || fail 'POST /api/clip/<take>/scene'
-desk tone 660 120 || fail 'the prepared take did not reach the virtual microphone with its 660 Hz tone'
-api_any /health | grep -q '"healthy": true' || fail 'the output is not healthy after the take'
 
 if [ "$video" = file ]; then
     step 'the bounded video sink ring (video.yuv and video.yuv.1) is within the cap'
@@ -225,6 +292,16 @@ if [ "$video" = file ]; then
     [ "$cur_size" -le "$file_max_bytes" ] || fail "video.yuv ($cur_size bytes) exceeds the cap"
     [ "$prev_size" -le "$file_max_bytes" ] || fail "video.yuv.1 ($prev_size bytes) exceeds the cap"
 fi
+
+step 'the take cycles leave controller state clean'
+ready=false
+for _ in $(seq 1 120); do
+    if docker exec "$id-obs" curl -fsS --max-time 5 "${trusted[@]}" http://127.0.0.1:18095/ready 2>/dev/null | grep -q '"ready": true'; then ready=true; break; fi
+    sleep 2
+done
+[ "$ready" = true ] || fail 'authenticated /ready failed after controller restart'
+status="$(timeout -k 10 60 docker exec "$id-obs" curl -fsS --max-time 20 "${trusted[@]}" http://127.0.0.1:18095/api/takes/status)" || fail 'trusted operator could not read takes status after restart'
+printf '%s' "$status" | grep -q '"armed": false' || fail 'take mode was not reset on controller restart'
 
 step 'logs are clean'
 if docker logs "$id-obs" 2>&1 | grep -E 'Traceback|Error in plugin'; then fail 'obs-control logged a traceback'; fi

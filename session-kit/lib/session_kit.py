@@ -599,7 +599,7 @@ DESKTOP_ENTRY = """[Desktop Entry]
 Type=Application
 Name={name}
 GenericName=Web Browser
-Icon=internet-web-browser
+Icon={icon}
 Exec={command} %u
 Categories=Network;WebBrowser;
 MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
@@ -609,7 +609,7 @@ XFCE_HELPER = """[Desktop Entry]
 Version=1.0
 Type=X-XFCE-Helper
 Name={name}
-Icon=internet-web-browser
+Icon={icon}
 StartupNotify=false
 X-XFCE-Category=WebBrowser
 X-XFCE-Commands={command};
@@ -629,17 +629,19 @@ def cmd_launchers(args):
     command = launcher_command()
     name = setting("LAUNCHER_NAME", "Web Browser")
     identifier = setting("LAUNCHER_ID", "malrunar-session-kit-browser")
+    icon = setting("LAUNCHER_ICON", "internet-web-browser")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", identifier):
         raise ConfigError("MALRUNAR_SESSION_KIT_LAUNCHER_ID may only contain letters, digits, '.', '_' and '-'")
-    for label, text in (("MALRUNAR_SESSION_KIT_BROWSER_COMMAND", command), ("MALRUNAR_SESSION_KIT_LAUNCHER_NAME", name)):
+    for label, text in (("MALRUNAR_SESSION_KIT_BROWSER_COMMAND", command), ("MALRUNAR_SESSION_KIT_LAUNCHER_NAME", name),
+                        ("MALRUNAR_SESSION_KIT_LAUNCHER_ICON", icon)):
         if "\n" in text or "\r" in text or "%" in text:
             raise ConfigError(f"{label} must be one line without '%'")
     base = home()
     data = Path(os.environ.get("XDG_DATA_HOME") or base / ".local/share")
     config = Path(os.environ.get("XDG_CONFIG_HOME") or base / ".config")
     files = {
-        data / "applications" / f"{identifier}.desktop": DESKTOP_ENTRY.format(name=name, command=command),
-        data / "xfce4/helpers" / f"{identifier}.desktop": XFCE_HELPER.format(name=name, command=command),
+        data / "applications" / f"{identifier}.desktop": DESKTOP_ENTRY.format(name=name, command=command, icon=icon),
+        data / "xfce4/helpers" / f"{identifier}.desktop": XFCE_HELPER.format(name=name, command=command, icon=icon),
     }
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)

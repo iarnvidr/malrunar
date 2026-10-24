@@ -23,7 +23,16 @@ obs_version="$(pin OBS_UPSTREAM_VERSION)"
 run() { timeout -k 10 300 docker run --rm --entrypoint '' "$image" "$@"; }
 name="obs-control-smoke-$$"
 created=()   # containers made with docker create for one-off runs
-cleanup() { docker rm -f "$name" ${created[@]+"${created[@]}"} >/dev/null 2>&1 || true; }
+cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        debug_dir="${MALRUNAR_CI_LOG_DIR:-${TMPDIR:-/tmp}/malrunar-smoke-debug}"
+        mkdir -p "$debug_dir"
+        docker logs "$name" > "$debug_dir/obs-smoke.log" 2>&1 || true
+        tail -n 80 "$debug_dir/obs-smoke.log" >&2 || true
+    fi
+    docker rm -f "$name" ${created[@]+"${created[@]}"} >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 # put_dir <container> <host dir> <absolute dir in the container>: copy a directory into a created,
 # not yet started container (root-owned, world-readable, whatever the host's umask).
@@ -55,7 +64,16 @@ create_run() {
 }
 exec_in() { timeout -k 10 120 docker exec "$name" "$@"; }
 json() { python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
-api() { exec_in curl -fsS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
+api() {
+    local out code
+    out="$(exec_in curl -sS --max-time 20 -w '\n%{http_code}' "http://127.0.0.1:18095$1" "${@:2}")" || return 1
+    code="${out##*$'\n'}"
+    out="${out%$'\n'*}"
+    case "$code" in
+        2??) printf '%s\n' "$out" ;;
+        *) echo "HTTP $code from $1: $out" >&2; return 22 ;;
+    esac
+}
 # Like api, but also returns the body of an error status (/health answers 503 while the output is off).
 api_any() { exec_in curl -sS --max-time 20 "http://127.0.0.1:18095$1" "${@:2}"; }
 
@@ -246,3 +264,16 @@ api /api/stop-output -X POST | grep -q '"ok": true' || fail 'stop-output'
 api_any /health 2>/dev/null | grep -q '"healthy": false' || fail 'output still active after stop-output'
 api /api/start-output -X POST | grep -q '"ok": true' || fail 'start-output'
 echo 'obs-control smoke passed'
+
+echo '== relay healthcheck detects command mode without an override'
+relay_name="${name}-relay"
+created+=("$relay_name")
+docker create --name "$relay_name" -e MALRUNAR_OBS_RELAY_TARGET_HOST=127.0.0.1 \
+    -e MALRUNAR_OBS_RELAY_CONTROL_HOST=0.0.0.0 "$image" relay >/dev/null
+docker start "$relay_name" >/dev/null
+relay_ready=false
+for _ in $(seq 1 30); do
+    if docker exec "$relay_name" /opt/malrunar/obs-control/healthcheck.sh; then relay_ready=true; break; fi
+    sleep 1
+done
+[ "$relay_ready" = true ] || fail 'relay healthcheck did not detect the relay process'

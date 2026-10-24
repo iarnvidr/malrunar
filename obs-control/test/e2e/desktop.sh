@@ -4,6 +4,7 @@
 #   desktop.sh tone <hz> <seconds>    wait until the virtual microphone carries a tone near <hz>
 #   desktop.sh frame <name>           save the newest video frame as /tmp/e2e/<name>.yuv
 #   desktop.sh diff <a> <b>           mean absolute difference of two saved frames (0-255)
+#   desktop.sh silence <seconds>        assert the virtual microphone has no audible signal
 # Settings (environment): E2E_MIC, E2E_SIZE (WxH), E2E_FPS, E2E_UDP_PORT, E2E_VIDEO (file|<device>),
 # E2E_START_URL.
 set -euo pipefail
@@ -39,7 +40,7 @@ serve)
         MALRUNAR_BRIDGE_VIDEO_SINK="$sink" MALRUNAR_BRIDGE_VIDEO_DEVICE="${video/file//dev/video10}" \
         MALRUNAR_BRIDGE_SIZE="$size" MALRUNAR_BRIDGE_FPS="$fps" \
         MALRUNAR_BRIDGE_MIC_NAME="$mic" MALRUNAR_BRIDGE_MIC_DESCRIPTION='E2E Microphone' \
-        MALRUNAR_BRIDGE_START_OUTPUT_URL="${E2E_START_URL:-}" MALRUNAR_BRIDGE_LOGLEVEL=info \
+        MALRUNAR_BRIDGE_START_OUTPUT_URL="${E2E_START_URL:-}" MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE="${E2E_START_HEADERS:-}" MALRUNAR_BRIDGE_LOGLEVEL=info \
         /opt/malrunar/media-bridge/bin/malrunar-media-bridge 2>&1 | tee "$work/bridge.log" &
     pids+=($!)
     wait
@@ -63,6 +64,16 @@ tone)
     done
     echo "no tone near $want Hz within ${3:-60}s (last: $last)" >&2
     exit 1
+    ;;
+silence)
+    seconds="${2:-3}"
+    timeout 20 parec -d "$mic" --rate=48000 --channels=2 --format=s16le --raw 2>/dev/null | head -c "$(( seconds * 48000 * 4 ))" > "$work/mic.raw" || true
+    if last="$(python3 -I "$here/tone.py" "$work/mic.raw" 440)"; then
+        echo "unexpected program audio during recording: $last" >&2
+        exit 1
+    fi
+    grep -q '^silent ' <<<"$last" || { echo "could not verify silence: $last" >&2; exit 1; }
+    echo "program silent ($last)"
     ;;
 frame)
     name="${2:?name}"

@@ -128,6 +128,39 @@ class FileTests(TempDir, unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "not found"):
             load_config(env={"MALRUNAR_OBS_CONFIG": str(self.tmp / "nope.toml")})
 
+    def test_unreadable_config_file_reports_permission_denied(self):
+        import os
+        import subprocess
+        import sys
+
+        config = self.tmp / "private" / "config.toml"
+        config.parent.mkdir()
+        config.write_text('[[cameras]]\nurl = "https://example.test/"\n')
+        config.parent.chmod(0o700)
+        if os.geteuid() == 0:
+            command = ["setpriv", "--reuid", "65534", "--regid", "65534", "--clear-groups", sys.executable, "-c",
+                       "from malrunar_obs.config import load_config; load_config(env={}, path=__import__('sys').argv[1])", str(config)]
+            if not __import__("shutil").which("setpriv"):
+                self.skipTest("setpriv required to verify directory traversal denial as non-root")
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("permission denied", result.stderr.lower())
+        else:
+            config.parent.chmod(0o755)
+            config.chmod(0o000)
+            with self.assertRaisesRegex(ConfigError, "permission denied"):
+                load_config(env={}, path=config)
+
+    def test_inaccessible_config_directory_is_not_treated_as_missing(self):
+        from unittest import mock
+        from pathlib import Path
+
+        with mock.patch.object(Path, "stat", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(ConfigError, "permission denied"):
+                load_config(env={}, path="/private/config.toml")
+            with self.assertRaisesRegex(ConfigError, "permission denied"):
+                load_config(env={})
+
 
 class EnvTests(TempDir, unittest.TestCase):
     def load(self, env, **sections):

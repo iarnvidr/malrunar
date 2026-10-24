@@ -143,7 +143,7 @@ class PlanTest(CopyCase):
         images = ["obs-control", "media-bridge", "node"]
         unit = ci.plan(images, "unit")
         self.assertEqual(json.loads(unit["groups"]), [])
-        self.assertEqual({v for k, v in unit.items() if k not in ("images", "groups")}, {"false"})
+        self.assertEqual({v for k, v in unit.items() if k not in ("images", "groups", "requested")}, {"false"})
         smoke = ci.plan(images, "smoke")
         self.assertEqual((smoke["media_bridge"], smoke["obs_control_e2e"]), ("true", "false"))
         self.assertEqual(json.loads(smoke["groups"]), ["node", "desktop-base obs-runtime obs-control"])
@@ -159,6 +159,13 @@ class PlanTest(CopyCase):
         has_job = {"media-bridge", "work-browser", "session-kit", "thunderbird", "thunderbird-mcp", "msteams-mcp", "teams-service"}
         self.assertEqual(grouped | has_job, set(mi.IMAGES))
         self.assertFalse(grouped & has_job)
+
+    def test_unchanged_parents_are_dependencies_not_requested_checks(self):
+        out = ci.plan(["obs-control"])
+        self.assertEqual(json.loads(out["groups"]), ["desktop-base obs-runtime obs-control"])
+        self.assertEqual(out["requested"], "obs-control")
+        changed_parent = ci.plan(["desktop-base", "obs-runtime", "obs-control"])
+        self.assertEqual(set(changed_parent["requested"].split()), {"desktop-base", "obs-runtime", "obs-control"})
 
 
 class RepositoryTest(unittest.TestCase):

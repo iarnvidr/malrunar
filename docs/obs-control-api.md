@@ -661,6 +661,7 @@ Errors use the usual `{"ok": false, "error": ...}` shape. `<deck_id>` is `deck-`
 | `POST /api/takes/start` | `{"take_id": "..."}` (optional; generated as `take-<12 hex>`) | Start recording: `409` when not armed, already recording, a render is running, the id exists or the camera picture is black; `503` OBS refused |
 | `POST /api/takes/stop` | | `{"ok": true, "take": {take_id, created_at, duration, width, height, has_audio, bytes, auto_stopped}}` |
 | `GET /api/takes/<take_id>.mp4` | | The take file |
+| `GET /api/takes/<take_id>/audio.mp3` | | On-demand mono 16 kHz MP3 audio derivative; generated with ffmpeg and cached beside the take. Uses the same operator authorization and per-user ownership as the MP4; missing takes return `404`, conversion failures `503` |
 | `DELETE /api/takes/<take_id>` | | `409` while it is recording |
 | `POST /api/takes/assemble` | `{"name": "...", "items": [...]}`, 1-60 items: `{"type": "take", "take_id", "start": 0, "end": null}` (seconds; `end` omitted: to the end) or `{"type": "still", "deck_id", "page", "seconds": 0.5-120}` | `202 {"job": {job_id, state, progress, total_seconds, clip_id, ...}}`; `400` for any invalid item, `409` while recording or another render runs |
 | `GET /api/takes/jobs/<job_id>` | | `state` is `running`, `done` (with `clip`, the same fields as `GET /api/clips`) or `error` |

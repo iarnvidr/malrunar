@@ -3,6 +3,7 @@
 set -euo pipefail
 image="${1:?usage: smoke.sh <image-ref>}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$here/test_ffmpeg_teardown.py"
 fail() { echo "obs-runtime smoke failed: $*" >&2; exit 1; }
 pin() { grep -h "^$1=" "$here/../pins.env" "$here/../../pins.env" | head -1 | cut -d= -f2-; }
 obs_version="$(pin OBS_VERSION)"

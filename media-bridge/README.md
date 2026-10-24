@@ -106,12 +106,23 @@ All settings are environment variables and all are optional.
 | `MALRUNAR_BRIDGE_MIC_DESCRIPTION` | `Virtual Microphone` | Name shown to applications |
 | `MALRUNAR_BRIDGE_MIC_DEFAULT` | `1` | Make the microphone the default source; `0` leaves the default alone |
 | `MALRUNAR_BRIDGE_START_OUTPUT_URL` | empty (off) | If set, an `http(s)` URL that receives a `POST` once ffmpeg is listening, to make a controller start the stream. Must be idempotent. Nothing is called when empty |
+| `MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE` | empty (off) | Optional readable regular file of HTTP headers for the start-output POST. Requires `MALRUNAR_BRIDGE_START_OUTPUT_URL`; re-read for each request attempt so credentials can rotate without restarting the bridge |
 | `MALRUNAR_BRIDGE_INPUT_TIMEOUT` | `5` | Seconds without input before ffmpeg gives up and is restarted |
 | `MALRUNAR_BRIDGE_WAIT` | `60` | Seconds to wait for PipeWire and the video device at start |
 | `MALRUNAR_BRIDGE_RESTART` | `1` | `0` exits after the first ffmpeg run instead of restarting |
 | `MALRUNAR_BRIDGE_RESTART_DELAY` | `1` | Seconds between runs |
 | `MALRUNAR_BRIDGE_LOGLEVEL` | `warning` | ffmpeg `-loglevel` |
 | `MALRUNAR_BRIDGE_PIPE_DIR` | `$XDG_RUNTIME_DIR`, else `$TMPDIR`, else `/tmp` | Where the audio pipe is created |
+
+When using `MALRUNAR_BRIDGE_START_OUTPUT_HEADERS_FILE`, store one literal `Header-Name: value` per
+line (for example `Authorization: Bearer <token>`). Blank lines and lines beginning with `#` are
+ignored. This is not curl config syntax: no continuations or directives are accepted. Header names
+must be HTTP token characters and values may not contain control characters. Keep the file outside
+source control, restrict its permissions to the bridge user (for example mode `0600`), and mount it
+read-only where possible. The bridge sends headers only to the configured start URL; use HTTPS for
+credentials on untrusted networks. A malformed or unreadable file causes that request attempt to be
+skipped rather than sent without authentication. The file is opened anew on every POST attempt, so
+replacing its contents rotates credentials for subsequent attempts.
 
 Exit status: 2 for bad configuration or missing tools, 3 for a missing PipeWire server, video device or
 microphone, otherwise ffmpeg's status when `MALRUNAR_BRIDGE_RESTART=0`.

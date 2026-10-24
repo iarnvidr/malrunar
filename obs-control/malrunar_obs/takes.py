@@ -22,6 +22,7 @@ belong to the caller's identity user when identities are configured (shared othe
 from __future__ import annotations
 
 import asyncio
+import logging
 import json
 import math
 import os
@@ -339,6 +340,9 @@ async def probe(path: Path) -> dict[str, Any]:
     }
 
 
+logger = logging.getLogger(__name__)
+
+
 class TakeModeBusy(Exception):
     """Take mode is held by another user."""
 
@@ -453,6 +457,10 @@ class Takes:
             await asyncio.sleep(0.1)
         return False
 
+    async def _stop_stream_and_wait(self) -> None:
+        """Wait until the native take encoder is inactive before touching the canvas."""
+        await self.ctl.obs_client.stop_stream_and_wait()
+
     async def current_canvas(self) -> dict[str, tuple]:
         (video,) = await self.ctl.obs(("GetVideoSettings", {}))
         return {
@@ -478,31 +486,24 @@ class Takes:
     async def _set_canvas(self, size: tuple[int, int], output: tuple[int, int] | None = None) -> None:
         """Switch the OBS canvas (the caller holds ``video_lock``). The program output restarts briefly."""
         output = tuple(output or size)
+        logger.info("take canvas restore stage=current_canvas target=%s/%s", size, output)
         current = await self.current_canvas()
         if current["base"] == tuple(size) and current["output"] == output:
             return
-        last_error: Exception | None = None
-        for _attempt in range(3):
-            try:
-                await self.ctl.obs(("StopRecord", {}))
-            except Exception:
-                pass  # already stopped
-            await self._wait_record(False, attempts=50)
-            try:
-                await self.ctl.obs(
-                    (
-                        "SetVideoSettings",
-                        {"baseWidth": size[0], "baseHeight": size[1], "outputWidth": output[0], "outputHeight": output[1]},
-                    )
+        # StopRecord's response acknowledges the request, not encoder teardown.
+        # The program recording and the take stream both own video encoders.
+        await self.ctl.obs_client.stop_record_and_wait()
+        try:
+            logger.info("take canvas stage=SetVideoSettings")
+            await self.ctl.obs(
+                (
+                    "SetVideoSettings",
+                    {"baseWidth": size[0], "baseHeight": size[1], "outputWidth": output[0], "outputHeight": output[1]},
                 )
-                last_error = None
-                break
-            except Exception as exc:
-                last_error = exc
-                await asyncio.sleep(0.3)
-        started = await self._start_program_output()
-        if last_error:
-            raise last_error
+            )
+        finally:
+            logger.info("take canvas stage=restart_program_output")
+            started = await self._start_program_output()
         if not started:
             raise RuntimeError("OBS did not restart the program output after the canvas change")
 
@@ -607,24 +608,39 @@ class Takes:
         """Leave take mode (the caller holds ``video_lock``): the previous scene when it is safe, else the
         stopped scene, then the canvas found when take mode started."""
         ctl = self.ctl
+        stage = "select_restore_scene"
+        logger.info("take restore begin previous=%r", previous)
         try:
             target = None
             if previous and previous != self.s.scene:
                 cameras = {camera.scene for camera in ctl.config.cameras}
                 if not ctl.program_control or (previous in cameras and ctl.sender_alive()):
+                    stage = "GetSceneList"
+                    logger.info("take restore stage=%s", stage)
                     (scene_list,) = await ctl.obs(("GetSceneList", {}))
                     if previous in {scene["sceneName"] for scene in scene_list.get("scenes", [])}:
                         target = previous
             if target:
+                stage = "SetCurrentProgramScene(previous)"
+                logger.info("take restore stage=%s scene=%r", stage, target)
                 await ctl.obs(("SetCurrentProgramScene", {"sceneName": target}))
                 if ctl.program_control:
                     await ctl.set_program_audio_muted(ctl.program_audio_muted, strict=False)
             else:
+                stage = "ensure_stopped_scene"
+                logger.info("take restore stage=%s", stage)
                 await ctl.ensure_stopped_scene()
+                stage = "SetCurrentProgramScene(stopped)"
+                logger.info("take restore stage=%s", stage)
                 await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.stopped_scene}))
                 if ctl.program_control:
                     await ctl.set_program_audio_muted(True, strict=False)
-        finally:
+        except Exception:
+            logger.exception("take restore failed stage=%s; traceback follows", stage)
+            raise
+        else:
+            stage = "restore_canvas"
+            logger.info("take restore stage=%s", stage)
             width, height = ctl.canvas_size()
             restore = self.restore_canvas or {"base": (width, height), "output": (width, height)}
             await self._set_canvas(tuple(restore["base"]), tuple(restore["output"]))
@@ -639,8 +655,8 @@ class Takes:
             if self.armed:
                 async with self.ctl.video_lock:
                     previous = None if neutral else self.previous_scene
-                    self.armed, self.armed_by, self.previous_scene = False, None, None
                     await self._restore_program(previous)
+                    self.armed, self.armed_by, self.previous_scene = False, None, None
         return finished
 
     async def disarm(self, request: web.Request) -> web.Response:
@@ -652,12 +668,17 @@ class Takes:
         try:
             finished = await self.release()
         except Exception as exc:
+            logger.exception("take disarm failed; armed=%s previous=%r restore_canvas=%r", self.armed, self.previous_scene, self.restore_canvas)
             return _error(f"Could not leave take mode cleanly: {exc}", 503)
         return web.json_response({**self.status_payload(user), "finished_take": finished})
 
     # ------------------------------------------------------------------ layout and slide
     async def get_status(self, request: web.Request) -> web.Response:
-        return web.json_response(self.status_payload(self.user(request)))
+        user = self.user(request)
+        payload = self.status_payload(user)
+        camera_ready, _ = await self.camera_picture_ok()
+        payload["camera_ready"] = camera_ready
+        return web.json_response(payload)
 
     async def set_layout(self, request: web.Request) -> web.Response:
         user = self.user(request)
@@ -915,15 +936,15 @@ class Takes:
 
     async def _finish_recording(self, from_watchdog: bool = False) -> dict[str, Any]:
         """Stop the stream output and finalize the take. The caller holds ``self.lock``."""
-        recording, self.recording = self.recording, None
+        recording = self.recording
         assert recording is not None
         if not from_watchdog and recording.get("watchdog"):
             recording["watchdog"].cancel()
         take_id, process, partial, user = recording["take_id"], recording["process"], recording["partial"], recording["owner"]
-        try:
-            await self.ctl.obs(("StopStream", {}))
-        except Exception:
-            pass
+        # Subscribe before issuing the stop: a second stop can miss the event or
+        # return OutputNotRunning after the first one already completed.
+        await self._stop_stream_and_wait()
+        self.recording = None
         try:
             await asyncio.wait_for(process.wait(), timeout=20)
         except asyncio.TimeoutError:
@@ -976,12 +997,33 @@ class Takes:
     async def take_media(self, request: web.Request) -> web.StreamResponse:
         return web.FileResponse(self._take_file(request)[2], headers={"Cache-Control": "private, max-age=3600"})
 
+    async def take_audio(self, request: web.Request) -> web.StreamResponse:
+        """Generate and cache an audio-only MP3 derivative of a take."""
+        _, _, source = self._take_file(request)
+        target = source.with_suffix(".mp3")
+        if not target.is_file():
+            partial = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.partial.mp3")
+            try:
+                code, _, stderr = await run_tool(
+                    "nice", "-n", "10", "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-codec:a", "libmp3lame",
+                    "-q:a", "4", "-y", str(partial), timeout=120,
+                )
+                if code != 0 or not partial.is_file() or partial.stat().st_size == 0:
+                    raise RuntimeError(stderr.decode("utf-8", "replace")[-400:] or "ffmpeg failed")
+                os.replace(partial, target)
+            except (OSError, asyncio.TimeoutError, RuntimeError) as exc:
+                partial.unlink(missing_ok=True)
+                return _error(f"Could not generate take audio: {exc}", 503)
+        return web.FileResponse(target, headers={"Content-Type": "audio/mpeg", "Cache-Control": "private, max-age=3600"})
+
     async def delete_take(self, request: web.Request) -> web.Response:
         user, take_id, path = self._take_file(request)
         if self.recording and self.recording["owner"] == user and self.recording["take_id"] == take_id:
             return _error("This take is recording", 409)
         path.unlink(missing_ok=True)
         path.with_suffix(".json").unlink(missing_ok=True)
+        path.with_suffix(".mp3").unlink(missing_ok=True)
         return web.json_response({"ok": True, "deleted": take_id})
 
     # ------------------------------------------------------------------ assembling a video
@@ -1151,9 +1193,12 @@ class Takes:
                     if scene.get("currentProgramSceneName") == self.s.scene:
                         async with self.ctl.video_lock:
                             try:
-                                await self.ctl.obs(("StopStream", {}))
+                                (stream,) = await self.ctl.obs(("GetStreamStatus", {}))
+                                if stream.get("outputActive"):
+                                    await self._stop_stream_and_wait()
                             except Exception:
-                                pass
+                                logger.exception("could not confirm stream STOPPED during startup recovery")
+                                return
                             self.restore_canvas = None
                             await self._restore_program(None)
                     return
@@ -1191,6 +1236,7 @@ class Takes:
             ("POST", "/api/takes/start", self.start_take),
             ("POST", "/api/takes/stop", self.stop_take),
             ("GET", "/api/takes/{take_id}.mp4", self.take_media),
+            ("GET", "/api/takes/{take_id}/audio.mp3", self.take_audio),
             ("DELETE", "/api/takes/{take_id}", self.delete_take),
             ("POST", "/api/takes/assemble", self.assemble),
             ("GET", "/api/takes/jobs/{job_id}", self.job_status),

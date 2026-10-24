@@ -13,7 +13,7 @@ Two containers on one machine, no kernel module and no camera needed:
 - `obs` is [`obs-control`](../../obs-control/): headless OBS with a scene collection generated for you. It
   shows a built-in moving test picture with a tone as its "camera", and sends its program to the desktop.
 
-You need Docker with the Compose plugin and about 3 GB of disk for the images.
+You need Docker with the Compose plugin, about 3 GB of disk for the images, and at least 2 GiB of memory for `obs` (OBS software rendering at 1080p has been observed to use about 1.4 GiB). The compose example gives OBS a 2 GiB memory limit; allow additional memory for the desktop container and host.
 
 ## Run it
 

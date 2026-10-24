@@ -24,6 +24,9 @@ test -s /usr/local/share/malrunar/licenses/guacamole-server/LICENSE || fail 'gua
 test -z "$(env | grep '^LD_LIBRARY_PATH=' || true)" || fail 'LD_LIBRARY_PATH is set'
 INNER
 
+echo '== expected runtime identity and writable HOME'
+docker run --rm --read-only --tmpfs /tmp:rw,nosuid,nodev --tmpfs /home/guacd:rw,nosuid,nodev,uid=1000,gid=1000 "$image" sh -c 'test "$(id -u):$(id -g)" = 1000:1000 && test "$HOME" = /home/guacd && test -w "$HOME" && touch "$HOME/.smoke"' || fail 'default user cannot write HOME with read-only root and tmpfs'
+
 echo '== daemon answers and loads the RDP plugin (dlopen through the rpath)'
 name="malrunar-guacd-smoke-$$"
 docker run -d --rm --name "$name" "$image" >/dev/null

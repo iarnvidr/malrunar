@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check that 48 kHz stereo s16le audio carries a tone: tone.py <raw-file> <expected-hz>.
 
-Looks at the last two seconds of the recording only (a scene switch moments earlier must not count).
+Looks at the final second of the recording only (a scene switch moments earlier must not count).
 Exit 0 and print the estimate when the signal is loud and steady and within 8% of the expected
 frequency; exit 1 otherwise (with the reason on stdout).
 """
@@ -15,7 +15,9 @@ if len(data) < 48000 * 4:
     sys.exit(1)
 left = struct.unpack("<%dh" % (len(data) // 2), data)[0::2]
 rate, window = 48000, 4800
-left = left[-2 * rate :]
+# Use the final one-second window: assembled takes intentionally have a silent
+# still lead-in before their audio-bearing take segment.
+left = left[-rate:]
 rms = [
     (sum(v * v for v in left[s : s + window]) / window) ** 0.5
     for s in range(0, len(left) - window + 1, window)
