@@ -1,0 +1,7 @@
+Status: UNPUBLISHED. Source packaging only; no image digest exists for this component yet.
+Malrunar authenticated DevOps engine, scoped Boards/wiki/linked providers and durable cache: Apache-2.0, this repository.
+Azure CLI 2.91.0, azure-identity 1.26.0, requests 2.34.2: exact direct Python pins in requirements.txt.
+Paseo client 0.11.1 and ws 8.22.0: package-lock.json retains exact transitive versions and npm integrity values.
+Node runtime: existing immutable component in pins.env. No Node compilation or Paseo application fork.
+Python transitive dependencies: 151 exact versions and release SHA-256 hashes in requirements.lock, CPython 3.14/Linux amd64.
+All selected wheels were hash-verified and their METADATA dependency closure audited without installation/execution.

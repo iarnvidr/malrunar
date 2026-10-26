@@ -41,6 +41,7 @@ BUILD_GROUPS = (
     ("tail-browser-mcp",),
     ("office-convert",),
     ("node",),
+    ("devops-service",),
     ("desktop-base", "obs-runtime", "obs-control"),
 )
 # Images with a job of their own, and what runs them. Names are `plan` outputs.
