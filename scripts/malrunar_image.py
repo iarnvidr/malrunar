@@ -62,6 +62,7 @@ IMAGES = {
     "thunderbird-mcp": None,
     "msteams-mcp": None,
     "teams-service": None,
+    "devops-service": None,
 }
 # Images whose smoke test runs them inside or next to other images. This is test-time only (it is
 # not part of the hash and not a build parent); changed_images.py re-tests them when those change.

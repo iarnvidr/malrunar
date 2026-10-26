@@ -1,0 +1,6 @@
+{
+  "name": "malrunar-devops-foundation",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@getpaseo/client": "0.11.1", "ws": "8.22.0" }
+}
