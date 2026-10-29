@@ -329,11 +329,11 @@ def generate(config: Config, plugins: Iterable[Any] = ()) -> CollectionBuilder:
     )
     # OBS 32 moved the onboarding state to user.ini. Seed both so a new container never blocks
     # automated output behind the configuration wizard, and keep the user's other preferences.
-    write_ini(
-        root / "user.ini",
-        {"General": {"FirstRun": "true"}, "Basic": {**basic, "ConfigOnNewProfile": "false"}},
-        preserve=True,
-    )
+    user_sections = {"General": {"FirstRun": "true"}, "Basic": {**basic, "ConfigOnNewProfile": "false"}}
+    if config.obs.preview is not None:
+        # Only when configured: an unset option keeps whatever the user toggled in OBS.
+        user_sections["BasicWindow"] = {"PreviewEnabled": "true" if config.obs.preview else "false"}
+    write_ini(root / "user.ini", user_sections, preserve=True)
 
     builder = build_collection(config, plugins)
     sections = copy.deepcopy(profile_sections(config))

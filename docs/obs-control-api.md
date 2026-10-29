@@ -96,6 +96,7 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 | `websocket_password` | (empty) | `MALRUNAR_OBS_WEBSOCKET_PASSWORD` | obs-websocket password. Empty: a random one is generated on first start and kept in the OBS config |
 | `websocket_auth` | `true` | `MALRUNAR_OBS_WEBSOCKET_AUTH` | Require the obs-websocket password (the server listens on all interfaces of the container; keep this on) |
 | `start_scene` | (empty) | `MALRUNAR_OBS_START_SCENE` | Scene on air at start: a scene key, a scene name or `stopped`. Empty: the first camera, or the stopped scene when `program_control` is on |
+| `preview` | (unset) | `MALRUNAR_OBS_PREVIEW` | The live preview in OBS's own window. Unset: leave OBS's setting alone. `false` turns it off (written to `user.ini` as `PreviewEnabled=false` before OBS starts), which saves the CPU that draws it on hosts without GPU rendering; `true` turns it on |
 
 #### `[http]`
 

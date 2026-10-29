@@ -123,6 +123,30 @@ class GenerateTests(TempDir, unittest.TestCase):
         self.assertEqual(user["General"]["FirstRun"], "true")
         self.assertEqual(user["BasicWindow"]["PreviewEnabled"], "false")
 
+    def _user_ini(self):
+        user = configparser.RawConfigParser()
+        user.optionxform = str
+        user.read(self.tmp / "obs-config" / "user.ini")
+        return user
+
+    def test_preview_option_turns_the_window_preview_off_and_keeps_other_preferences(self):
+        generate(make_config(self.tmp))
+        root = self.tmp / "obs-config"
+        user = self._user_ini()
+        self.assertFalse(user.has_option("BasicWindow", "PreviewEnabled"))  # unset: OBS decides
+        user.add_section("BasicWindow")
+        user["BasicWindow"]["PreviewEnabled"] = "true"
+        user["BasicWindow"]["SnapDistance"] = "10"
+        with (root / "user.ini").open("w") as handle:
+            user.write(handle)
+        generate(make_config(self.tmp, obs={"preview": False}))
+        user = self._user_ini()
+        self.assertEqual(user["BasicWindow"]["PreviewEnabled"], "false")
+        self.assertEqual(user["BasicWindow"]["SnapDistance"], "10")
+        self.assertEqual(user["General"]["FirstRun"], "true")
+        generate(make_config(self.tmp, obs={"preview": True}))
+        self.assertEqual(self._user_ini()["BasicWindow"]["PreviewEnabled"], "true")
+
     def test_websocket_password_is_generated_once_and_kept(self):
         config = make_config(self.tmp)
         generate(config)

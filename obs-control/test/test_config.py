@@ -203,6 +203,14 @@ class EnvTests(TempDir, unittest.TestCase):
         self.assertEqual(config.plugins.modules, ["one", "two"])
         self.assertEqual((config.obs.profile, config.obs.websocket_port), ("p1", 4466))
 
+    def test_preview_is_unset_by_default_and_follows_the_environment(self):
+        self.assertIsNone(self.load({}).obs.preview)
+        self.assertIs(self.load({"MALRUNAR_OBS_PREVIEW": "false"}).obs.preview, False)
+        self.assertIs(self.load({"MALRUNAR_OBS_PREVIEW": "true"}).obs.preview, True)
+        self.assertIs(self.load({}, obs={"preview": False}).obs.preview, False)
+        with self.assertRaisesRegex(ConfigError, "MALRUNAR_OBS_PREVIEW"):
+            self.load({"MALRUNAR_OBS_PREVIEW": "sometimes"})
+
     def test_environment_beats_the_file(self):
         config = self.load({"MALRUNAR_OBS_OUTPUT_URL": "udp://env:1"}, output={"url": "udp://file:1"})
         self.assertEqual(config.output.url, "udp://env:1")

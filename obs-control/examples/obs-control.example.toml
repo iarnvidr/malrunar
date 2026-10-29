@@ -14,6 +14,7 @@ websocket_port = 4455
 # websocket_password = ""     # empty: a random password is generated once and kept in the OBS config
 websocket_auth = true
 # start_scene = ""            # scene key or name; empty: the first camera, or the stopped scene in program control
+# preview = false            # OBS window preview; unset: leave OBS as is; false saves CPU on hosts without GPU rendering
 
 [http]
 bind = "0.0.0.0"

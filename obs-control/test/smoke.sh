@@ -162,7 +162,8 @@ exec_in bash -c '
     grep -qi "^content-type: image/jpeg" /tmp/preview.headers
 ' || fail 'the program preview is not a non-empty JPEG'
 exec_in bash -c 'timeout 10 curl -sS --max-time 8 http://127.0.0.1:18095/api/program-live.mjpg 2>/dev/null | head -c 3000 | grep -aq -- "--frame"' || fail 'the MJPEG stream delivered no frame'
-api / | grep -q 'OBS control' || fail 'console page'
+# Drain the full page so an early match cannot SIGPIPE api's printf under pipefail.
+api / | grep 'OBS control' >/dev/null || fail 'console page'
 
 echo '== the output stream carries H.264 video and AAC audio'
 for _ in $(seq 1 40); do
