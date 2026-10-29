@@ -56,6 +56,9 @@ DEFAULTS: dict[str, Any] = {
         "websocket_password": "",
         "websocket_auth": True,
         "start_scene": "",
+        # The OBS window preview (the live view in OBS's own window). None leaves OBS's setting alone;
+        # false turns it off, which on a host without GPU rendering saves the CPU that draws it.
+        "preview": None,
     },
     "http": {"bind": "0.0.0.0", "port": 18095},
     "video": {"width": 640, "height": 360, "fps": 24, "default_profile": "360p"},
