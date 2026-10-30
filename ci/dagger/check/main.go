@@ -21,6 +21,7 @@ func (m *MalrunarCi) Checks(ctx context.Context, source *dagger.Directory) (stri
 	nodeTools := dag.Container().From(nodeImage)
 	python := dag.Container().From(pythonImage).
 		WithExec([]string{"sh", "-ec", "apt-get update && apt-get install -y --no-install-recommends bash git && rm -rf /var/lib/apt/lists/*"}).
+		WithEnvVariable("PYTHONPATH", "/src/obs-control").
 		WithFile("/usr/local/bin/node", nodeTools.File("/usr/local/bin/node")).
 		WithDirectory("/src", source).WithWorkdir("/src").
 		WithExec([]string{"sh", "-ec", "for pattern in test_config.py test_scenes.py test_docs.py; do python3 -m unittest discover -s obs-control/test -p \"$pattern\"; done"}).
