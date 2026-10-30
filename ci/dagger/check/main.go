@@ -8,7 +8,7 @@ import (
 	"dagger/check/internal/dagger"
 )
 
-type Malrunar struct{}
+type MalrunarCi struct{}
 
 const (
 	pythonImage = "python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337"
@@ -16,7 +16,7 @@ const (
 )
 
 // Checks runs the repository's isolated Linux unit and syntax suites.
-func (m *Malrunar) Checks(ctx context.Context, source *dagger.Directory) (string, error) {
+func (m *MalrunarCi) Checks(ctx context.Context, source *dagger.Directory) (string, error) {
 	var out strings.Builder
 	nodeTools := dag.Container().From(nodeImage)
 	python := dag.Container().From(pythonImage).
