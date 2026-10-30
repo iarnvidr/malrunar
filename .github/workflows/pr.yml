@@ -30,7 +30,7 @@ env:
   MALRUNAR_CI_LOG_DIR: /tmp/malrunar-ci-debug   # smoke/e2e output is kept here; collect-debug uploads it when a job fails
 
 concurrency:
-  group: pr-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +48,6 @@ jobs:
           set -eu
           while IFS= read -r file; do bash -n "$file"; done < <(git ls-files '*.sh')
           git ls-files '*.sh' | xargs shellcheck --severity=warning
-          # scripts without a .sh extension
           bash -n media-bridge/bin/malrunar-media-bridge work-browser/bin/malrunar-work-browser work-browser/bin/malrunar-work-browser-open
           shellcheck --severity=warning media-bridge/bin/malrunar-media-bridge media-bridge/bin/malrunar-xrdp-audio-tune
           (cd work-browser/bin && shellcheck --severity=warning -x malrunar-work-browser malrunar-work-browser-open)
@@ -61,27 +60,15 @@ jobs:
           (cd msteams-mcp/bin && shellcheck --severity=warning -x malrunar-msteams-mcp)
           (cd teams-service/bin && shellcheck --severity=warning -x malrunar-teams-service)
           shellcheck --severity=warning msteams-mcp/lib/common.sh teams-service/lib/common.sh
-          for file in msteams-mcp/libexec/*.mjs msteams-mcp/patches/*.cjs teams-service/src/*.mjs teams-service/dev/*.mjs; do node --check "$file"; done
       - name: Public hygiene (no private names, addresses or environment names in tracked files)
         run: scripts/check-public-hygiene.sh
-      - name: obs-control tests that need only the standard library (config, scene generation, docs)
-        run: |
-          set -eu
-          for pattern in test_config.py test_scenes.py test_docs.py; do
-            python3 -m unittest discover -s obs-control/test -p "$pattern"
-          done
-      - name: Hash, planning and pin-scoping tests (python3 -m unittest discover -s scripts/test)
-        run: python3 -m unittest discover -s scripts/test -v
-      - name: work-browser launcher and open helper against a stub Firefox
-        run: work-browser/test/launcher-test.sh
-      - name: session-kit unit tests (stand-in X tools; no X server)
-        run: python3 -m unittest discover -s session-kit/test -v
-      - name: thunderbird consumer tools (customize.py and the OAuth patch against a stand-in installation)
-        run: python3 -I -m unittest discover -s thunderbird/test -v
-      - name: msteams-mcp shell helpers (settings, log level, profile paths, stand-in supervisorctl)
-        run: msteams-mcp/test/unit/common.test.sh
-      - name: DevOps foundation synthetic contracts (no provider or credentials)
-        run: python3 -m unittest discover -s devops-service/test -p 'test_*.py' -v
+      - name: Isolated Python, shell, and Node unit checks
+        uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602
+        with:
+          version: 0.21.11
+          verb: call
+          module: ./ci/dagger/check
+          args: checks --source .
       - name: Content hashes are computable and stable
         run: |
           set -eu
@@ -92,8 +79,6 @@ jobs:
             echo "$image $first"
             python3 scripts/malrunar_image.py tags "$image"
           done
-      - name: Pin updater parses the pin files
-        run: python3 -I scripts/bump_pins.py --dry-run
 
   # Which images this change touches: only those are built and tested below.
   plan:

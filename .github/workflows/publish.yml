@@ -14,7 +14,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: publish
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 env:
