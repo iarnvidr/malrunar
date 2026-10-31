@@ -681,6 +681,7 @@ class CanonicalProducerReuseTests(unittest.TestCase):
             commands = [call.args[0] for call in run_process.call_args_list]
             inspect = next(args for args in commands if args[:2] == ["skopeo", "inspect"])
             self.assertEqual(inspect[inspect.index("--authfile") + 1], str(authfile))
+            self.assertEqual(inspect[-1], "docker://ghcr.io/iarnvidr/desktop-base:h-aaaaaaaaaaaaaaaa")
             verify = next(args for args in commands if args[0] == "cosign")
             self.assertIn("https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
                           verify)
@@ -770,6 +771,8 @@ class CanonicalProducerReuseTests(unittest.TestCase):
             verifications = [args for args in commands if args[0] == "cosign"]
             self.assertEqual(len(inspections), 2 * len(images.IMAGES))
             self.assertEqual(len(verifications), len(images.IMAGES))
+            self.assertTrue(all("docker://ghcr.io/iarnvidr/" in args[-1] for args in inspections))
+            self.assertTrue(all("ghcr.io/iarnvidr/" in args[2] for args in verifications))
             self.assertTrue(all(args[args.index("--authfile") + 1] == str(authfile)
                                 for args in inspections))
 

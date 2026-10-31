@@ -21,6 +21,7 @@ import zipfile
 import malrunar_image
 
 REPOSITORY = "iarnvidr/malrunar"
+IMAGE_REGISTRY = "ghcr.io/iarnvidr"
 PR_WORKFLOW = ".github/workflows/pr.yml"
 QUICKSTART_WORKFLOW = ".github/workflows/quickstart.yml"
 PUBLISH_WORKFLOW = ".github/workflows/publish.yml"
@@ -1046,7 +1047,7 @@ def preflight_canonical(root: Path):
     cached, missing = [], []
     for image in malrunar_image.IMAGES:
         content_hash = malrunar_image.image_hash(image, root=root)
-        target = f"ghcr.io/{REPOSITORY}/{image}"
+        target = f"{IMAGE_REGISTRY}/{image}"
         reference = f"{target}:h-{content_hash}"
         try:
             raw = subprocess.run(["skopeo", "inspect", "--raw", *auth_args,
@@ -1096,7 +1097,7 @@ def preflight_canonical(root: Path):
 def reuse_canonical(root: Path, image: str, output: Path):
     """Materialize a trusted main image for PR smoke tests when its inputs match."""
     content_hash = malrunar_image.image_hash(image, root=root)
-    target = f"ghcr.io/{REPOSITORY}/{image}"
+    target = f"{IMAGE_REGISTRY}/{image}"
     tag = f"h-{content_hash}"
     reference = f"{target}:{tag}"
     docker_config = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "config.json"
