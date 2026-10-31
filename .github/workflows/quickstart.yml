@@ -50,6 +50,8 @@ jobs:
           echo "MALRUNAR_PR_RUN_ATTEMPT=$(jq -r .run_attempt "$RUNNER_TEMP/pr-image-run.json")" >> "$GITHUB_ENV"
       - name: Load the exact tested images
         timeout-minutes: 25
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           tree="$(git rev-parse 'HEAD^{tree}')"
