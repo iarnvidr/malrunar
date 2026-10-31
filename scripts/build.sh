@@ -62,11 +62,6 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ -n "${MALRUNAR_CANDIDATE_DIR
 fi
 
 if [ "$candidate" = true ]; then
-    docker buildx build \
-        --file "$root/$image/Dockerfile" \
-        "${args[@]}" "${tag_args[@]}" \
-        "${mode[@]}" ${extra[@]+"${extra[@]}"} \
-        "$root/$image"
     hash="$(python3 "$tool" hash "$image")"
     mkdir -p "$MALRUNAR_CANDIDATE_DIR"
     docker buildx build \
@@ -77,6 +72,11 @@ if [ "$candidate" = true ]; then
         --sbom=true --provenance=mode=max \
         ${extra[@]+"${extra[@]}"} \
         "$root/$image"
+    # Smoke-test the image from the exact OCI archive that will be retained.
+    # A second build can differ in its image config even when the source is identical.
+    skopeo copy --override-os linux --override-arch amd64 \
+        "oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar" \
+        "docker-daemon:malrunar/$image:h-$hash"
 else
     exec docker buildx build \
         --file "$root/$image/Dockerfile" \

@@ -195,9 +195,13 @@ class RepositoryTest(unittest.TestCase):
 
     def test_candidate_oci_export_has_one_explicit_image_name(self):
         text = (mi.ROOT / "scripts/build.sh").read_text()
-        export = text.split('--output "type=oci', 1)[1].split("\nelse", 1)[0]
+        export = text.split('if [ "$candidate" = true ]; then', 1)[1].split("\nelse", 1)[0]
         self.assertIn("name=malrunar/$image:h-$hash", export)
         self.assertNotIn('"${tag_args[@]}"', export)
+        self.assertEqual(export.count("docker buildx build"), 1)
+        self.assertIn("skopeo copy --override-os linux --override-arch amd64", export)
+        self.assertIn('"oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar"', export)
+        self.assertIn('"docker-daemon:malrunar/$image:h-$hash"', export)
 
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:
