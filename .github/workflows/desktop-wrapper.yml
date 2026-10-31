@@ -208,6 +208,7 @@ jobs:
     permissions: {}
     steps:
       - name: Require applicable desktop-wrapper checks
+        working-directory: .
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
           RELEVANT: ${{ needs.plan.outputs.relevant }}
