@@ -145,7 +145,13 @@ class OciIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "image.oci.tar"
             manifest, _, _ = layout(path, nested=True)
-            self.assertEqual(candidate.oci_identity(path)["manifest_digest"], manifest)
+            identity = candidate.oci_identity(path)
+            self.assertEqual(identity["manifest_digest"], manifest)
+            with tarfile.open(path) as archive:
+                outer = json.load(archive.extractfile("index.json"))
+            root_digest = outer["manifests"][0]["digest"]
+            self.assertNotEqual(identity["index_digest"], root_digest)
+            self.assertEqual(identity["publishable_root_digest"], root_digest)
 
 
 class DockerSavedConfigTests(unittest.TestCase):
@@ -276,6 +282,152 @@ class CandidatePromotionTests(unittest.TestCase):
             published = json.loads(accepted_path.read_text())
             self.assertEqual(published["published_digest"], index_digest)
             self.assertEqual(published["published_tags"], ["h-" + receipt["content_hash"], receipt["version"]])
+
+    def test_existing_canonical_match_still_emits_mapping_without_overwriting_hash_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "image.oci.tar"
+            manifest, config, index_digest = layout(archive)
+            with tarfile.open(archive) as bundle:
+                index_raw = bundle.extractfile("index.json").read()
+                manifest_raw = bundle.extractfile("blobs/sha256/" + manifest[7:]).read()
+            identity = candidate.oci_identity(archive)
+            image = "desktop-base"
+            receipt = {"image": image, "content_hash": images.image_hash(image),
+                       "version": images.version(image), "manifest_digest": manifest,
+                       "config_digest": config, "index_digest": index_digest, **identity}
+            accepted_path = root / "accepted-image.json"
+            accepted_path.write_text(json.dumps({"schema": 1, "repository": candidate.REPOSITORY,
+                "accepted_commit": "a" * 40, "accepted_tree": "b" * 40,
+                "image": image, "candidate": {"receipt": receipt}}))
+            output = root / "github-output"
+
+            def run(args, **kwargs):
+                if args[1] == "inspect" and "--raw" in args:
+                    raw = manifest_raw if "@" + manifest in args[-1] else index_raw
+                    return __import__("subprocess").CompletedProcess(args, 0, stdout=raw)
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=index_raw)
+
+            with mock.patch.object(candidate, "git", side_effect=["a" * 40, "b" * 40]), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                candidate.publish_candidate(images.ROOT, image, root, "ghcr.io/iarnvidr", output,
+                                            identity["publishable_root_digest"])
+            calls = [call.args[0] for call in run_process.call_args_list]
+            hash_copies = [args for args in calls if args[1] == "copy" and
+                           "h-" + receipt["content_hash"] in args[-1]]
+            self.assertEqual(hash_copies, [])
+            self.assertFalse(any(args[1] == "copy" for args in calls))
+            published = json.loads(accepted_path.read_text())
+            self.assertEqual(published["published_digest"], identity["publishable_root_digest"])
+            self.assertIn("accepted_commit", published)
+            self.assertIn(f"digest={identity['publishable_root_digest']}\n", output.read_text())
+
+    def test_existing_canonical_mismatch_fails_before_registry_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "image.oci.tar"
+            manifest, config, index_digest = layout(archive)
+            identity = candidate.oci_identity(archive)
+            image = "desktop-base"
+            receipt = {"image": image, "content_hash": images.image_hash(image),
+                       "version": images.version(image), "manifest_digest": manifest,
+                       "config_digest": config, "index_digest": index_digest, **identity}
+            accepted_path = root / "accepted-image.json"
+            accepted_path.write_text(json.dumps({"schema": 1, "repository": candidate.REPOSITORY,
+                "accepted_commit": "a" * 40, "accepted_tree": "b" * 40,
+                "image": image, "candidate": {"receipt": receipt}}))
+            with mock.patch.object(candidate, "git", side_effect=["a" * 40, "b" * 40]), \
+                    mock.patch.object(candidate, "_skopeo_digest", return_value="sha256:" + "1" * 64), \
+                    mock.patch.object(candidate, "_registry_identity", return_value={
+                        "config_digest": "sha256:" + "0" * 64}), \
+                    mock.patch.object(candidate.subprocess, "run") as run_process:
+                with self.assertRaisesRegex(ValueError, "refusing overwrite"):
+                    candidate.publish_candidate(images.ROOT, image, root, "ghcr.io/iarnvidr", root / "out",
+                                                "sha256:" + "1" * 64)
+            run_process.assert_not_called()
+
+    def test_nested_wrapper_publishes_selected_root_digest_and_preserves_attestations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "image.oci.tar"
+            manifest, config, wrapper_digest = layout(archive, nested=True)
+            with tarfile.open(archive) as bundle:
+                outer = json.load(bundle.extractfile("index.json"))
+                selected_root = outer["manifests"][0]["digest"]
+                raw_index = bundle.extractfile("blobs/sha256/" + selected_root[7:]).read()
+            identity = candidate.oci_identity(archive)
+            receipt = {"image": "desktop-base", "content_hash": images.image_hash("desktop-base"),
+                       "version": images.version("desktop-base"), "manifest_digest": manifest,
+                       "config_digest": config, "index_digest": wrapper_digest, **identity}
+            accepted_path = root / "accepted-image.json"
+            accepted_path.write_text(json.dumps({"schema": 1, "repository": candidate.REPOSITORY,
+                "accepted_commit": "a" * 40, "accepted_tree": "b" * 40,
+                "image": "desktop-base", "candidate": {"receipt": receipt}}))
+            output = root / "github-output"
+
+            def run(args, **kwargs):
+                if args[1] == "inspect":
+                    return __import__("subprocess").CompletedProcess(args, 0, stdout=raw_index)
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
+
+            with mock.patch.object(candidate, "git", side_effect=["a" * 40, "b" * 40]), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                candidate.publish_candidate(images.ROOT, "desktop-base", root,
+                                            "ghcr.io/iarnvidr", output)
+            calls = [call.args[0] for call in run_process.call_args_list]
+            self.assertEqual(sum(args[1] == "copy" for args in calls), 2)
+            self.assertTrue(all("--all" in args and "--preserve-digests" in args
+                                for args in calls if args[1] == "copy"))
+            published = json.loads(accepted_path.read_text())
+            self.assertEqual(published["published_digest"], selected_root)
+            self.assertNotEqual(published["published_digest"], wrapper_digest)
+
+
+class CanonicalProducerReuseTests(unittest.TestCase):
+    def test_reuses_verified_canonical_archive_for_actual_smoke_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "canonical.oci.tar"
+            output = root / "candidate/image.oci.tar"
+            layout(source)
+            identity = candidate.oci_identity(source)
+            with tarfile.open(source) as archive:
+                raw_index = archive.extractfile("index.json").read()
+
+            def run(args, **kwargs):
+                if args[1:3] == ["inspect", "--raw"]:
+                    return __import__("subprocess").CompletedProcess(args, 0, stdout=raw_index)
+                if args[1:3] == ["copy", "--all"]:
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_bytes(source.read_bytes())
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                self.assertTrue(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
+            commands = [call.args[0] for call in run_process.call_args_list]
+            verify = next(args for args in commands if args[0] == "cosign")
+            self.assertIn("https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
+                          verify)
+            copy = next(args for args in commands if args[1] == "copy")
+            self.assertIn("--all", copy)
+            self.assertIn("--preserve-digests", copy)
+            self.assertEqual(candidate.oci_identity(output), identity)
+
+    def test_untrusted_canonical_image_falls_back_to_one_build_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "candidate/image.oci.tar"
+
+            def run(args, **kwargs):
+                if args[0] == "cosign":
+                    raise __import__("subprocess").CalledProcessError(1, args)
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=b'{"manifests":[]}')
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run):
+                self.assertFalse(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

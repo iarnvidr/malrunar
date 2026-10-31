@@ -231,10 +231,39 @@ def oci_identity(source):
             raise ValueError("OCI archive has no BuildKit provenance attestation")
         return {
             "archive_sha256": hasher.hexdigest(), "index_digest": "sha256:" + sha(index_raw),
+            # Skopeo unwraps a singleton OCI index wrapper when it writes the
+            # registry object. Bind publication to the descriptor it selects,
+            # while retaining index_digest as the byte identity of this archive.
+            "publishable_root_digest": _publishable_root_digest(index_raw, archive, members),
             "manifest_digest": image_digest, "config_digest": config_digest,
             "attestation_predicates": sorted(predicates),
             "attestation_digests": sorted(set(attestation_digests)),
         }
+
+
+def _publishable_root_digest(index_raw, archive, members):
+    raw = index_raw
+    seen = set()
+    while True:
+        value = json.loads(raw)
+        manifests = value.get("manifests")
+        if not isinstance(manifests, list) or len(manifests) != 1:
+            return "sha256:" + sha(raw)
+        descriptor = manifests[0]
+        if descriptor.get("annotations", {}).get("vnd.docker.reference.type") == "attestation-manifest":
+            return "sha256:" + sha(raw)
+        digest = descriptor.get("digest")
+        if digest in seen:
+            raise ValueError("OCI index wrapper contains a descriptor cycle")
+        child = _blob(archive, members, digest, read=True)
+        try:
+            child_value = json.loads(child)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "sha256:" + sha(raw)
+        if not isinstance(child_value.get("manifests"), list):
+            return "sha256:" + sha(raw)
+        seen.add(digest)
+        raw = child
 
 
 def _safe_config(value, key=""):
@@ -766,7 +795,8 @@ def _skopeo_digest(reference):
     return "sha256:" + sha(result.stdout)
 
 
-def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str, github_output: Path):
+def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str, github_output: Path,
+                      existing_digest: str = ""):
     accepted_path = accepted_dir / "accepted-image.json"
     archive_path = accepted_dir / "image.oci.tar"
     accepted = json.loads(accepted_path.read_text())
@@ -790,17 +820,28 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
             raise ValueError("published parent image differs from the parent tested with the candidate")
     target = f"{registry}/{image}"
     hash_tag = "h-" + receipt["content_hash"]
-    digest = receipt["index_digest"]
+    digest = receipt["publishable_root_digest"]
     authfile = str(Path.home() / ".docker" / "config.json")
-    subprocess.run(["skopeo", "copy", "--dest-authfile", authfile, "--all", "--preserve-digests",
-                    f"oci-archive:{archive_path}", f"docker://{target}:{hash_tag}"], check=True)
-    if _skopeo_digest(f"{target}:{hash_tag}") != digest:
-        raise ValueError("published OCI index digest differs from the tested candidate")
-    subprocess.run(["skopeo", "copy", "--src-authfile", authfile, "--dest-authfile", authfile,
-                    "--all", "--preserve-digests",
-                    f"docker://{target}@{digest}", f"docker://{target}:{receipt['version']}"], check=True)
-    if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
-        raise ValueError("version tag does not resolve to the exact tested OCI index")
+    if existing_digest:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", existing_digest):
+            raise ValueError("existing canonical tag has an invalid digest")
+        if _skopeo_digest(f"{target}:{hash_tag}") != existing_digest:
+            raise ValueError("existing canonical h- tag changed during publication; refusing overwrite")
+        existing_identity = _registry_identity(f"{target}@{existing_digest}", authfile)
+        if existing_digest != digest or existing_identity["config_digest"] != identity["config_digest"]:
+            raise ValueError("existing canonical h- tag differs from the accepted candidate; refusing overwrite")
+        if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
+            raise ValueError("existing canonical image has a mismatched version tag; refusing copy")
+    else:
+        subprocess.run(["skopeo", "copy", "--dest-authfile", authfile, "--all", "--preserve-digests",
+                        f"oci-archive:{archive_path}", f"docker://{target}:{hash_tag}"], check=True)
+        if _skopeo_digest(f"{target}:{hash_tag}") != digest:
+            raise ValueError("published OCI root digest differs from the tested candidate")
+        subprocess.run(["skopeo", "copy", "--src-authfile", authfile, "--dest-authfile", authfile,
+                        "--all", "--preserve-digests",
+                        f"docker://{target}@{digest}", f"docker://{target}:{receipt['version']}"], check=True)
+        if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
+            raise ValueError("version tag does not resolve to the exact tested OCI root")
     accepted["published_digest"] = digest
     accepted["published_tags"] = [hash_tag, receipt["version"]]
     accepted_path.write_text(json.dumps(accepted, sort_keys=True) + "\n")
@@ -808,11 +849,69 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
         stream.write(f"digest={digest}\n")
 
 
+def _registry_identity(reference, authfile):
+    result = subprocess.run(["skopeo", "inspect", "--raw", "--authfile", authfile,
+                             f"docker://{reference}"], check=True, capture_output=True)
+    raw = result.stdout
+    value = json.loads(raw)
+    if isinstance(value.get("manifests"), list):
+        matches = [item for item in value["manifests"]
+                   if item.get("platform", {}).get("os") == "linux"
+                   and item.get("platform", {}).get("architecture") == "amd64"]
+        if len(matches) != 1:
+            raise ValueError("published registry index does not select exactly one linux/amd64 image")
+        child = subprocess.run(["skopeo", "inspect", "--raw", "--authfile", authfile,
+                                f"docker://{reference.split('@', 1)[0]}@{matches[0]['digest']}"],
+                               check=True, capture_output=True)
+        value = json.loads(child.stdout)
+    config_digest = value.get("config", {}).get("digest")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest or ""):
+        raise ValueError("published registry image has no valid config digest")
+    return {"config_digest": config_digest}
+
+
+def reuse_canonical(root: Path, image: str, output: Path):
+    """Materialize a trusted main image for PR smoke tests when its inputs match."""
+    content_hash = malrunar_image.image_hash(image, root=root)
+    target = f"ghcr.io/{REPOSITORY}/{image}"
+    tag = f"h-{content_hash}"
+    reference = f"{target}:{tag}"
+    try:
+        raw = subprocess.run(["skopeo", "inspect", "--raw", f"docker://{reference}"],
+                             check=True, capture_output=True).stdout
+        digest = "sha256:" + sha(raw)
+        subprocess.run(["cosign", "verify", f"{target}@{digest}",
+                        "--certificate-identity",
+                        "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
+                        "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["skopeo", "copy", "--all", "--preserve-digests",
+                        f"docker://{target}@{digest}", f"oci-archive:{output}:{tag}"], check=True)
+        identity = oci_identity(output)
+        if identity["publishable_root_digest"] != digest:
+            raise ValueError("trusted image copy changed the published root digest")
+        print(f"reusing trusted canonical {reference} ({digest}) for smoke testing")
+        return True
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, json.JSONDecodeError):
+        output.unlink(missing_ok=True)
+        print(f"no reusable trusted canonical image for {reference}; building once")
+        return False
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit("usage: image_candidate.py select|record|diagnose|quickstart|retrieve|publish-candidate ...")
     command = sys.argv[1]
-    if command == "select":
+    if command == "reuse-canonical":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, required=True)
+        parser.add_argument("--image", required=True)
+        parser.add_argument("--output", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        raise SystemExit(0 if reuse_canonical(args.root.resolve(), args.image,
+                                              args.output.resolve()) else 3)
+    elif command == "select":
         parser = argparse.ArgumentParser()
         parser.add_argument("--candidates", required=True)
         parser.add_argument("--built", required=True)
@@ -852,9 +951,10 @@ def main():
         parser.add_argument("--accepted-dir", type=Path, required=True)
         parser.add_argument("--registry", required=True)
         parser.add_argument("--github-output", type=Path, required=True)
+        parser.add_argument("--existing-digest", default="")
         args = parser.parse_args(sys.argv[2:])
         publish_candidate(args.root.resolve(), args.image, args.accepted_dir.resolve(),
-                          args.registry, args.github_output)
+                          args.registry, args.github_output, args.existing_digest)
     else:
         raise SystemExit("unknown command: " + command)
 

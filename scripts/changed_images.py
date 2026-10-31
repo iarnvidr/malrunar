@@ -55,7 +55,10 @@ DEDICATED = {
     "teams-service": ("teams-service",),
     "obs-control-e2e": ("obs-control", "media-bridge", "desktop-base", "obs-runtime"),
 }
-INFRASTRUCTURE_PATHS = ("scripts/build.sh", "scripts/smoke.sh", ".github/workflows/pr.yml")
+INFRASTRUCTURE_PATHS = (
+    "scripts/build.sh", "scripts/smoke.sh", "scripts/image_candidate.py",
+    ".github/workflows/pr.yml", ".github/workflows/publish.yml",
+)
 
 
 def changed_images(base_root, head_root, changed_paths):

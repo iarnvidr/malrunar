@@ -64,14 +64,18 @@ fi
 if [ "$candidate" = true ]; then
     hash="$(python3 "$tool" hash "$image")"
     mkdir -p "$MALRUNAR_CANDIDATE_DIR"
-    docker buildx build \
-        --platform linux/amd64 \
-        --file "$root/$image/Dockerfile" \
-        "${args[@]}" \
-        --output "type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar,name=malrunar/$image:h-$hash,oci-mediatypes=true" \
-        --sbom=true --provenance=mode=max \
-        ${extra[@]+"${extra[@]}"} \
-        "$root/$image"
+    archive="$MALRUNAR_CANDIDATE_DIR/$image.oci.tar"
+    if ! python3 "$root/scripts/image_candidate.py" reuse-canonical \
+        --root "$root" --image "$image" --output "$archive"; then
+        docker buildx build \
+            --platform linux/amd64 \
+            --file "$root/$image/Dockerfile" \
+            "${args[@]}" \
+            --output "type=oci,dest=$archive,name=malrunar/$image:h-$hash,oci-mediatypes=true" \
+            --sbom=true --provenance=mode=max \
+            ${extra[@]+"${extra[@]}"} \
+            "$root/$image"
+    fi
     # Select the tagged linux/amd64 image from the exact OCI archive for smoke tests.
     # Keep the original archive, including its attestation descriptors, unchanged.
     skopeo copy --override-os linux --override-arch amd64 \
