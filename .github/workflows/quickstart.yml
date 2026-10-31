@@ -1,26 +1,24 @@
-# Runs examples/quickstart exactly as its README documents it: docker compose up, wait for /ready,
-# switch a scene through the API, check the virtual microphone in the desktop container.
-# It always runs (so it can be a required check). Images the pull request did not change are pulled
-# from ghcr.io by content hash; changed ones are built from the checkout. Hosted runner, no secrets,
-# read-only token. Separate from pr.yml on purpose: editing that file rebuilds every image.
+# End-to-end quickstart consumes the exact successful image candidates produced for this PR.
 name: quickstart
 
 on:
   pull_request:
-  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   quickstart:
+    name: quickstart
     runs-on: ubuntu-latest
-    timeout-minutes: 45   # a pull request that changes desktop-base or OBS builds it here; otherwise this takes minutes
+    timeout-minutes: 70
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,12 +37,30 @@ jobs:
           docker compose -f examples/quickstart/compose.yaml -f examples/quickstart/compose.camera.yaml config --quiet
       - name: Install Skopeo
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - name: Verify canonical tags before quickstart builds
-        run: python3 scripts/image_candidate.py preflight-canonical --root "$GITHUB_WORKSPACE"
-      - name: Images from this checkout (published ones are reused when their content is unchanged)
-        timeout-minutes: 40
-        run: examples/quickstart/test/build-images.sh
+      - name: Wait for this PR's exact image producer run
+        timeout-minutes: 36
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/image_candidate.py wait-pr-run \
+            --root "$GITHUB_WORKSPACE" --pr-event "$GITHUB_EVENT_PATH" \
+            --timeout-seconds 2100 --run-output "$RUNNER_TEMP/pr-image-run.json" \
+            --preflight-output "$RUNNER_TEMP/canonical-preflight.json"
+          echo "MALRUNAR_PR_RUN_ID=$(jq -r .run_id "$RUNNER_TEMP/pr-image-run.json")" >> "$GITHUB_ENV"
+          echo "MALRUNAR_PR_RUN_ATTEMPT=$(jq -r .run_attempt "$RUNNER_TEMP/pr-image-run.json")" >> "$GITHUB_ENV"
+      - name: Load the exact tested images
+        timeout-minutes: 25
+        run: |
+          set -eu
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py \
+            --root "$GITHUB_WORKSPACE" --targets obs-control media-bridge \
+            --run-id "$MALRUNAR_PR_RUN_ID" --run-attempt "$MALRUNAR_PR_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-image-manifest.json"
+          examples/quickstart/test/build-images.sh \
+            "$RUNNER_TEMP/tested-image-manifest.json" "$GITHUB_ENV"
       - name: Quickstart (docker compose up, /ready, scene switch, virtual microphone)
         timeout-minutes: 20
         run: |
@@ -55,10 +71,10 @@ jobs:
           grep -F 'QUICKSTART: scene switched OK' quickstart.log
           grep -F 'QUICKSTART: virtual mic present OK' quickstart.log
       - name: Record exact-tree quickstart evidence
-        if: github.event_name == 'pull_request'
+        env:
+          MALRUNAR_TESTED_IMAGE_MANIFEST: ${{ runner.temp }}/tested-image-manifest.json
         run: python3 scripts/image_candidate.py quickstart --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/quickstart-candidate.json"
       - name: Upload quickstart evidence
-        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: malrunar-quickstart-candidate-${{ github.run_id }}-${{ github.run_attempt }}

@@ -388,6 +388,100 @@ class RetrievePlanSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "expected one exact PR-tested image artifact"):
                 self._retrieve([self.image], Path(directory) / "accepted")
 
+
+class QuickstartSourceManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.pr = {
+            "number": 17,
+            "head": {"sha": "a" * 40, "repo": {"full_name": candidate.REPOSITORY}},
+            "base": {"sha": "b" * 40, "repo": {"full_name": candidate.REPOSITORY}},
+        }
+        self.tree = "c" * 40
+
+    def test_receipt_binds_verified_loader_manifest_to_triggering_pr_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event = root / "event.json"
+            manifest = root / "images.json"
+            output = root / "receipt.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": self.pr}))
+            manifest.write_text(json.dumps({
+                "schema": 1, "source_run_id": 123, "source_run_attempt": 2,
+                "pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                "tested_tree": self.tree,
+                "images": [{"image": image, "local_reference": f"malrunar/{image}:h-{'f' * 16}"}
+                           for image in ("desktop-base", "obs-runtime", "obs-control", "media-bridge")],
+            }))
+            env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": candidate.REPOSITORY,
+                   "GITHUB_EVENT_PATH": str(event), "GITHUB_RUN_ID": "456",
+                   "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_SHA": "d" * 40,
+                   "MALRUNAR_TESTED_IMAGE_MANIFEST": str(manifest),
+                   "MALRUNAR_PR_RUN_ID": "123", "MALRUNAR_PR_RUN_ATTEMPT": "2"}
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(candidate, "git", return_value=self.tree), \
+                    mock.patch.object(candidate.malrunar_image, "image_hash", return_value="f" * 16):
+                candidate.record_quickstart(root, output)
+            receipt = json.loads(output.read_text())
+            self.assertEqual(receipt["source_images"]["source_run_id"], 123)
+            self.assertEqual(receipt["source_images"]["source_run_attempt"], 2)
+            self.assertEqual(receipt["source_images"]["tested_tree"], self.tree)
+
+    def test_receipt_rejects_loader_manifest_from_another_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event, manifest = root / "event.json", root / "images.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": self.pr}))
+            manifest.write_text(json.dumps({
+                "schema": 1, "source_run_id": 123, "source_run_attempt": 1,
+                "pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                "tested_tree": self.tree,
+                "images": [{"image": image, "local_reference": f"malrunar/{image}:h-{'f' * 16}"}
+                           for image in ("desktop-base", "obs-runtime", "obs-control", "media-bridge")],
+            }))
+            env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": candidate.REPOSITORY,
+                   "GITHUB_EVENT_PATH": str(event), "GITHUB_RUN_ID": "456",
+                   "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_SHA": "d" * 40,
+                   "MALRUNAR_TESTED_IMAGE_MANIFEST": str(manifest),
+                   "MALRUNAR_PR_RUN_ID": "123", "MALRUNAR_PR_RUN_ATTEMPT": "2"}
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(candidate, "git", return_value=self.tree):
+                with self.assertRaisesRegex(ValueError, "not bound to this exact PR producer run"):
+                    candidate.record_quickstart(root, root / "receipt.json")
+
+    def test_output_writer_accepts_action_output_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-output"
+            candidate.write_manifest_output(output, "manifest", {"schema": 1})
+            self.assertEqual(output.read_text(), 'manifest={"schema":1}\n')
+
+    def test_image_resolver_requires_successful_preflight_in_exact_attempt(self):
+        tree, head, base = "c" * 40, "a" * 40, "b" * 40
+        pr = {"number": 17, "head": {"sha": head, "repo": {"full_name": candidate.REPOSITORY}},
+              "base": {"sha": base, "repo": {"full_name": candidate.REPOSITORY}}}
+        attempt = {"id": 123, "run_attempt": 2, "status": "in_progress", "event": "pull_request",
+                   "path": candidate.PR_WORKFLOW, "head_sha": head,
+                   "repository": {"full_name": candidate.REPOSITORY},
+                   "pull_requests": [{"number": 17}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event, preflight = root / "event.json", root / "preflight.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": pr}))
+            with mock.patch.object(candidate, "git", return_value=tree), \
+                    mock.patch.object(candidate, "api", return_value=attempt), \
+                    mock.patch.object(candidate, "_attempt_jobs", return_value=[
+                        {"name": "plan", "conclusion": "success"}]), \
+                    mock.patch.object(candidate, "plan_artifact") as plan_artifact:
+                with self.assertRaisesRegex(ValueError, "successful canonical-preflight job"):
+                    candidate.resolve_tested_images(root, ["obs-control"], 123, 2,
+                                                    event, tree, preflight,
+                                                    current_run_in_progress=True,
+                                                    candidate_dir=root / "archives")
+            plan_artifact.assert_not_called()
+
+class MainPublisherTrustTests(RetrievePlanSelectionTests):
     @mock.patch.object(candidate, "trusted_blobs")
     @mock.patch.object(candidate, "validate_plan_receipt", return_value="b" * 40)
     @mock.patch.object(candidate, "zip_members")

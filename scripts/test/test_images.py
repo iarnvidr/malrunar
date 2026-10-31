@@ -130,6 +130,9 @@ class PlanTest(CopyCase):
         self.assertEqual(self.run_plan(["scripts/build.sh"]), list(mi.IMAGES))
         self.assertEqual(self.run_plan([".github/workflows/pr.yml"]), list(mi.IMAGES))
         self.assertEqual(self.run_plan(["scripts/image_candidate.py"]), list(mi.IMAGES))
+        self.assertEqual(self.run_plan(["scripts/load_tested_images.py"]), list(mi.IMAGES))
+        self.assertEqual(self.run_plan([".github/workflows/quickstart.yml"]), list(mi.IMAGES))
+        self.assertEqual(self.run_plan(["examples/quickstart/test/build-images.sh"]), list(mi.IMAGES))
         self.assertEqual(self.run_plan([".github/workflows/publish.yml"]), list(mi.IMAGES))
         self.assertEqual(ci.changed_images(None, self.head, []), list(mi.IMAGES))
 
@@ -224,24 +227,30 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("name: malrunar-image-plan-${{ github.run_id }}-${{ github.run_attempt }}", text)
         self.assertIn("if-no-files-found: error", text)
 
-    def test_published_desktop_base_alias_matches_candidate_tested_with_reference(self):
+    def test_pr_image_consumers_load_exact_tested_dependency_artifacts(self):
         text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
-        marker = '      - name: Get desktop-base (published image if it exists, else build it)\n'
-        starts = [match.start() for match in re.finditer(re.escape(marker), text)]
-        self.assertEqual(len(starts), 5)
-        for index, start in enumerate(starts):
-            end = starts[index + 1] if index + 1 < len(starts) else len(text)
-            block = text[start:end]
-            self.assertIn('docker tag "$ref" "malrunar/desktop-base:h-$hash"', block)
-            self.assertIn('ref="malrunar/desktop-base:h-$hash"', block)
-            self.assertIn('echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"', block)
+        for target in ("desktop-base", "desktop-base work-browser", "desktop-base node", "node thunderbird",
+                       "desktop-base node work-browser", "desktop-base node msteams-mcp"):
+            self.assertIn(f"scripts/load_tested_images.py --root \"$GITHUB_WORKSPACE\" --targets {target}", text)
+        self.assertIn("Load the exact desktop-base tested by this PR", text)
+        self.assertIn("Load exact tested session-kit dependencies", text)
+        self.assertIn("Load exact tested teams-service dependencies", text)
+        self.assertIn("if: github.event_name == 'workflow_dispatch'", text)
 
-    def test_published_media_bridge_alias_matches_candidate_tested_with_reference(self):
+    def test_e2e_and_quickstart_consume_loaded_images_without_pr_build_fallbacks(self):
         text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
-        block = text.split('      - name: Get the media-bridge component (published image if it exists, else build it)\n', 1)[1]
-        self.assertIn('docker tag "$ref" "malrunar/media-bridge:h-$hash"', block)
-        self.assertIn('ref="malrunar/media-bridge:h-$hash"', block)
-        self.assertIn('echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"', block)
+        quickstart = (mi.ROOT / ".github/workflows/quickstart.yml").read_text()
+        reference_helper = (mi.ROOT / "examples/quickstart/test/build-images.sh").read_text()
+        e2e = text.split("  obs-control-e2e:\n", 1)[1].split("  image-release-gate:\n", 1)[0]
+        self.assertIn("scripts/load_tested_images.py", e2e)
+        self.assertIn("--targets obs-control media-bridge", e2e)
+        self.assertNotIn("scripts/build.sh obs-control", e2e.split("Prepare images for manual end-to-end run", 1)[0])
+        self.assertIn("image_candidate.py wait-pr-run", quickstart)
+        self.assertIn("scripts/load_tested_images.py", quickstart)
+        self.assertNotIn("scripts/build.sh", quickstart)
+        self.assertIn(".local_reference", reference_helper)
+        self.assertNotIn("scripts/build.sh", reference_helper)
+        self.assertNotIn("workflow_run:", quickstart)
 
     def test_media_bridge_consumer_uses_private_runtime_dir(self):
         text = (mi.ROOT / "media-bridge/test/consumer/bridge-test.sh").read_text()

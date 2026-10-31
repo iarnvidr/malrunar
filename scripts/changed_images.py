@@ -57,7 +57,9 @@ DEDICATED = {
 }
 INFRASTRUCTURE_PATHS = (
     "scripts/build.sh", "scripts/smoke.sh", "scripts/image_candidate.py",
-    ".github/workflows/pr.yml", ".github/workflows/publish.yml",
+    "scripts/load_tested_images.py", "examples/quickstart/test/build-images.sh",
+    ".github/workflows/pr.yml", ".github/workflows/quickstart.yml",
+    ".github/workflows/publish.yml",
 )
 
 

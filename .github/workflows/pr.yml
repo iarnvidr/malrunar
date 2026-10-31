@@ -158,9 +158,10 @@ jobs:
   canonical-preflight:
     name: canonical-preflight
     needs: [scripts, plan]
-    if: needs.plan.outputs.images != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      manifest: ${{ steps.preflight.outputs.manifest }}
     permissions:
       contents: read
     steps:
@@ -171,7 +172,19 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Verify canonical tags before image jobs fan out
+        id: preflight
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/image_candidate.py preflight-canonical --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/canonical-preflight.json" --github-output "$GITHUB_OUTPUT"
+      - name: Verify canonical tags for a manual run
+        if: github.event_name == 'workflow_dispatch'
         run: python3 scripts/image_candidate.py preflight-canonical --root "$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: malrunar-image-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/canonical-preflight.json
+          if-no-files-found: error
+          retention-days: 90
 
   build:
     needs: [scripts, plan, canonical-preflight]
@@ -180,8 +193,11 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     env:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -212,7 +228,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
       - name: Install skopeo to prepare the smoke-test image
-        if: github.event_name == 'pull_request' && steps.candidate-plan.outputs.images != ''
+        if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
       - name: Install cosign to verify reusable main images
         if: github.event_name == 'pull_request' && steps.candidate-plan.outputs.images != ''
@@ -221,9 +237,30 @@ jobs:
         env:
           IMAGES: ${{ matrix.images }}
           REQUESTED: ${{ needs.plan.outputs.requested }}   # manual run only: the other members of the chain are its parents
+          SELECTED: ${{ steps.candidate-plan.outputs.images }}
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
         run: |
           set -eu
           for image in $IMAGES; do
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+              if printf ' %s ' "$SELECTED" | grep -q " $image "; then
+                start="$(date +%s)"
+                scripts/build.sh "$image" --load
+                echo "build $image: $(( $(date +%s) - start )) s"
+                scripts/smoke.sh "$image"
+              elif docker image inspect "malrunar/$image:h-$(python3 scripts/malrunar_image.py hash "$image")" >/dev/null 2>&1; then
+                echo "dependency $image was already loaded from its exact producer"
+              else
+                printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+                tree="$(git rev-parse 'HEAD^{tree}')"
+                python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets "$image" \
+                  --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+                  --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+                  --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+                  --output-manifest "$RUNNER_TEMP/tested-dependency-$image.json"
+              fi
+              continue
+            fi
             if [ -n "$REQUESTED" ] && ! printf ' %s ' "$REQUESTED" | grep -q " $image "; then
               hash="$(python3 scripts/malrunar_image.py hash "$image")"
               ref="ghcr.io/iarnvidr/$image:h-$hash"
@@ -258,15 +295,18 @@ jobs:
   # exists, and built from this checkout when it does not (for example in a pull request that
   # changes desktop-base).
   media-bridge:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.media_bridge == 'true'
+    needs: [scripts, plan, canonical-preflight, build]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.media_bridge == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       MALRUNAR_CANDIDATE_IMAGES: media-bridge
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -283,7 +323,21 @@ jobs:
           df -h /
       - name: Build the component
         run: scripts/build.sh media-bridge --load
-      - name: Get desktop-base (published image if it exists, else build it)
+      - name: Load the exact desktop-base tested by this PR
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
+        run: |
+          set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets desktop-base \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get desktop-base for manual runs
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -eu
           hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
@@ -349,15 +403,18 @@ jobs:
   # The published desktop-base with the current content hash is pulled when it exists, and built from
   # this checkout when it does not.
   work-browser:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.work_browser == 'true'
+    needs: [scripts, plan, canonical-preflight, build]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.work_browser == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       MALRUNAR_CANDIDATE_IMAGES: work-browser
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -374,7 +431,21 @@ jobs:
           df -h /
       - name: Build the component
         run: scripts/build.sh work-browser --load
-      - name: Get desktop-base (published image if it exists, else build it)
+      - name: Load the exact desktop-base tested by this PR
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
+        run: |
+          set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets desktop-base \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get desktop-base for manual runs
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -eu
           hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
@@ -407,15 +478,18 @@ jobs:
   # published desktop-base with the current content hash is pulled when it exists, and built from this
   # checkout when it does not.
   session-kit:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.session_kit == 'true'
+    needs: [scripts, plan, canonical-preflight, build, work-browser]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.session_kit == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       MALRUNAR_CANDIDATE_IMAGES: session-kit
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -433,10 +507,24 @@ jobs:
       - name: Build the component and work-browser (scripts only)
         run: |
           scripts/build.sh session-kit --load
-          scripts/build.sh work-browser --load
-      - name: Get desktop-base (published image if it exists, else build it)
+      - name: Load exact tested session-kit dependencies
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
         run: |
           set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets desktop-base work-browser \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get desktop-base for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -eu
+          scripts/build.sh work-browser --load
           hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
@@ -468,15 +556,18 @@ jobs:
   # built for the OAuth module test only. The published desktop-base with the current content hash is pulled
   # when it exists, and built from this checkout when it does not.
   thunderbird:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.thunderbird == 'true'
+    needs: [scripts, plan, canonical-preflight, build]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.thunderbird == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       MALRUNAR_CANDIDATE_IMAGES: thunderbird
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -494,10 +585,24 @@ jobs:
       - name: Build the component and node (the OAuth module test runs under it)
         run: |
           scripts/build.sh thunderbird --load
-          scripts/build.sh node --load
-      - name: Get desktop-base (published image if it exists, else build it)
+      - name: Load exact tested thunderbird dependencies
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
         run: |
           set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets desktop-base node \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get desktop-base for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -eu
+          scripts/build.sh node --load
           hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
@@ -526,15 +631,18 @@ jobs:
   # thunderbird-mcp is a FROM scratch component. Its smoke test needs the node component (its declared
   # dependency) and, for the end-to-end part only, desktop-base and the thunderbird component.
   thunderbird-mcp:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.thunderbird_mcp == 'true'
+    needs: [scripts, plan, canonical-preflight, build, thunderbird]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.thunderbird_mcp == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       MALRUNAR_CANDIDATE_IMAGES: thunderbird-mcp
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -552,11 +660,25 @@ jobs:
       - name: Build the component, node and thunderbird
         run: |
           scripts/build.sh thunderbird-mcp --load
-          scripts/build.sh node --load
-          scripts/build.sh thunderbird --load
-      - name: Get desktop-base (published image if it exists, else build it)
+      - name: Load exact tested thunderbird-mcp dependencies
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
         run: |
           set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets node thunderbird \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get desktop-base for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -eu
+          scripts/build.sh node --load
+          scripts/build.sh thunderbird --load
           hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
@@ -588,15 +710,18 @@ jobs:
   # package and the stock Firefox under a virtual display. The published images with the current content hashes
   # are pulled when they exist and built from this checkout when they do not.
   msteams-mcp:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.msteams_mcp == 'true'
+    needs: [scripts, plan, canonical-preflight, build, work-browser]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.msteams_mcp == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       MALRUNAR_CANDIDATE_IMAGES: msteams-mcp
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -613,7 +738,21 @@ jobs:
           df -h /
       - name: Build the component
         run: scripts/build.sh msteams-mcp --load
-      - name: Get desktop-base, node and work-browser (published image if it exists, else build it)
+      - name: Load exact tested msteams-mcp dependencies
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
+        run: |
+          set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets desktop-base node work-browser \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get dependencies for manual runs
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -eu
           for image in desktop-base node work-browser; do
@@ -643,15 +782,18 @@ jobs:
   # teams-service is a FROM scratch component for the node and msteams-mcp components (not for desktop-base:
   # it is tested in a bare Ubuntu image with exactly those two, and once on desktop-base under supervisord).
   teams-service:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.teams_service == 'true'
+    needs: [scripts, plan, canonical-preflight, build, msteams-mcp]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.teams_service == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       MALRUNAR_CANDIDATE_IMAGES: teams-service
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -668,7 +810,21 @@ jobs:
           df -h /
       - name: Build the component
         run: scripts/build.sh teams-service --load
-      - name: Get desktop-base, node and msteams-mcp (published image if it exists, else build it)
+      - name: Load exact tested teams-service dependencies
+        if: github.event_name == 'pull_request'
+        env:
+          PREFLIGHT_MANIFEST: ${{ needs.canonical-preflight.outputs.manifest }}
+        run: |
+          set -eu
+          printf '%s\n' "$PREFLIGHT_MANIFEST" > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py --root "$GITHUB_WORKSPACE" --targets desktop-base node msteams-mcp \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-dependencies.json"
+      - name: Get dependencies for manual runs
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -eu
           for image in desktop-base node msteams-mcp; do
@@ -699,12 +855,16 @@ jobs:
   # the virtual microphone and camera. The published images with the current content hashes are pulled when they exist and built from this
   # checkout when they do not (for example in a pull request that changes them).
   obs-control-e2e:
-    needs: [scripts, plan, canonical-preflight]
-    if: needs.plan.outputs.obs_control_e2e == 'true'
+    needs: [scripts, plan, canonical-preflight, build, media-bridge]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && needs.plan.result == 'success' && needs.canonical-preflight.result == 'success' && needs.plan.outputs.obs_control_e2e == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -713,35 +873,40 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
-      - name: Get desktop-base and obs-runtime (published image if it exists, else build it)
+      - name: Install Skopeo
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
+      - name: Resolve exact producer images
+        if: github.event_name == 'pull_request'
+        run: |
+          set -eu
+          printf '%s\n' '${{ needs.canonical-preflight.outputs.manifest }}' > "$RUNNER_TEMP/canonical-preflight.json"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          python3 scripts/load_tested_images.py \
+            --root "$GITHUB_WORKSPACE" --targets obs-control media-bridge \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --pr-event "$GITHUB_EVENT_PATH" --tree "$tree" \
+            --preflight-json "$RUNNER_TEMP/canonical-preflight.json" \
+            --output-manifest "$RUNNER_TEMP/tested-image-manifest.json"
+          examples/quickstart/test/build-images.sh \
+            "$RUNNER_TEMP/tested-image-manifest.json" "$GITHUB_ENV"
+      - name: Prepare images for manual end-to-end run
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -eu
           for image in desktop-base obs-runtime; do
             hash="$(python3 scripts/malrunar_image.py hash "$image")"
             ref="ghcr.io/iarnvidr/$image:h-$hash"
-            if docker pull --quiet "$ref" >/dev/null; then
-              echo "using published $ref"
-              docker tag "$ref" "malrunar/$image:h-$hash"
-            else
-              echo "$ref is not published; building $image from this checkout"
-              scripts/build.sh "$image" --load
-            fi
+            if ! docker pull --quiet "$ref" >/dev/null; then scripts/build.sh "$image" --load; fi
+            docker tag "$ref" "malrunar/$image:h-$hash" 2>/dev/null || true
           done
-      - name: Build obs-control
-        run: scripts/build.sh obs-control --load
-      - name: Get the media-bridge component (published image if it exists, else build it)
-        run: |
-          set -eu
-          hash="$(python3 scripts/malrunar_image.py hash media-bridge)"
-          ref="ghcr.io/iarnvidr/media-bridge:h-$hash"
-          if ! docker pull --quiet "$ref" >/dev/null; then
-            echo "$ref is not published; building media-bridge from this checkout"
-            scripts/build.sh media-bridge --load
-          else
-            docker tag "$ref" "malrunar/media-bridge:h-$hash"
-          fi
-          ref="malrunar/media-bridge:h-$hash"
-          echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"
+          scripts/build.sh obs-control --load
+          scripts/build.sh media-bridge --load
+          bridge_hash="$(python3 scripts/malrunar_image.py hash media-bridge)"
+          echo "MALRUNAR_MEDIA_BRIDGE_IMAGE=malrunar/media-bridge:h-$bridge_hash" >> "$GITHUB_ENV"
+          control_hash="$(python3 scripts/malrunar_image.py hash obs-control)"
+          echo "MALRUNAR_OBS_CONTROL_IMAGE=malrunar/obs-control:h-$control_hash" >> "$GITHUB_ENV"
+          base_hash="$(python3 scripts/malrunar_image.py hash desktop-base)"
+          echo "MALRUNAR_DESKTOP_BASE_IMAGE=malrunar/desktop-base:h-$base_hash" >> "$GITHUB_ENV"
       - name: Try to create a v4l2loopback camera on the hosted runner
         id: v4l2
         run: |
@@ -777,9 +942,9 @@ jobs:
           set -o pipefail
           mkdir -p "$MALRUNAR_CI_LOG_DIR"
           obs-control/test/e2e/e2e.sh \
-            "malrunar/obs-control:h-$(python3 scripts/malrunar_image.py hash obs-control)" \
-            "$BRIDGE_REF" \
-            "malrunar/desktop-base:h-$(python3 scripts/malrunar_image.py hash desktop-base)" \
+            "$MALRUNAR_OBS_CONTROL_IMAGE" \
+            "$MALRUNAR_MEDIA_BRIDGE_IMAGE" \
+            "$MALRUNAR_DESKTOP_BASE_IMAGE" \
             $device 2>&1 | tee "$MALRUNAR_CI_LOG_DIR/e2e.log"
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
@@ -851,7 +1016,7 @@ jobs:
               fail("image selection plan is missing or invalid")
           if not isinstance(selected_images, list):
               fail("image selection plan must be an array")
-          expected_preflight = "success" if selected_images else "skipped"
+          expected_preflight = "success"
           if os.environ["PREFLIGHT_RESULT"] != expected_preflight:
               fail(f"canonical preflight result was {os.environ['PREFLIGHT_RESULT']!r}; expected {expected_preflight!r}")
           try:
