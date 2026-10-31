@@ -661,8 +661,10 @@ jobs:
           if ! docker pull --quiet "$ref" >/dev/null; then
             echo "$ref is not published; building media-bridge from this checkout"
             scripts/build.sh media-bridge --load
-            ref="malrunar/media-bridge:h-$hash"
+          else
+            docker tag "$ref" "malrunar/media-bridge:h-$hash"
           fi
+          ref="malrunar/media-bridge:h-$hash"
           echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"
       - name: Try to create a v4l2loopback camera on the hosted runner
         id: v4l2

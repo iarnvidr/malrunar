@@ -217,6 +217,13 @@ class RepositoryTest(unittest.TestCase):
             self.assertIn('ref="malrunar/desktop-base:h-$hash"', block)
             self.assertIn('echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"', block)
 
+    def test_published_media_bridge_alias_matches_candidate_tested_with_reference(self):
+        text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
+        block = text.split('      - name: Get the media-bridge component (published image if it exists, else build it)\n', 1)[1]
+        self.assertIn('docker tag "$ref" "malrunar/media-bridge:h-$hash"', block)
+        self.assertIn('ref="malrunar/media-bridge:h-$hash"', block)
+        self.assertIn('echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"', block)
+
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:
             self.assertTrue((mi.ROOT / image / "Dockerfile").is_file(), image)
