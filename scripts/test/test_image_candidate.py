@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -237,6 +238,13 @@ class ReceiptBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs from accepted main"):
             candidate.trusted_blobs([candidate.PR_WORKFLOW], "b" * 40, "a" * 40)
 
+    @mock.patch.object(candidate, "api")
+    def test_policy_change_is_accepted_only_when_producer_matches_protected_merge(self, github_api):
+        github_api.side_effect = [{"sha": "merged-policy"}, {"sha": "merged-policy"}]
+        candidate.trusted_blobs([candidate.PR_WORKFLOW], "c" * 40, "a" * 40)
+        self.assertIn("?ref=" + "c" * 40, github_api.call_args_list[0].args[0])
+        self.assertIn("?ref=" + "a" * 40, github_api.call_args_list[1].args[0])
+
     def test_expected_receipt_workflow_is_fixed(self):
         with self.assertRaisesRegex(ValueError, "does not identify"):
             candidate.verify_run_receipt(self.receipt, self.run, candidate.QUICKSTART_WORKFLOW,
@@ -378,6 +386,63 @@ class RetrievePlanSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "expected one exact PR-tested image artifact"):
                 self._retrieve([self.image], Path(directory) / "accepted")
+
+    @mock.patch.object(candidate, "trusted_blobs")
+    @mock.patch.object(candidate, "validate_plan_receipt", return_value="b" * 40)
+    @mock.patch.object(candidate, "zip_members")
+    def test_main_publisher_checks_plan_producer_against_exact_accepted_merge(
+            self, zip_members, validate_plan, trusted_blobs):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "plan.zip"
+            archive.write_bytes(b"plan")
+            metadata = {
+                "workflow_run": {"id": 123},
+                "name": f"{candidate.PLAN_PREFIX}-123-2",
+            }
+            receipt = {"workflow_sha": "d" * 40, "selected_images": list(images.IMAGES)}
+            zip_members.return_value = {"image-plan.json": json.dumps(receipt).encode()}
+            candidate.verify_plan_artifact(
+                metadata, archive, self.run, self.pr, self.merge_tree,
+                self.merge_sha, images.ROOT, self.image)
+        self.assertEqual(trusted_blobs.call_args.args[1:], (self.merge_sha, "d" * 40))
+
+    @mock.patch.object(candidate, "trusted_blobs")
+    @mock.patch.object(candidate, "verify_run_receipt", return_value="b" * 40)
+    @mock.patch.object(candidate, "oci_identity")
+    def test_main_publisher_checks_candidate_producer_against_exact_accepted_merge(
+            self, identity, verify_receipt, trusted_blobs):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "candidate.zip"
+            image = self.image
+            receipt = {
+                "workflow_sha": "d" * 40, "image": image,
+                "content_hash": images.image_hash(image), "version": images.version(image),
+                "config_digest": "sha256:" + "a" * 64, "parent": None, "tested_with": [],
+            }
+            index = {
+                "schema": 1, "repository": candidate.REPOSITORY,
+                "workflow_path": candidate.PR_WORKFLOW, "run_id": 123, "run_attempt": 2,
+                "event": "pull_request", "job_key": "build-targets--desktop-base",
+                "images": [image],
+            }
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("candidate-index.json", json.dumps(index))
+                bundle.writestr(f"images/{image}/candidate.json", json.dumps(receipt))
+                bundle.writestr(f"images/{image}/image.oci.tar", b"oci")
+            metadata = {
+                "workflow_run": {"id": 123},
+                "name": f"{candidate.IMAGE_PREFIX}-123-2-build-targets--desktop-base",
+                "id": 456, "digest": "sha256:" + "b" * 64,
+            }
+            identity.return_value = {"config_digest": receipt["config_digest"]}
+            output_image = root / "image.oci.tar"
+            candidate.verify_candidate_artifact(
+                metadata, archive, self.run, self.pr, self.merge_sha, self.merge_tree,
+                image, images.ROOT, output_image)
+            self.assertEqual(output_image.read_bytes(), b"oci")
+        self.assertEqual(verify_receipt.call_args.args[-1], self.merge_tree)
+        self.assertEqual(trusted_blobs.call_args.args[1:], (self.merge_sha, "d" * 40))
 
 
 class CandidatePromotionTests(unittest.TestCase):
