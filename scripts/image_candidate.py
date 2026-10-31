@@ -557,7 +557,9 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
 
 
 def _skopeo_digest(reference):
-    result = subprocess.run(["skopeo", "inspect", "--raw", f"docker://{reference}"],
+    authfile = str(Path.home() / ".docker" / "config.json")
+    result = subprocess.run(["skopeo", "inspect", "--raw", "--authfile", authfile,
+                             f"docker://{reference}"],
                             check=True, capture_output=True)
     return "sha256:" + sha(result.stdout)
 
@@ -587,11 +589,13 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
     target = f"{registry}/{image}"
     hash_tag = "h-" + receipt["content_hash"]
     digest = receipt["index_digest"]
-    subprocess.run(["skopeo", "copy", "--all", "--preserve-digests",
+    authfile = str(Path.home() / ".docker" / "config.json")
+    subprocess.run(["skopeo", "copy", "--dest-authfile", authfile, "--all", "--preserve-digests",
                     f"oci-archive:{archive_path}", f"docker://{target}:{hash_tag}"], check=True)
     if _skopeo_digest(f"{target}:{hash_tag}") != digest:
         raise ValueError("published OCI index digest differs from the tested candidate")
-    subprocess.run(["skopeo", "copy", "--all", "--preserve-digests",
+    subprocess.run(["skopeo", "copy", "--src-authfile", authfile, "--dest-authfile", authfile,
+                    "--all", "--preserve-digests",
                     f"docker://{target}@{digest}", f"docker://{target}:{receipt['version']}"], check=True)
     if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
         raise ValueError("version tag does not resolve to the exact tested OCI index")

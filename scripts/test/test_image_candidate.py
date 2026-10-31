@@ -127,5 +127,47 @@ class ReceiptBindingTests(unittest.TestCase):
                                          self.pr, "c" * 40)
 
 
+class CandidatePromotionTests(unittest.TestCase):
+    def test_promotes_same_oci_digest_and_signing_input_without_rebuilding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "image.oci.tar"
+            manifest, config, index_digest = layout(archive)
+            with tarfile.open(archive) as bundle:
+                index_raw = bundle.extractfile("index.json").read()
+            identity = candidate.oci_identity(archive)
+            image = "desktop-base"
+            receipt = {
+                "image": image, "content_hash": images.image_hash(image),
+                "version": images.version(image), "manifest_digest": manifest,
+                "config_digest": config, "index_digest": index_digest, **identity,
+            }
+            accepted_path = root / "accepted-image.json"
+            accepted_path.write_text(json.dumps({
+                "schema": 1, "repository": candidate.REPOSITORY,
+                "accepted_commit": "a" * 40, "accepted_tree": "b" * 40,
+                "image": image, "candidate": {"receipt": receipt},
+            }))
+            output = root / "github-output"
+
+            def run(args, **kwargs):
+                if args[1] == "inspect":
+                    return __import__("subprocess").CompletedProcess(args, 0, stdout=index_raw)
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
+
+            with mock.patch.object(candidate, "git", side_effect=["a" * 40, "b" * 40]), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                candidate.publish_candidate(images.ROOT, image, root, "ghcr.io/iarnvidr", output)
+
+            calls = [call.args[0] for call in run_process.call_args_list]
+            self.assertEqual(sum(args[1] == "copy" for args in calls), 2)
+            self.assertTrue(all("--preserve-digests" in args for args in calls if args[1] == "copy"))
+            self.assertTrue(all("--dest-authfile" in args for args in calls if args[1] == "copy"))
+            self.assertIn(f"digest={index_digest}\n", output.read_text())
+            published = json.loads(accepted_path.read_text())
+            self.assertEqual(published["published_digest"], index_digest)
+            self.assertEqual(published["published_tags"], ["h-" + receipt["content_hash"], receipt["version"]])
+
+
 if __name__ == "__main__":
     unittest.main()
