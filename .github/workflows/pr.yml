@@ -30,7 +30,7 @@ env:
   MALRUNAR_CI_LOG_DIR: /tmp/malrunar-ci-debug   # smoke/e2e output is kept here; collect-debug uploads it when a job fails
 
 concurrency:
-  group: pr-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +48,6 @@ jobs:
           set -eu
           while IFS= read -r file; do bash -n "$file"; done < <(git ls-files '*.sh')
           git ls-files '*.sh' | xargs shellcheck --severity=warning
-          # scripts without a .sh extension
           bash -n media-bridge/bin/malrunar-media-bridge work-browser/bin/malrunar-work-browser work-browser/bin/malrunar-work-browser-open
           shellcheck --severity=warning media-bridge/bin/malrunar-media-bridge media-bridge/bin/malrunar-xrdp-audio-tune
           (cd work-browser/bin && shellcheck --severity=warning -x malrunar-work-browser malrunar-work-browser-open)
@@ -61,27 +60,15 @@ jobs:
           (cd msteams-mcp/bin && shellcheck --severity=warning -x malrunar-msteams-mcp)
           (cd teams-service/bin && shellcheck --severity=warning -x malrunar-teams-service)
           shellcheck --severity=warning msteams-mcp/lib/common.sh teams-service/lib/common.sh
-          for file in msteams-mcp/libexec/*.mjs msteams-mcp/patches/*.cjs teams-service/src/*.mjs teams-service/dev/*.mjs; do node --check "$file"; done
       - name: Public hygiene (no private names, addresses or environment names in tracked files)
         run: scripts/check-public-hygiene.sh
-      - name: obs-control tests that need only the standard library (config, scene generation, docs)
-        run: |
-          set -eu
-          for pattern in test_config.py test_scenes.py test_docs.py; do
-            python3 -m unittest discover -s obs-control/test -p "$pattern"
-          done
-      - name: Hash, planning and pin-scoping tests (python3 -m unittest discover -s scripts/test)
-        run: python3 -m unittest discover -s scripts/test -v
-      - name: work-browser launcher and open helper against a stub Firefox
-        run: work-browser/test/launcher-test.sh
-      - name: session-kit unit tests (stand-in X tools; no X server)
-        run: python3 -m unittest discover -s session-kit/test -v
-      - name: thunderbird consumer tools (customize.py and the OAuth patch against a stand-in installation)
-        run: python3 -I -m unittest discover -s thunderbird/test -v
-      - name: msteams-mcp shell helpers (settings, log level, profile paths, stand-in supervisorctl)
-        run: msteams-mcp/test/unit/common.test.sh
-      - name: DevOps foundation synthetic contracts (no provider or credentials)
-        run: python3 -m unittest discover -s devops-service/test -p 'test_*.py' -v
+      - name: Isolated Python, shell, and Node unit checks
+        uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602
+        with:
+          version: 0.21.11
+          verb: call
+          module: ./ci/dagger/check
+          args: checks --source .
       - name: Content hashes are computable and stable
         run: |
           set -eu
@@ -92,8 +79,6 @@ jobs:
             echo "$image $first"
             python3 scripts/malrunar_image.py tags "$image"
           done
-      - name: Pin updater parses the pin files
-        run: python3 -I scripts/bump_pins.py --dry-run
 
   # Which images this change touches: only those are built and tested below.
   plan:
@@ -164,6 +149,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     strategy:
       fail-fast: false
       matrix:
@@ -174,10 +161,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Select tested images for candidate artifacts
+        id: candidate-plan
+        if: github.event_name == 'pull_request'
+        env:
+          CANDIDATES: ${{ needs.plan.outputs.images }}
+          BUILT: ${{ matrix.images }}
+        run: |
+          set -eu
+          selected="$(python3 scripts/image_candidate.py select --candidates "$CANDIDATES" --built "$BUILT")"
+          job_key=''
+          if [ -n "$selected" ]; then
+            job_key="build-targets--${selected// /--}"
+            echo "MALRUNAR_CANDIDATE_IMAGES=$selected" >> "$GITHUB_ENV"
+          fi
+          printf 'images=%s\njob_key=%s\n' "$selected" "$job_key" >> "$GITHUB_OUTPUT"
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
+      - name: Install skopeo to prepare the smoke-test image
+        if: github.event_name == 'pull_request' && steps.candidate-plan.outputs.images != ''
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
       - name: Build and smoke-test
         env:
           IMAGES: ${{ matrix.images }}
@@ -203,6 +208,11 @@ jobs:
             scripts/smoke.sh "$image"
             docker image ls "malrunar/$image"
           done
+      - name: Record eligible tested images
+        if: github.event_name == 'pull_request' && steps.candidate-plan.outputs.images != ''
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: ${{ steps.candidate-plan.outputs.job_key }}
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -218,6 +228,9 @@ jobs:
     if: needs.plan.outputs.media_bridge == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: media-bridge
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -237,6 +250,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -278,6 +293,11 @@ jobs:
           set -eu
           if [ "$V4L2_OK" = true ]; then export MALRUNAR_SMOKE_V4L2_DEVICE=/dev/video10; fi
           scripts/smoke.sh media-bridge
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: media-bridge
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -293,6 +313,9 @@ jobs:
     if: needs.plan.outputs.work_browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: work-browser
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -312,6 +335,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -320,6 +345,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh work-browser
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: work-browser
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -335,6 +365,9 @@ jobs:
     if: needs.plan.outputs.session_kit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: session-kit
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -356,6 +389,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -364,6 +399,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh session-kit
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: session-kit
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -380,6 +420,9 @@ jobs:
     if: needs.plan.outputs.thunderbird == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: thunderbird
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -401,6 +444,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -409,6 +454,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh thunderbird
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: thunderbird
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -422,6 +472,9 @@ jobs:
     if: needs.plan.outputs.thunderbird_mcp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: thunderbird-mcp
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -444,6 +497,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -452,6 +507,11 @@ jobs:
           echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"
       - name: Smoke-test
         run: scripts/smoke.sh thunderbird-mcp
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: thunderbird-mcp
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -468,6 +528,9 @@ jobs:
     if: needs.plan.outputs.msteams_mcp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: msteams-mcp
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -496,6 +559,11 @@ jobs:
           done
       - name: Smoke-test
         run: scripts/smoke.sh msteams-mcp
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: msteams-mcp
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -509,6 +577,9 @@ jobs:
     if: needs.plan.outputs.teams_service == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      MALRUNAR_CANDIDATE_IMAGES: teams-service
+      MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
     steps:
@@ -537,6 +608,11 @@ jobs:
           done
       - name: Smoke-test
         run: scripts/smoke.sh teams-service
+      - name: Record eligible tested image
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/record-image-candidates
+        with:
+          job_key: teams-service
       - name: Collect debugging artifacts (container logs, smoke and e2e output, image digests)
         if: failure()
         uses: ./.github/actions/collect-debug
@@ -585,8 +661,10 @@ jobs:
           if ! docker pull --quiet "$ref" >/dev/null; then
             echo "$ref is not published; building media-bridge from this checkout"
             scripts/build.sh media-bridge --load
-            ref="malrunar/media-bridge:h-$hash"
+          else
+            docker tag "$ref" "malrunar/media-bridge:h-$hash"
           fi
+          ref="malrunar/media-bridge:h-$hash"
           echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"
       - name: Try to create a v4l2loopback camera on the hosted runner
         id: v4l2
@@ -632,3 +710,88 @@ jobs:
         uses: ./.github/actions/collect-debug
         with:
           name: debug-obs-control-e2e
+
+  # Stable branch protection context that validates every selected PR job, including dynamic matrices.
+  image-release-gate:
+    name: image-release-gate
+    if: always()
+    needs:
+      - scripts
+      - plan
+      - build
+      - media-bridge
+      - work-browser
+      - session-kit
+      - thunderbird
+      - thunderbird-mcp
+      - msteams-mcp
+      - teams-service
+      - obs-control-e2e
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require exactly the planned image and integration work
+        env:
+          SCRIPTS_RESULT: ${{ needs.scripts.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          BUILD_GROUPS: ${{ needs.plan.outputs.groups }}
+          MEDIA_BRIDGE_RESULT: ${{ needs.media-bridge.result }}
+          MEDIA_BRIDGE_SELECTED: ${{ needs.plan.outputs.media_bridge }}
+          WORK_BROWSER_RESULT: ${{ needs.work-browser.result }}
+          WORK_BROWSER_SELECTED: ${{ needs.plan.outputs.work_browser }}
+          SESSION_KIT_RESULT: ${{ needs.session-kit.result }}
+          SESSION_KIT_SELECTED: ${{ needs.plan.outputs.session_kit }}
+          THUNDERBIRD_RESULT: ${{ needs.thunderbird.result }}
+          THUNDERBIRD_SELECTED: ${{ needs.plan.outputs.thunderbird }}
+          THUNDERBIRD_MCP_RESULT: ${{ needs.thunderbird-mcp.result }}
+          THUNDERBIRD_MCP_SELECTED: ${{ needs.plan.outputs.thunderbird_mcp }}
+          MSTEAMS_MCP_RESULT: ${{ needs.msteams-mcp.result }}
+          MSTEAMS_MCP_SELECTED: ${{ needs.plan.outputs.msteams_mcp }}
+          TEAMS_SERVICE_RESULT: ${{ needs.teams-service.result }}
+          TEAMS_SERVICE_SELECTED: ${{ needs.plan.outputs.teams_service }}
+          OBS_CONTROL_E2E_RESULT: ${{ needs.obs-control-e2e.result }}
+          OBS_CONTROL_E2E_SELECTED: ${{ needs.plan.outputs.obs_control_e2e }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          def fail(message):
+              print(f"required PR work failed: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
+          if os.environ["SCRIPTS_RESULT"] != "success":
+              fail("scripts contract suite did not succeed")
+          if os.environ["PLAN_RESULT"] != "success":
+              fail("image selection plan did not succeed")
+          try:
+              groups = json.loads(os.environ["BUILD_GROUPS"])
+          except (json.JSONDecodeError, TypeError):
+              fail("image build group plan is missing or invalid")
+          if not isinstance(groups, list) or any(not isinstance(group, str) or not group for group in groups):
+              fail("image build group plan contains an invalid selection")
+          expected_build = "success" if groups else "skipped"
+          if os.environ["BUILD_RESULT"] != expected_build:
+              fail(f"image build result was {os.environ['BUILD_RESULT']!r}; expected {expected_build!r}")
+
+          jobs = {
+              "media-bridge": ("MEDIA_BRIDGE_SELECTED", "MEDIA_BRIDGE_RESULT"),
+              "work-browser": ("WORK_BROWSER_SELECTED", "WORK_BROWSER_RESULT"),
+              "session-kit": ("SESSION_KIT_SELECTED", "SESSION_KIT_RESULT"),
+              "thunderbird": ("THUNDERBIRD_SELECTED", "THUNDERBIRD_RESULT"),
+              "thunderbird-mcp": ("THUNDERBIRD_MCP_SELECTED", "THUNDERBIRD_MCP_RESULT"),
+              "msteams-mcp": ("MSTEAMS_MCP_SELECTED", "MSTEAMS_MCP_RESULT"),
+              "teams-service": ("TEAMS_SERVICE_SELECTED", "TEAMS_SERVICE_RESULT"),
+              "obs-control-e2e": ("OBS_CONTROL_E2E_SELECTED", "OBS_CONTROL_E2E_RESULT"),
+          }
+          for job, (selection_key, result_key) in jobs.items():
+              selected = os.environ[selection_key]
+              result = os.environ[result_key]
+              if selected not in {"true", "false"}:
+                  fail(f"{job} selection is missing or unknown")
+              expected = "success" if selected == "true" else "skipped"
+              if result != expected:
+                  fail(f"{job} result was {result!r}; expected {expected!r}")
+          print("all selected script, image, and integration jobs succeeded")

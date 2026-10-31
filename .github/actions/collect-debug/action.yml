@@ -29,6 +29,14 @@ runs:
         done
         # image ids and registry digests (the h-<hash> tags are content hashes: the inputs of the build)
         docker image ls --digests --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Digest}} {{.Size}}' > "$dir/images.txt" 2>&1 || true
+        # On candidate failures compare only the selected OCI config and Docker's saved config.
+        # The diagnostic streams docker save until its config member and never stores image layers.
+        if [ -n "${MALRUNAR_CANDIDATE_IMAGES:-}" ] && [ -d "${MALRUNAR_CANDIDATE_DIR:-/nonexistent}" ]; then
+          python3 scripts/image_candidate.py diagnose \
+            --images "$MALRUNAR_CANDIDATE_IMAGES" \
+            --candidate-dir "$MALRUNAR_CANDIDATE_DIR" \
+            --output "$dir/oci-docker-identity.json" || true
+        fi
         docker system df > "$dir/docker-disk.txt" 2>&1 || true
         df -h / >> "$dir/docker-disk.txt" 2>&1 || true
         cp "${RUNNER_TEMP:-/tmp}/v4l2loopback.log" "$dir/" 2>/dev/null || true

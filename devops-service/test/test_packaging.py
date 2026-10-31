@@ -20,7 +20,10 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(planner.plan(["devops-service"], "smoke")["groups"], '["devops-service"]')
         self.assertEqual(planner.plan(["devops-service"], "unit")["groups"], "[]")
         self.assertIn("devops-service", (ROOT / ".github/workflows/publish.yml").read_text())
-        self.assertIn("unittest discover -s devops-service/test", (ROOT / ".github/workflows/pr.yml").read_text())
+        workflow = (ROOT / ".github/workflows/pr.yml").read_text()
+        checks = (ROOT / "ci/dagger/check/main.go").read_text()
+        self.assertIn("args: checks --source .", workflow)
+        self.assertIn('"devops-service/test"', checks)
 
     def test_private_site_changes_do_not_change_public_foundation_identity(self):
         with tempfile.TemporaryDirectory() as tmp:

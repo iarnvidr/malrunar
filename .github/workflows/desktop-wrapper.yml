@@ -1,6 +1,6 @@
 # Test the desktop-wrapper app and build it for macOS on GitHub-hosted runners.
-#  * pull requests that touch apps/desktop-wrapper (or this file): unit tests on Linux, then a macOS
-#    build of the example configuration pointed at a local stand-in site, launched and checked
+#  * pull requests: a stable required check always reports; relevant app or workflow changes run
+#    Linux tests and a macOS build of the example configuration against a local stand-in site
 #  * workflow_dispatch: the macOS release build with the name, address and bundle id you give it,
 #    uploaded as an artifact (unsigned, ad-hoc signed; see apps/desktop-wrapper/README.md)
 # Hosted runners only, no secrets, read-only token. macOS standard runners are free for public repositories.
@@ -8,9 +8,6 @@ name: desktop-wrapper
 
 on:
   pull_request:
-    paths:
-      - apps/desktop-wrapper/**
-      - .github/workflows/desktop-wrapper.yml
   workflow_dispatch:
     inputs:
       name:
@@ -36,7 +33,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: desktop-wrapper-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -44,7 +41,37 @@ defaults:
     working-directory: apps/desktop-wrapper
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      relevant: ${{ steps.paths.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: paths
+        name: Decide whether desktop-wrapper native checks apply
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT" != pull_request ]; then
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BASE_SHA" "$GITHUB_SHA" |
+              awk '/^apps\/desktop-wrapper\// || $0 == ".github/workflows/desktop-wrapper.yml" { found=1 } END { exit !found }'; then
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'relevant=false' >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: plan
+    if: github.event_name != 'pull_request' || needs.plan.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -89,7 +116,8 @@ jobs:
         run: cargo test --locked -p desktop-wrapper-core
 
   macos:
-    needs: test
+    needs: [plan, test]
+    if: github.event_name != 'pull_request' || needs.plan.outputs.relevant == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -171,3 +199,32 @@ jobs:
           path: ${{ runner.temp }}/dist
           if-no-files-found: error
           retention-days: ${{ github.event_name == 'workflow_dispatch' && 30 || 3 }}
+
+  desktop-release-gate:
+    name: desktop-release-gate
+    if: always()
+    needs: [plan, test, macos]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require applicable desktop-wrapper checks
+        working-directory: .
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          RELEVANT: ${{ needs.plan.outputs.relevant }}
+          TEST_RESULT: ${{ needs.test.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+        run: |
+          set -eu
+          test "$PLAN_RESULT" = success || { echo 'desktop-wrapper path plan failed' >&2; exit 1; }
+          case "$RELEVANT" in
+            true)
+              test "$TEST_RESULT" = success || { echo 'desktop-wrapper Linux tests did not succeed' >&2; exit 1; }
+              test "$MACOS_RESULT" = success || { echo 'desktop-wrapper macOS build did not succeed' >&2; exit 1; }
+              ;;
+            false)
+              test "$TEST_RESULT" = skipped || { echo 'desktop-wrapper Linux tests ran unexpectedly' >&2; exit 1; }
+              test "$MACOS_RESULT" = skipped || { echo 'desktop-wrapper macOS build ran unexpectedly' >&2; exit 1; }
+              ;;
+            *) echo 'desktop-wrapper path plan is missing or unknown' >&2; exit 1 ;;
+          esac

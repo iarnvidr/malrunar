@@ -52,8 +52,35 @@ done < <(python3 "$tool" tags "$image")
 
 echo "building $image ($(python3 "$tool" hash "$image"))"
 set -x
-exec docker buildx build \
-    --file "$root/$image/Dockerfile" \
-    "${args[@]}" "${tag_args[@]}" \
-    ${mode[@]+"${mode[@]}"} ${extra[@]+"${extra[@]}"} \
-    "$root/$image"
+candidate=false
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ -n "${MALRUNAR_CANDIDATE_DIR:-}" ] \
+    && [[ " ${MALRUNAR_CANDIDATE_IMAGES:-} " == *" $image "* ]]; then
+    for option in "${mode[@]}"; do
+        [ "$option" = --load ] && candidate=true
+        [ "$option" = --push ] && candidate=false
+    done
+fi
+
+if [ "$candidate" = true ]; then
+    hash="$(python3 "$tool" hash "$image")"
+    mkdir -p "$MALRUNAR_CANDIDATE_DIR"
+    docker buildx build \
+        --platform linux/amd64 \
+        --file "$root/$image/Dockerfile" \
+        "${args[@]}" \
+        --output "type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar,name=malrunar/$image:h-$hash,oci-mediatypes=true" \
+        --sbom=true --provenance=mode=max \
+        ${extra[@]+"${extra[@]}"} \
+        "$root/$image"
+    # Select the tagged linux/amd64 image from the exact OCI archive for smoke tests.
+    # Keep the original archive, including its attestation descriptors, unchanged.
+    skopeo copy --override-os linux --override-arch amd64 \
+        "oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar:h-$hash" \
+        "docker-daemon:malrunar/$image:h-$hash"
+else
+    exec docker buildx build \
+        --file "$root/$image/Dockerfile" \
+        "${args[@]}" "${tag_args[@]}" \
+        ${mode[@]+"${mode[@]}"} ${extra[@]+"${extra[@]}"} \
+        "$root/$image"
+fi

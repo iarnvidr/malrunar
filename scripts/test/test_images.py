@@ -171,13 +171,64 @@ class PlanTest(CopyCase):
 class RepositoryTest(unittest.TestCase):
     """The registry of images, the workflows and the image directories agree."""
 
-    def test_publish_matrix_lists_every_image_in_parent_first_order(self):
+    def test_publish_foundation_chain_and_matrix_cover_every_image(self):
         text = (mi.ROOT / ".github/workflows/publish.yml").read_text()
         listed = re.search(r"image: \[([^\]]*)\]", text).group(1).replace(" ", "").split(",")
-        self.assertEqual(sorted(listed), sorted(mi.IMAGES))
+        foundation_match = re.search(r"for image in ([a-z-]+(?: [a-z-]+)*); do", text)
+        self.assertIsNotNone(foundation_match)
+        foundation = foundation_match.group(1).split()
+        self.assertEqual(set(listed) | set(foundation), set(mi.IMAGES))
+        self.assertFalse(set(listed) & set(foundation))
+        self.assertIn("needs: publish-foundation", text)
         for image, parent in mi.IMAGES.items():
             if parent:
-                self.assertLess(listed.index(parent), listed.index(image))
+                self.assertLess(foundation.index(parent), foundation.index(image))
+
+    def test_weekly_bump_uses_repository_scoped_app_for_pr_trigger(self):
+        text = (mi.ROOT / ".github/workflows/weekly.yml").read_text()
+        self.assertIn("actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510", text)
+        self.assertIn("repositories: malrunar", text)
+        self.assertIn("permission-contents: write", text)
+        self.assertIn("permission-pull-requests: write", text)
+        self.assertIn("CI_APP_ID", text)
+        self.assertIn("CI_APP_PRIVATE_KEY", text)
+
+    def test_candidate_oci_export_has_one_explicit_image_name(self):
+        text = (mi.ROOT / "scripts/build.sh").read_text()
+        export = text.split('if [ "$candidate" = true ]; then', 1)[1].split("\nelse", 1)[0]
+        self.assertIn("name=malrunar/$image:h-$hash", export)
+        self.assertNotIn('"${tag_args[@]}"', export)
+        self.assertEqual(export.count("docker buildx build"), 1)
+        self.assertIn('type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar', export)
+        self.assertIn("skopeo copy --override-os linux --override-arch amd64", export)
+        self.assertIn('"oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar:h-$hash"', export)
+        self.assertIn('"docker-daemon:malrunar/$image:h-$hash"', export)
+        self.assertNotIn("docker-archive:", export)
+
+    def test_published_desktop_base_alias_matches_candidate_tested_with_reference(self):
+        text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
+        marker = '      - name: Get desktop-base (published image if it exists, else build it)\n'
+        starts = [match.start() for match in re.finditer(re.escape(marker), text)]
+        self.assertEqual(len(starts), 5)
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(text)
+            block = text[start:end]
+            self.assertIn('docker tag "$ref" "malrunar/desktop-base:h-$hash"', block)
+            self.assertIn('ref="malrunar/desktop-base:h-$hash"', block)
+            self.assertIn('echo "DESKTOP_BASE_REF=$ref" >> "$GITHUB_ENV"', block)
+
+    def test_published_media_bridge_alias_matches_candidate_tested_with_reference(self):
+        text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
+        block = text.split('      - name: Get the media-bridge component (published image if it exists, else build it)\n', 1)[1]
+        self.assertIn('docker tag "$ref" "malrunar/media-bridge:h-$hash"', block)
+        self.assertIn('ref="malrunar/media-bridge:h-$hash"', block)
+        self.assertIn('echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"', block)
+
+    def test_media_bridge_consumer_uses_private_runtime_dir(self):
+        text = (mi.ROOT / "media-bridge/test/consumer/bridge-test.sh").read_text()
+        self.assertIn('XDG_RUNTIME_DIR="$work/runtime"', text)
+        self.assertIn('mkdir -m 700 "$XDG_RUNTIME_DIR"', text)
+        self.assertNotIn('XDG_RUNTIME_DIR="/run/user/$(id -u)"', text)
 
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:
