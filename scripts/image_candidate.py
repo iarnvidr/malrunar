@@ -54,7 +54,8 @@ class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def open_github_request(request, timeout):
     parsed = urllib.parse.urlsplit(request.full_url)
-    if request.get_method() != "GET" or parsed.scheme != "https" or parsed.username or parsed.password:
+    if (request.get_method() != "GET" or parsed.scheme != "https" or parsed.netloc != "api.github.com"
+            or parsed.username or parsed.password):
         raise ValueError("refusing unsafe GitHub request")
     try:
         return urllib.request.build_opener(GitHubRedirectHandler()).open(request, timeout=timeout)

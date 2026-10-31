@@ -100,6 +100,11 @@ class GitHubRedirectTests(unittest.TestCase):
                 request, None, 302, "Found", {}, "http://objects.example.invalid/archive"
             )
 
+    def test_initial_request_is_limited_to_github_api_https_get(self):
+        request = candidate.urllib.request.Request("https://objects.example.invalid/archive")
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            candidate.open_github_request(request, timeout=1)
+
 
 class CandidateSelectionTests(unittest.TestCase):
     def test_selection_is_intersection_in_canonical_order(self):
