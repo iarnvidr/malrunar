@@ -698,3 +698,87 @@ jobs:
         uses: ./.github/actions/collect-debug
         with:
           name: debug-obs-control-e2e
+
+  # Stable branch protection context that validates every selected PR job, including dynamic matrices.
+  required:
+    if: always()
+    needs:
+      - scripts
+      - plan
+      - build
+      - media-bridge
+      - work-browser
+      - session-kit
+      - thunderbird
+      - thunderbird-mcp
+      - msteams-mcp
+      - teams-service
+      - obs-control-e2e
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require exactly the planned image and integration work
+        env:
+          SCRIPTS_RESULT: ${{ needs.scripts.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          BUILD_GROUPS: ${{ needs.plan.outputs.groups }}
+          MEDIA_BRIDGE_RESULT: ${{ needs.media-bridge.result }}
+          MEDIA_BRIDGE_SELECTED: ${{ needs.plan.outputs.media_bridge }}
+          WORK_BROWSER_RESULT: ${{ needs.work-browser.result }}
+          WORK_BROWSER_SELECTED: ${{ needs.plan.outputs.work_browser }}
+          SESSION_KIT_RESULT: ${{ needs.session-kit.result }}
+          SESSION_KIT_SELECTED: ${{ needs.plan.outputs.session_kit }}
+          THUNDERBIRD_RESULT: ${{ needs.thunderbird.result }}
+          THUNDERBIRD_SELECTED: ${{ needs.plan.outputs.thunderbird }}
+          THUNDERBIRD_MCP_RESULT: ${{ needs.thunderbird-mcp.result }}
+          THUNDERBIRD_MCP_SELECTED: ${{ needs.plan.outputs.thunderbird_mcp }}
+          MSTEAMS_MCP_RESULT: ${{ needs.msteams-mcp.result }}
+          MSTEAMS_MCP_SELECTED: ${{ needs.plan.outputs.msteams_mcp }}
+          TEAMS_SERVICE_RESULT: ${{ needs.teams-service.result }}
+          TEAMS_SERVICE_SELECTED: ${{ needs.plan.outputs.teams_service }}
+          OBS_CONTROL_E2E_RESULT: ${{ needs.obs-control-e2e.result }}
+          OBS_CONTROL_E2E_SELECTED: ${{ needs.plan.outputs.obs_control_e2e }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          def fail(message):
+              print(f"required PR work failed: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
+          if os.environ["SCRIPTS_RESULT"] != "success":
+              fail("scripts contract suite did not succeed")
+          if os.environ["PLAN_RESULT"] != "success":
+              fail("image selection plan did not succeed")
+          try:
+              groups = json.loads(os.environ["BUILD_GROUPS"])
+          except (json.JSONDecodeError, TypeError):
+              fail("image build group plan is missing or invalid")
+          if not isinstance(groups, list) or any(not isinstance(group, str) or not group for group in groups):
+              fail("image build group plan contains an invalid selection")
+          expected_build = "success" if groups else "skipped"
+          if os.environ["BUILD_RESULT"] != expected_build:
+              fail(f"image build result was {os.environ['BUILD_RESULT']!r}; expected {expected_build!r}")
+
+          jobs = {
+              "media-bridge": ("MEDIA_BRIDGE_SELECTED", "MEDIA_BRIDGE_RESULT"),
+              "work-browser": ("WORK_BROWSER_SELECTED", "WORK_BROWSER_RESULT"),
+              "session-kit": ("SESSION_KIT_SELECTED", "SESSION_KIT_RESULT"),
+              "thunderbird": ("THUNDERBIRD_SELECTED", "THUNDERBIRD_RESULT"),
+              "thunderbird-mcp": ("THUNDERBIRD_MCP_SELECTED", "THUNDERBIRD_MCP_RESULT"),
+              "msteams-mcp": ("MSTEAMS_MCP_SELECTED", "MSTEAMS_MCP_RESULT"),
+              "teams-service": ("TEAMS_SERVICE_SELECTED", "TEAMS_SERVICE_RESULT"),
+              "obs-control-e2e": ("OBS_CONTROL_E2E_SELECTED", "OBS_CONTROL_E2E_RESULT"),
+          }
+          for job, (selection_key, result_key) in jobs.items():
+              selected = os.environ[selection_key]
+              result = os.environ[result_key]
+              if selected not in {"true", "false"}:
+                  fail(f"{job} selection is missing or unknown")
+              expected = "success" if selected == "true" else "skipped"
+              if result != expected:
+                  fail(f"{job} result was {result!r}; expected {expected!r}")
+          print("all selected script, image, and integration jobs succeeded")
