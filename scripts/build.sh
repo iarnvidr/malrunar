@@ -72,7 +72,7 @@ if [ "$candidate" = true ]; then
     docker buildx build \
         --platform linux/amd64 \
         --file "$root/$image/Dockerfile" \
-        "${args[@]}" "${tag_args[@]}" \
+        "${args[@]}" \
         --output "type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar,name=malrunar/$image:h-$hash,oci-mediatypes=true" \
         --sbom=true --provenance=mode=max \
         ${extra[@]+"${extra[@]}"} \

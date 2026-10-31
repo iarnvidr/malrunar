@@ -193,6 +193,12 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("CI_APP_ID", text)
         self.assertIn("CI_APP_PRIVATE_KEY", text)
 
+    def test_candidate_oci_export_has_one_explicit_image_name(self):
+        text = (mi.ROOT / "scripts/build.sh").read_text()
+        export = text.split('--output "type=oci', 1)[1].split("\nelse", 1)[0]
+        self.assertIn("name=malrunar/$image:h-$hash", export)
+        self.assertNotIn('"${tag_args[@]}"', export)
+
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:
             self.assertTrue((mi.ROOT / image / "Dockerfile").is_file(), image)
