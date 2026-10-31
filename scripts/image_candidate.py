@@ -486,10 +486,15 @@ def record_plan(root: Path, output: Path):
     pr = payload.get("pull_request") or {}
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY or not pr:
         raise ValueError("image plan event is not a repository pull request")
-    images = os.environ.get("MALRUNAR_PLAN_IMAGES", "").split()
-    if len(images) != len(set(images)) or any(image not in malrunar_image.IMAGES for image in images):
+    try:
+        selected = json.loads(os.environ.get("MALRUNAR_PLAN_IMAGES", "[]"))
+    except json.JSONDecodeError as error:
+        raise ValueError("image plan selection is malformed") from error
+    if not isinstance(selected, list) or any(not isinstance(image, str) for image in selected):
         raise ValueError("image plan selection is malformed")
-    images = [image for image in malrunar_image.IMAGES if image in set(images)]
+    if len(selected) != len(set(selected)) or any(image not in malrunar_image.IMAGES for image in selected):
+        raise ValueError("image plan selection is malformed")
+    images = [image for image in malrunar_image.IMAGES if image in set(selected)]
     hashes = {image: malrunar_image.image_hash(image, root=root) for image in malrunar_image.IMAGES}
     versions = {image: malrunar_image.version(image, root=root) for image in malrunar_image.IMAGES}
     receipt = {

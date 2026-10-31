@@ -253,7 +253,7 @@ class ReceiptBindingTests(unittest.TestCase):
                 "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_path),
                 "GITHUB_REPOSITORY": candidate.REPOSITORY, "GITHUB_RUN_ID": "123",
                 "GITHUB_RUN_ATTEMPT": "2", "GITHUB_WORKFLOW_SHA": "d" * 40,
-                "MALRUNAR_PLAN_IMAGES": "",
+                "MALRUNAR_PLAN_IMAGES": "[]",
             }
             with mock.patch.dict(os.environ, env, clear=True), \
                     mock.patch.object(candidate, "git", return_value="c" * 40):
@@ -264,6 +264,45 @@ class ReceiptBindingTests(unittest.TestCase):
         self.assertEqual(receipt["selected_images"], [])
         self.assertEqual(set(receipt["content_hashes"]), set(images.IMAGES))
         self.assertEqual(set(receipt["versions"]), set(images.IMAGES))
+
+    def test_record_plan_parses_json_selection_with_whitespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = Path(directory) / "event.json"
+            output = Path(directory) / "image-plan.json"
+            event_path.write_text(json.dumps({"pull_request": {
+                "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}, "number": 7,
+            }}))
+            env = {
+                "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_path),
+                "GITHUB_REPOSITORY": candidate.REPOSITORY, "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "2", "GITHUB_WORKFLOW_SHA": "d" * 40,
+                "MALRUNAR_PLAN_IMAGES": json.dumps(["media-bridge", "desktop-base"], indent=2),
+            }
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(candidate, "git", return_value="c" * 40):
+                candidate.record_plan(images.ROOT, output)
+            receipt = json.loads(output.read_text())
+        self.assertEqual(receipt["selected_images"], ["desktop-base", "media-bridge"])
+
+    def test_record_plan_rejects_non_list_and_invalid_json_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = Path(directory) / "event.json"
+            event_path.write_text(json.dumps({"pull_request": {
+                "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}, "number": 7,
+            }}))
+            for selection in ("false", "{\"desktop-base\": true}", "[", '["unknown-image"]', '["desktop-base", "desktop-base"]'):
+                with self.subTest(selection=selection):
+                    output = Path(directory) / "image-plan.json"
+                    env = {
+                        "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_path),
+                        "GITHUB_REPOSITORY": candidate.REPOSITORY, "GITHUB_RUN_ID": "123",
+                        "GITHUB_RUN_ATTEMPT": "2", "GITHUB_WORKFLOW_SHA": "d" * 40,
+                        "MALRUNAR_PLAN_IMAGES": selection,
+                    }
+                    with mock.patch.dict(os.environ, env, clear=True), \
+                            mock.patch.object(candidate, "git", return_value="c" * 40):
+                        with self.assertRaisesRegex(ValueError, "selection is malformed"):
+                            candidate.record_plan(images.ROOT, output)
 
     def test_changed_plan_selects_image_and_rejects_stale_hash(self):
         receipt = {
