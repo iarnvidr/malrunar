@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tarfile
 import tempfile
@@ -652,6 +653,14 @@ class CandidatePromotionTests(unittest.TestCase):
 
 
 class CanonicalProducerReuseTests(unittest.TestCase):
+    def test_registry_root_matches_main_publisher_configuration(self):
+        publish = (images.ROOT / candidate.PUBLISH_WORKFLOW).read_text()
+        registry = re.search(r"^\s+REGISTRY:\s*([^\s#]+)", publish, re.MULTILINE)
+        owner = re.search(r"^\s+OWNER:\s*([^\s#]+)", publish, re.MULTILINE)
+        self.assertIsNotNone(registry)
+        self.assertIsNotNone(owner)
+        self.assertEqual(candidate.IMAGE_REGISTRY, f"{registry.group(1)}/{owner.group(1)}")
+
     def test_reuses_verified_canonical_archive_for_actual_smoke_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1054,7 +1054,8 @@ def preflight_canonical(root: Path):
                                   f"docker://{reference}"], check=True, capture_output=True).stdout
         except subprocess.CalledProcessError as error:
             if _registry_tag_is_missing(error):
-                missing.append(image)
+                missing.append({"image": image, "content_hash": content_hash,
+                                "reference": reference})
                 continue
             _reuse_failure("skopeo inspect preflight", error)
         except OSError as error:
@@ -1089,9 +1090,10 @@ def preflight_canonical(root: Path):
             _reuse_failure("canonical cosign or config preflight", error)
         except (ValueError, KeyError, json.JSONDecodeError):
             _reuse_failure("canonical index/config preflight")
-        cached.append({"image": image, "content_hash": content_hash,
+        cached.append({"image": image, "content_hash": content_hash, "reference": reference,
                        "root_digest": root_digest, "config_digest": config_digest})
-    print(json.dumps({"cached": cached, "missing": missing}, sort_keys=True))
+    print(json.dumps({"registry": IMAGE_REGISTRY, "cached": cached, "missing": missing},
+                     sort_keys=True))
 
 
 def reuse_canonical(root: Path, image: str, output: Path):
