@@ -64,19 +64,20 @@ fi
 if [ "$candidate" = true ]; then
     hash="$(python3 "$tool" hash "$image")"
     mkdir -p "$MALRUNAR_CANDIDATE_DIR"
+    docker_archive="$MALRUNAR_CANDIDATE_DIR/$image.docker.tar"
     docker buildx build \
         --platform linux/amd64 \
         --file "$root/$image/Dockerfile" \
         "${args[@]}" \
+        --output "type=docker,dest=$docker_archive,name=malrunar/$image:h-$hash" \
         --output "type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar,name=malrunar/$image:h-$hash,oci-mediatypes=true" \
         --sbom=true --provenance=mode=max \
         ${extra[@]+"${extra[@]}"} \
         "$root/$image"
-    # Smoke-test the image from the exact OCI archive that will be retained.
-    # A second build can differ in its image config even when the source is identical.
-    skopeo copy --override-os linux --override-arch amd64 \
-        "oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar" \
-        "docker-daemon:malrunar/$image:h-$hash"
+    # Both exports come from the same BuildKit solve, so smoke tests exercise the
+    # exact image config represented in the retained attested OCI archive.
+    docker load --input "$docker_archive"
+    rm -f "$docker_archive"
 else
     exec docker buildx build \
         --file "$root/$image/Dockerfile" \

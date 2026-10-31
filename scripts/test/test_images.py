@@ -199,9 +199,10 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("name=malrunar/$image:h-$hash", export)
         self.assertNotIn('"${tag_args[@]}"', export)
         self.assertEqual(export.count("docker buildx build"), 1)
-        self.assertIn("skopeo copy --override-os linux --override-arch amd64", export)
-        self.assertIn('"oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar"', export)
-        self.assertIn('"docker-daemon:malrunar/$image:h-$hash"', export)
+        self.assertIn('type=docker,dest=$docker_archive,name=malrunar/$image:h-$hash', export)
+        self.assertIn('type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar', export)
+        self.assertIn('docker load --input "$docker_archive"', export)
+        self.assertNotIn("skopeo", export)
 
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:
