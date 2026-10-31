@@ -250,6 +250,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -333,6 +335,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -385,6 +389,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -438,6 +444,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
@@ -489,6 +497,8 @@ jobs:
           ref="ghcr.io/iarnvidr/desktop-base:h-$hash"
           if docker pull --quiet "$ref"; then
             echo "using published $ref"
+            docker tag "$ref" "malrunar/desktop-base:h-$hash"
+            ref="malrunar/desktop-base:h-$hash"
           else
             echo "$ref is not published; building desktop-base from this checkout"
             scripts/build.sh desktop-base --load
