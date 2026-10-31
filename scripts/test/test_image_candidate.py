@@ -481,6 +481,48 @@ class QuickstartSourceManifestTests(unittest.TestCase):
                                                     candidate_dir=root / "archives")
             plan_artifact.assert_not_called()
 
+    def test_image_resolver_binds_pr_number_on_canonical_entries(self):
+        tree, head, base = "c" * 40, "a" * 40, "b" * 40
+        pr = {"number": 17, "head": {"sha": head, "repo": {"full_name": candidate.REPOSITORY}},
+              "base": {"sha": base, "repo": {"full_name": candidate.REPOSITORY}}}
+        attempt = {"id": 123, "run_attempt": 2, "status": "completed", "conclusion": "success",
+                   "event": "pull_request", "path": candidate.PR_WORKFLOW, "head_sha": head,
+                   "repository": {"full_name": candidate.REPOSITORY}, "pull_requests": [{"number": 17}]}
+        run = {"id": 123, "run_attempt": 2}
+        plan_metadata = {"id": 55, "digest": "sha256:" + "1" * 64,
+                         "name": f"{candidate.PLAN_PREFIX}-123-2",
+                         "workflow_run": {"id": 123, "head_sha": head}}
+        preflight_metadata = {"id": 56, "digest": "sha256:" + "2" * 64,
+                              "name": f"{candidate.PREFLIGHT_PREFIX}-123-2",
+                              "workflow_run": {"id": 123, "head_sha": head}}
+        image_names = ["desktop-base", "obs-runtime", "obs-control"]
+        cached = {image: {"content_hash": images.image_hash(image),
+                          "root_digest": "sha256:" + "3" * 64,
+                          "config_digest": "sha256:" + "4" * 64} for image in image_names}
+        plan = {"selected_images": []}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event, preflight = root / "event.json", root / "preflight.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": pr}))
+            preflight.write_bytes(b"{}")
+            with mock.patch.object(candidate, "git", return_value=tree), \
+                    mock.patch.object(candidate, "api", side_effect=[attempt, {"artifacts": []}]), \
+                    mock.patch.object(candidate, "_attempt_jobs", return_value=[
+                        {"name": "plan", "conclusion": "success"},
+                        {"name": "canonical-preflight", "conclusion": "success"}]), \
+                    mock.patch.object(candidate, "plan_artifact", return_value=plan_metadata), \
+                    mock.patch.object(candidate, "preflight_artifact", return_value=preflight_metadata), \
+                    mock.patch.object(candidate, "download_artifact", return_value=preflight), \
+                    mock.patch.object(candidate, "zip_members", return_value={"canonical-preflight.json": b"{}"}), \
+                    mock.patch.object(candidate, "verify_plan_artifact", return_value=(plan, base)), \
+                    mock.patch.object(candidate, "_preflight_entries", return_value=(cached, {})):
+                resolved = candidate.resolve_tested_images(
+                    images.ROOT, ["obs-control"], 123, 2, event, tree, preflight,
+                    current_run_in_progress=False, candidate_dir=root / "archives")
+        self.assertEqual([entry["image"] for entry in resolved], image_names)
+        self.assertTrue(all(entry["pr_number"] == 17 for entry in resolved))
+
 class MainPublisherTrustTests(RetrievePlanSelectionTests):
     @mock.patch.object(candidate, "trusted_blobs")
     @mock.patch.object(candidate, "validate_plan_receipt", return_value="b" * 40)
