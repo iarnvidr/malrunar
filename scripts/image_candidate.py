@@ -224,7 +224,9 @@ def record_images(root: Path, output: Path):
         identity = oci_identity(archive_path)
         tested_id = image_id(reference)
         if identity["config_digest"] != tested_id:
-            raise ValueError(f"candidate OCI image differs from the image that passed smoke tests: {image}")
+            raise ValueError(
+                f"candidate OCI image config {identity['config_digest']} differs from smoke-tested "
+                f"Docker image ID {tested_id}: {image}")
         parent_name = malrunar_image.IMAGES[image]
         parent = None
         if parent_name:

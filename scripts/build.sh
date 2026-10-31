@@ -69,13 +69,15 @@ if [ "$candidate" = true ]; then
         --platform linux/amd64 \
         --file "$root/$image/Dockerfile" \
         "${args[@]}" \
-        --output "type=docker,dest=$docker_archive,name=malrunar/$image:h-$hash" \
         --output "type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar,name=malrunar/$image:h-$hash,oci-mediatypes=true" \
         --sbom=true --provenance=mode=max \
         ${extra[@]+"${extra[@]}"} \
         "$root/$image"
-    # Both exports come from the same BuildKit solve, so smoke tests exercise the
-    # exact image config represented in the retained attested OCI archive.
+    # Convert the exact exported OCI image to a Docker archive for the smoke-test daemon.
+    # The retained OCI index still contains its provenance and SBOM attestations.
+    skopeo copy --override-os linux --override-arch amd64 --format v2s2 \
+        "oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar" \
+        "docker-archive:$docker_archive:malrunar/$image:h-$hash"
     docker load --input "$docker_archive"
     rm -f "$docker_archive"
 else
