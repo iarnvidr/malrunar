@@ -1020,38 +1020,133 @@ def _registry_identity(reference, authfile):
     return {"config_digest": config_digest}
 
 
+def _registry_tag_is_missing(error):
+    text = " ".join(
+        part.decode("utf-8", "replace") if isinstance(part, bytes) else str(part or "")
+        for part in (getattr(error, "stdout", None), getattr(error, "stderr", None))
+    ).lower()
+    return any(marker in text for marker in (
+        "manifest unknown", "manifest not found", "name unknown", "404 not found",
+        "404 page not found", "statuscode: 404",
+    ))
+
+
+def _reuse_failure(stage, error=None):
+    if isinstance(error, subprocess.CalledProcessError):
+        print(f"trusted canonical reuse failed at {stage} (exit {error.returncode}); refusing to rebuild")
+    else:
+        print(f"trusted canonical reuse failed at {stage}; refusing to rebuild")
+    raise SystemExit(2)
+
+
+def preflight_canonical(root: Path):
+    """Verify readable signed main tags and linux/amd64 config identities before build jobs fan out."""
+    docker_config = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "config.json"
+    auth_args = ["--authfile", str(docker_config)] if docker_config.is_file() else []
+    cached, missing = [], []
+    for image in malrunar_image.IMAGES:
+        content_hash = malrunar_image.image_hash(image, root=root)
+        target = f"ghcr.io/{REPOSITORY}/{image}"
+        reference = f"{target}:h-{content_hash}"
+        try:
+            raw = subprocess.run(["skopeo", "inspect", "--raw", *auth_args,
+                                  f"docker://{reference}"], check=True, capture_output=True).stdout
+        except subprocess.CalledProcessError as error:
+            if _registry_tag_is_missing(error):
+                missing.append(image)
+                continue
+            _reuse_failure("skopeo inspect preflight", error)
+        except OSError as error:
+            _reuse_failure("skopeo inspect preflight", error)
+
+        root_digest = "sha256:" + sha(raw)
+        try:
+            subprocess.run(["cosign", "verify", f"{target}@{root_digest}",
+                            "--certificate-identity",
+                            "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
+                            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            document = json.loads(raw)
+            descriptors = document.get("manifests")
+            if descriptors is not None:
+                linux_amd64 = [entry for entry in descriptors
+                               if entry.get("platform", {}).get("os") == "linux"
+                               and entry.get("platform", {}).get("architecture") == "amd64"]
+                if len(linux_amd64) != 1:
+                    raise ValueError("canonical index must identify one linux/amd64 image")
+                child_digest = linux_amd64[0].get("digest", "")
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", child_digest):
+                    raise ValueError("canonical linux/amd64 manifest digest is invalid")
+                child_raw = subprocess.run(
+                    ["skopeo", "inspect", "--raw", *auth_args, f"docker://{target}@{child_digest}"],
+                    check=True, capture_output=True).stdout
+                document = json.loads(child_raw)
+            config_digest = document.get("config", {}).get("digest")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest or ""):
+                raise ValueError("canonical image has no valid config digest")
+        except (OSError, subprocess.CalledProcessError) as error:
+            _reuse_failure("canonical cosign or config preflight", error)
+        except (ValueError, KeyError, json.JSONDecodeError):
+            _reuse_failure("canonical index/config preflight")
+        cached.append({"image": image, "content_hash": content_hash,
+                       "root_digest": root_digest, "config_digest": config_digest})
+    print(json.dumps({"cached": cached, "missing": missing}, sort_keys=True))
+
+
 def reuse_canonical(root: Path, image: str, output: Path):
     """Materialize a trusted main image for PR smoke tests when its inputs match."""
     content_hash = malrunar_image.image_hash(image, root=root)
     target = f"ghcr.io/{REPOSITORY}/{image}"
     tag = f"h-{content_hash}"
     reference = f"{target}:{tag}"
+    docker_config = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "config.json"
+    auth_args = ["--authfile", str(docker_config)] if docker_config.is_file() else []
     try:
-        raw = subprocess.run(["skopeo", "inspect", "--raw", f"docker://{reference}"],
+        raw = subprocess.run(["skopeo", "inspect", "--raw", *auth_args, f"docker://{reference}"],
                              check=True, capture_output=True).stdout
-        digest = "sha256:" + sha(raw)
+    except subprocess.CalledProcessError as error:
+        if _registry_tag_is_missing(error):
+            print(f"no canonical tag for {reference}; building once")
+            return False
+        _reuse_failure("skopeo inspect", error)
+    except OSError as error:
+        _reuse_failure("skopeo inspect", error)
+
+    digest = "sha256:" + sha(raw)
+    try:
         subprocess.run(["cosign", "verify", f"{target}@{digest}",
                         "--certificate-identity",
                         "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
                         "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as error:
+        _reuse_failure("cosign verify", error)
+
+    try:
         output.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["skopeo", "copy", "--all", "--preserve-digests",
+        copy_auth_args = ["--src-authfile", str(docker_config)] if docker_config.is_file() else []
+        subprocess.run(["skopeo", "copy", *copy_auth_args, "--all", "--preserve-digests",
                         f"docker://{target}@{digest}", f"oci-archive:{output}:{tag}"], check=True)
-        identity = oci_identity(output)
-        if identity["publishable_root_digest"] != digest:
-            raise ValueError("trusted image copy changed the published root digest")
-        print(f"reusing trusted canonical {reference} ({digest}) for smoke testing")
-        return True
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, json.JSONDecodeError):
+    except (OSError, subprocess.CalledProcessError) as error:
         output.unlink(missing_ok=True)
-        print(f"no reusable trusted canonical image for {reference}; building once")
-        return False
+        _reuse_failure("skopeo copy", error)
+
+    try:
+        identity = oci_identity(output)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        output.unlink(missing_ok=True)
+        _reuse_failure("OCI identity verification")
+    if identity["publishable_root_digest"] != digest:
+        output.unlink(missing_ok=True)
+        print("trusted canonical reuse failed at OCI root digest verification; refusing to rebuild")
+        raise SystemExit(2)
+    print(f"reusing trusted canonical {reference} ({digest}) for smoke testing")
+    return True
 
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: image_candidate.py select|record|record-plan|diagnose|quickstart|retrieve|publish-candidate ...")
+        raise SystemExit("usage: image_candidate.py select|record|record-plan|diagnose|quickstart|retrieve|publish-candidate|reuse-canonical|preflight-canonical ...")
     command = sys.argv[1]
     if command == "reuse-canonical":
         parser = argparse.ArgumentParser()
@@ -1060,7 +1155,12 @@ def main():
         parser.add_argument("--output", type=Path, required=True)
         args = parser.parse_args(sys.argv[2:])
         raise SystemExit(0 if reuse_canonical(args.root.resolve(), args.image,
-                                              args.output.resolve()) else 3)
+                                              args.output.resolve()) else 1)
+    elif command == "preflight-canonical":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        preflight_canonical(args.root.resolve())
     elif command == "select":
         parser = argparse.ArgumentParser()
         parser.add_argument("--candidates", required=True)

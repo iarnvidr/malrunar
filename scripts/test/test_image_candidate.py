@@ -657,32 +657,40 @@ class CanonicalProducerReuseTests(unittest.TestCase):
             root = Path(directory)
             source = root / "canonical.oci.tar"
             output = root / "candidate/image.oci.tar"
+            docker_config = root / "docker"
+            docker_config.mkdir()
+            authfile = docker_config / "config.json"
+            authfile.write_text("{}\n")
             layout(source)
             identity = candidate.oci_identity(source)
             with tarfile.open(source) as archive:
                 raw_index = archive.extractfile("index.json").read()
 
             def run(args, **kwargs):
-                if args[1:3] == ["inspect", "--raw"]:
+                if args[:3] == ["skopeo", "inspect", "--raw"]:
                     return __import__("subprocess").CompletedProcess(args, 0, stdout=raw_index)
-                if args[1:3] == ["copy", "--all"]:
+                if args[:2] == ["skopeo", "copy"]:
                     output.parent.mkdir(parents=True, exist_ok=True)
                     output.write_bytes(source.read_bytes())
                 return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
 
             with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.dict(os.environ, {"DOCKER_CONFIG": str(docker_config)}), \
                     mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
                 self.assertTrue(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
             commands = [call.args[0] for call in run_process.call_args_list]
+            inspect = next(args for args in commands if args[:2] == ["skopeo", "inspect"])
+            self.assertEqual(inspect[inspect.index("--authfile") + 1], str(authfile))
             verify = next(args for args in commands if args[0] == "cosign")
             self.assertIn("https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
                           verify)
             copy = next(args for args in commands if args[1] == "copy")
+            self.assertEqual(copy[copy.index("--src-authfile") + 1], str(authfile))
             self.assertIn("--all", copy)
             self.assertIn("--preserve-digests", copy)
             self.assertEqual(candidate.oci_identity(output), identity)
 
-    def test_untrusted_canonical_image_falls_back_to_one_build_path(self):
+    def test_untrusted_existing_canonical_image_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "candidate/image.oci.tar"
@@ -694,8 +702,76 @@ class CanonicalProducerReuseTests(unittest.TestCase):
 
             with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
                     mock.patch.object(candidate.subprocess, "run", side_effect=run):
-                self.assertFalse(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
+                with self.assertRaises(SystemExit) as raised:
+                    candidate.reuse_canonical(images.ROOT, "desktop-base", output)
+                self.assertEqual(raised.exception.code, 2)
             self.assertFalse(output.exists())
+
+    def test_missing_registry_tag_is_the_only_rebuild_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "candidate/image.oci.tar"
+
+            def run(args, **kwargs):
+                raise __import__("subprocess").CalledProcessError(
+                    1, args, stderr=b"manifest unknown: requested image tag does not exist")
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                self.assertFalse(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
+            self.assertEqual(run_process.call_count, 1)
+            self.assertFalse(output.exists())
+
+    def test_registry_auth_failure_does_not_fall_back_to_a_different_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "candidate/image.oci.tar"
+
+            def run(args, **kwargs):
+                raise __import__("subprocess").CalledProcessError(
+                    1, args, stderr=b"unauthorized: authentication required")
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                with self.assertRaises(SystemExit) as raised:
+                    candidate.reuse_canonical(images.ROOT, "desktop-base", output)
+                self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(run_process.call_count, 1)
+            self.assertFalse(output.exists())
+
+    def test_metadata_preflight_checks_signed_canonical_config_before_build_fanout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            docker_config = Path(directory) / "docker"
+            docker_config.mkdir()
+            authfile = docker_config / "config.json"
+            authfile.write_text("{}\n")
+            child_digest = "sha256:" + "b" * 64
+            config_digest = "sha256:" + "c" * 64
+            root_index = json.dumps({"schemaVersion": 2, "manifests": [{
+                "digest": child_digest,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            }]}).encode()
+            child_manifest = json.dumps({"schemaVersion": 2, "config": {
+                "digest": config_digest,
+            }}).encode()
+
+            def run(args, **kwargs):
+                if args[0] == "cosign":
+                    return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
+                reference = args[-1]
+                raw = child_manifest if "@" in reference else root_index
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=raw)
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.dict(os.environ, {"DOCKER_CONFIG": str(docker_config)}), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                candidate.preflight_canonical(images.ROOT)
+            commands = [call.args[0] for call in run_process.call_args_list]
+            inspections = [args for args in commands if args[:2] == ["skopeo", "inspect"]]
+            verifications = [args for args in commands if args[0] == "cosign"]
+            self.assertEqual(len(inspections), 2 * len(images.IMAGES))
+            self.assertEqual(len(verifications), len(images.IMAGES))
+            self.assertTrue(all(args[args.index("--authfile") + 1] == str(authfile)
+                                for args in inspections))
 
 
 if __name__ == "__main__":

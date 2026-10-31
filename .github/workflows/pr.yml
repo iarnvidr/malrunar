@@ -155,13 +155,39 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  build:
+  canonical-preflight:
+    name: canonical-preflight
     needs: [scripts, plan]
+    if: needs.plan.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Skopeo and Cosign
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Verify canonical tags before image jobs fan out
+        run: python3 scripts/image_candidate.py preflight-canonical --root "$GITHUB_WORKSPACE"
+
+  build:
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.groups != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
+      packages: read
     env:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     strategy:
@@ -174,6 +200,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Select tested images for candidate artifacts
         id: candidate-plan
         if: github.event_name == 'pull_request'
@@ -240,7 +272,7 @@ jobs:
   # exists, and built from this checkout when it does not (for example in a pull request that
   # changes desktop-base).
   media-bridge:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.media_bridge == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -249,10 +281,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -331,7 +370,7 @@ jobs:
   # The published desktop-base with the current content hash is pulled when it exists, and built from
   # this checkout when it does not.
   work-browser:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.work_browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -340,10 +379,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -389,7 +435,7 @@ jobs:
   # published desktop-base with the current content hash is pulled when it exists, and built from this
   # checkout when it does not.
   session-kit:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.session_kit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -398,10 +444,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -450,7 +503,7 @@ jobs:
   # built for the OAuth module test only. The published desktop-base with the current content hash is pulled
   # when it exists, and built from this checkout when it does not.
   thunderbird:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.thunderbird == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -459,10 +512,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -508,7 +568,7 @@ jobs:
   # thunderbird-mcp is a FROM scratch component. Its smoke test needs the node component (its declared
   # dependency) and, for the end-to-end part only, desktop-base and the thunderbird component.
   thunderbird-mcp:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.thunderbird_mcp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -517,10 +577,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -570,7 +637,7 @@ jobs:
   # package and the stock Firefox under a virtual display. The published images with the current content hashes
   # are pulled when they exist and built from this checkout when they do not.
   msteams-mcp:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.msteams_mcp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -579,10 +646,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -625,7 +699,7 @@ jobs:
   # teams-service is a FROM scratch component for the node and msteams-mcp components (not for desktop-base:
   # it is tested in a bare Ubuntu image with exactly those two, and once on desktop-base under supervisord).
   teams-service:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.teams_service == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -634,10 +708,17 @@ jobs:
       MALRUNAR_CANDIDATE_DIR: /tmp/malrunar-candidates
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install candidate image tools
         if: github.event_name == 'pull_request'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
@@ -681,16 +762,23 @@ jobs:
   # the virtual microphone and camera. The published images with the current content hashes are pulled when they exist and built from this
   # checkout when they do not (for example in a pull request that changes them).
   obs-control-e2e:
-    needs: [scripts, plan]
+    needs: [scripts, plan, canonical-preflight]
     if: needs.plan.outputs.obs_control_e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Log in to GHCR for read-only image reuse
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -776,6 +864,7 @@ jobs:
     needs:
       - scripts
       - plan
+      - canonical-preflight
       - build
       - media-bridge
       - work-browser
@@ -792,6 +881,8 @@ jobs:
         env:
           SCRIPTS_RESULT: ${{ needs.scripts.result }}
           PLAN_RESULT: ${{ needs.plan.result }}
+          PREFLIGHT_RESULT: ${{ needs.canonical-preflight.result }}
+          IMAGE_SELECTION: ${{ needs.plan.outputs.images }}
           BUILD_RESULT: ${{ needs.build.result }}
           BUILD_GROUPS: ${{ needs.plan.outputs.groups }}
           MEDIA_BRIDGE_RESULT: ${{ needs.media-bridge.result }}
@@ -824,6 +915,15 @@ jobs:
               fail("scripts contract suite did not succeed")
           if os.environ["PLAN_RESULT"] != "success":
               fail("image selection plan did not succeed")
+          try:
+              selected_images = json.loads(os.environ["IMAGE_SELECTION"])
+          except (json.JSONDecodeError, TypeError):
+              fail("image selection plan is missing or invalid")
+          if not isinstance(selected_images, list):
+              fail("image selection plan must be an array")
+          expected_preflight = "success" if selected_images else "skipped"
+          if os.environ["PREFLIGHT_RESULT"] != expected_preflight:
+              fail(f"canonical preflight result was {os.environ['PREFLIGHT_RESULT']!r}; expected {expected_preflight!r}")
           try:
               groups = json.loads(os.environ["BUILD_GROUPS"])
           except (json.JSONDecodeError, TypeError):
