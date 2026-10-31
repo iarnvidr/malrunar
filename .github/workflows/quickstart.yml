@@ -49,3 +49,14 @@ jobs:
           grep -F 'QUICKSTART: ready OK' quickstart.log
           grep -F 'QUICKSTART: scene switched OK' quickstart.log
           grep -F 'QUICKSTART: virtual mic present OK' quickstart.log
+      - name: Record exact-tree quickstart evidence
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/image_candidate.py quickstart --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/quickstart-candidate.json"
+      - name: Upload quickstart evidence
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: malrunar-quickstart-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quickstart-candidate.json
+          if-no-files-found: error
+          retention-days: 90

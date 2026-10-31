@@ -171,13 +171,27 @@ class PlanTest(CopyCase):
 class RepositoryTest(unittest.TestCase):
     """The registry of images, the workflows and the image directories agree."""
 
-    def test_publish_matrix_lists_every_image_in_parent_first_order(self):
+    def test_publish_foundation_chain_and_matrix_cover_every_image(self):
         text = (mi.ROOT / ".github/workflows/publish.yml").read_text()
         listed = re.search(r"image: \[([^\]]*)\]", text).group(1).replace(" ", "").split(",")
-        self.assertEqual(sorted(listed), sorted(mi.IMAGES))
+        foundation_match = re.search(r"for image in ([a-z-]+(?: [a-z-]+)*); do", text)
+        self.assertIsNotNone(foundation_match)
+        foundation = foundation_match.group(1).split()
+        self.assertEqual(set(listed) | set(foundation), set(mi.IMAGES))
+        self.assertFalse(set(listed) & set(foundation))
+        self.assertIn("needs: publish-foundation", text)
         for image, parent in mi.IMAGES.items():
             if parent:
-                self.assertLess(listed.index(parent), listed.index(image))
+                self.assertLess(foundation.index(parent), foundation.index(image))
+
+    def test_weekly_bump_uses_repository_scoped_app_for_pr_trigger(self):
+        text = (mi.ROOT / ".github/workflows/weekly.yml").read_text()
+        self.assertIn("actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510", text)
+        self.assertIn("repositories: malrunar", text)
+        self.assertIn("permission-contents: write", text)
+        self.assertIn("permission-pull-requests: write", text)
+        self.assertIn("CI_APP_ID", text)
+        self.assertIn("CI_APP_PRIVATE_KEY", text)
 
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:

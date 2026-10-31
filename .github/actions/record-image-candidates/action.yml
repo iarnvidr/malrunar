@@ -1,0 +1,22 @@
+name: Record tested image candidates
+description: Verify and upload OCI images after their PR build and smoke checks succeed
+inputs:
+  job_key:
+    description: Stable CI job and candidate-target identity
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Record tested image identities
+      shell: bash
+      env:
+        MALRUNAR_CANDIDATE_JOB: ${{ inputs.job_key }}
+      run: python3 scripts/image_candidate.py record --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/malrunar-image-artifact"
+    - name: Upload exact tested OCI candidates
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: malrunar-image-candidates-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.job_key }}
+        path: ${{ runner.temp }}/malrunar-image-artifact/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 90
