@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -32,6 +33,34 @@ ACTION = ".github/actions/record-image-candidates/action.yml"
 IMAGE_PREFIX = "malrunar-image-candidates"
 QUICKSTART_PREFIX = "malrunar-quickstart-candidate"
 MAX_BYTES = 8 * 1024 * 1024 * 1024
+
+
+class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep GitHub API credentials on GitHub during artifact redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        source = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if req.get_method() != "GET" or target.scheme != "https" or target.username or target.password:
+            raise ValueError("refusing unsafe GitHub artifact redirect")
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and source.netloc != target.netloc:
+            for header_set in (redirected.headers, redirected.unredirected_hdrs):
+                for name in list(header_set):
+                    if name.lower() in {"authorization", "proxy-authorization"}:
+                        del header_set[name]
+        return redirected
+
+
+def open_github_request(request, timeout):
+    parsed = urllib.parse.urlsplit(request.full_url)
+    if request.get_method() != "GET" or parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ValueError("refusing unsafe GitHub request")
+    try:
+        return urllib.request.build_opener(GitHubRedirectHandler()).open(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        failed = urllib.parse.urlsplit(exc.url or request.full_url)
+        raise ValueError(f"GitHub request returned HTTP {exc.code} for {failed.netloc}{failed.path}") from exc
 
 
 def sha(data: bytes) -> str:
@@ -298,7 +327,7 @@ def api(path: str):
         "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
         "X-GitHub-Api-Version": "2022-11-28",
     })
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with open_github_request(request, timeout=60) as response:
         data = response.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("GitHub response exceeded the bounded image artifact size")
@@ -335,7 +364,7 @@ def download_artifact(metadata, destination: Path):
                  "X-GitHub-Api-Version": "2022-11-28"})
     destination.parent.mkdir(parents=True, exist_ok=True)
     hasher, total = hashlib.sha256(), 0
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as stream:
+    with open_github_request(request, timeout=120) as response, destination.open("wb") as stream:
         while block := response.read(1024 * 1024):
             total += len(block)
             if total > MAX_BYTES:

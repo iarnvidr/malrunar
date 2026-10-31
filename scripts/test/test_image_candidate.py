@@ -71,6 +71,36 @@ def layout(path, predicates=("https://spdx.dev/Document", "https://slsa.dev/prov
     return manifest_digest, digest(config), digest(files["index.json"])
 
 
+class GitHubRedirectTests(unittest.TestCase):
+    def test_cross_host_artifact_redirect_drops_authorization(self):
+        request = candidate.urllib.request.Request(
+            "https://api.github.com/repos/iarnvidr/malrunar/actions/artifacts/123/zip",
+            headers={"Authorization": "Bearer secret", "Proxy-Authorization": "Basic secret"},
+        )
+        redirected = candidate.GitHubRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, "https://objects.example.invalid/archive?sig=secret"
+        )
+        self.assertNotIn("Authorization", redirected.headers)
+        self.assertNotIn("Proxy-authorization", redirected.headers)
+
+    def test_http_error_hides_signed_query(self):
+        request = candidate.urllib.request.Request("https://api.github.com/repos/example/repo")
+        error = candidate.urllib.error.HTTPError(
+            "https://objects.example.invalid/archive?sig=secret", 401, "Unauthorized", {}, io.BytesIO()
+        )
+        with mock.patch.object(candidate.urllib.request.OpenerDirector, "open", side_effect=error):
+            with self.assertRaisesRegex(ValueError, r"objects\.example\.invalid/archive") as caught:
+                candidate.open_github_request(request, timeout=1)
+        self.assertNotIn("sig=secret", str(caught.exception))
+
+    def test_redirect_rejects_plain_http(self):
+        request = candidate.urllib.request.Request("https://api.github.com/a")
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            candidate.GitHubRedirectHandler().redirect_request(
+                request, None, 302, "Found", {}, "http://objects.example.invalid/archive"
+            )
+
+
 class CandidateSelectionTests(unittest.TestCase):
     def test_selection_is_intersection_in_canonical_order(self):
         self.assertEqual(candidate.select(["node", "desktop-base"], "node desktop-base guacd"),
