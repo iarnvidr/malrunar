@@ -129,6 +129,8 @@ class PlanTest(CopyCase):
     def test_build_infrastructure_change_rebuilds_everything(self):
         self.assertEqual(self.run_plan(["scripts/build.sh"]), list(mi.IMAGES))
         self.assertEqual(self.run_plan([".github/workflows/pr.yml"]), list(mi.IMAGES))
+        self.assertEqual(self.run_plan(["scripts/image_candidate.py"]), list(mi.IMAGES))
+        self.assertEqual(self.run_plan([".github/workflows/publish.yml"]), list(mi.IMAGES))
         self.assertEqual(ci.changed_images(None, self.head, []), list(mi.IMAGES))
 
     def test_plan_outputs(self):
@@ -199,11 +201,28 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("name=malrunar/$image:h-$hash", export)
         self.assertNotIn('"${tag_args[@]}"', export)
         self.assertEqual(export.count("docker buildx build"), 1)
-        self.assertIn('type=oci,dest=$MALRUNAR_CANDIDATE_DIR/$image.oci.tar', export)
+        self.assertIn('type=oci,dest=$archive', export)
+        self.assertLess(export.index("reuse-canonical"), export.index("docker buildx build"))
+        self.assertIn('--output "$archive"', export)
         self.assertIn("skopeo copy --override-os linux --override-arch amd64", export)
         self.assertIn('"oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar:h-$hash"', export)
         self.assertIn('"docker-daemon:malrunar/$image:h-$hash"', export)
         self.assertNotIn("docker-archive:", export)
+
+    def test_main_publisher_validates_accepted_candidate_before_cache_reuse(self):
+        text = (mi.ROOT / ".github/workflows/publish.yml").read_text()
+        self.assertIn('if [ "$GITHUB_EVENT_NAME" != push ]; then continue; fi', text)
+        self.assertIn("echo \"existing_digest=$digest\" >> \"$GITHUB_OUTPUT\"", text)
+        self.assertIn("image_candidate.py retrieve", text)
+        self.assertIn("--existing-digest", text)
+        self.assertIn("Upload accepted image mapping", text)
+
+    def test_pr_plan_records_even_an_empty_docs_only_selection(self):
+        text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
+        self.assertIn("MALRUNAR_PLAN_IMAGES: ${{ steps.plan.outputs.images }}", text)
+        self.assertIn("image_candidate.py record-plan", text)
+        self.assertIn("name: malrunar-image-plan-${{ github.run_id }}-${{ github.run_attempt }}", text)
+        self.assertIn("if-no-files-found: error", text)
 
     def test_published_desktop_base_alias_matches_candidate_tested_with_reference(self):
         text = (mi.ROOT / ".github/workflows/pr.yml").read_text()

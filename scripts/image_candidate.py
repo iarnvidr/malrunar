@@ -31,6 +31,7 @@ HASHER = "scripts/malrunar_image.py"
 CHANGED = "scripts/changed_images.py"
 ACTION = ".github/actions/record-image-candidates/action.yml"
 IMAGE_PREFIX = "malrunar-image-candidates"
+PLAN_PREFIX = "malrunar-image-plan"
 QUICKSTART_PREFIX = "malrunar-quickstart-candidate"
 MAX_BYTES = 8 * 1024 * 1024 * 1024
 MAX_CONFIG_BYTES = 256 * 1024
@@ -231,10 +232,39 @@ def oci_identity(source):
             raise ValueError("OCI archive has no BuildKit provenance attestation")
         return {
             "archive_sha256": hasher.hexdigest(), "index_digest": "sha256:" + sha(index_raw),
+            # Skopeo unwraps a singleton OCI index wrapper when it writes the
+            # registry object. Bind publication to the descriptor it selects,
+            # while retaining index_digest as the byte identity of this archive.
+            "publishable_root_digest": _publishable_root_digest(index_raw, archive, members),
             "manifest_digest": image_digest, "config_digest": config_digest,
             "attestation_predicates": sorted(predicates),
             "attestation_digests": sorted(set(attestation_digests)),
         }
+
+
+def _publishable_root_digest(index_raw, archive, members):
+    raw = index_raw
+    seen = set()
+    while True:
+        value = json.loads(raw)
+        manifests = value.get("manifests")
+        if not isinstance(manifests, list) or len(manifests) != 1:
+            return "sha256:" + sha(raw)
+        descriptor = manifests[0]
+        if descriptor.get("annotations", {}).get("vnd.docker.reference.type") == "attestation-manifest":
+            return "sha256:" + sha(raw)
+        digest = descriptor.get("digest")
+        if digest in seen:
+            raise ValueError("OCI index wrapper contains a descriptor cycle")
+        child = _blob(archive, members, digest, read=True)
+        try:
+            child_value = json.loads(child)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "sha256:" + sha(raw)
+        if not isinstance(child_value.get("manifests"), list):
+            return "sha256:" + sha(raw)
+        seen.add(digest)
+        raw = child
 
 
 def _safe_config(value, key=""):
@@ -448,6 +478,40 @@ def record_images(root: Path, output: Path):
     (output / "candidate-index.json").write_text(json.dumps(index, sort_keys=True) + "\n")
 
 
+def record_plan(root: Path, output: Path):
+    """Record the trusted PR plan so unchanged images can be bound to that decision."""
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        raise ValueError("image plans are recorded only by pull_request runs")
+    payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    pr = payload.get("pull_request") or {}
+    if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY or not pr:
+        raise ValueError("image plan event is not a repository pull request")
+    try:
+        selected = json.loads(os.environ.get("MALRUNAR_PLAN_IMAGES", "[]"))
+    except json.JSONDecodeError as error:
+        raise ValueError("image plan selection is malformed") from error
+    if not isinstance(selected, list) or any(not isinstance(image, str) for image in selected):
+        raise ValueError("image plan selection is malformed")
+    if len(selected) != len(set(selected)) or any(image not in malrunar_image.IMAGES for image in selected):
+        raise ValueError("image plan selection is malformed")
+    images = [image for image in malrunar_image.IMAGES if image in set(selected)]
+    hashes = {image: malrunar_image.image_hash(image, root=root) for image in malrunar_image.IMAGES}
+    versions = {image: malrunar_image.version(image, root=root) for image in malrunar_image.IMAGES}
+    receipt = {
+        "schema": 1, "repository": REPOSITORY, "workflow_path": PR_WORKFLOW,
+        "run_id": int(os.environ["GITHUB_RUN_ID"]),
+        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "event": "pull_request", "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+        "head_sha": pr.get("head", {}).get("sha"),
+        "base_sha": pr.get("base", {}).get("sha"),
+        "pr_number": pr.get("number"),
+        "tested_tree": git(root, "rev-parse", "HEAD^{tree}"),
+        "selected_images": images, "content_hashes": hashes, "versions": versions,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(receipt, sort_keys=True) + "\n")
+
+
 def record_quickstart(root: Path, output: Path):
     if os.environ.get("GITHUB_EVENT_NAME") != "pull_request" or os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("quickstart evidence is recorded only by repository pull_request runs")
@@ -624,6 +688,56 @@ def candidate_artifacts(run, image):
     return found
 
 
+def plan_artifact(run):
+    artifacts = api(f"repos/{REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
+    name = f"{PLAN_PREFIX}-{run['id']}-{run['run_attempt']}"
+    found = [item for item in artifacts if item.get("name") == name and not item.get("expired")]
+    if len(found) != 1:
+        raise ValueError("successful PR run has no unique image plan artifact")
+    return found[0]
+
+
+def validate_plan_receipt(receipt, run, pr, merge_tree, root):
+    base_sha = verify_run_receipt(receipt, run, PR_WORKFLOW, pr, merge_tree)
+    if not re.fullmatch(r"[0-9a-f]{40}", receipt.get("workflow_sha", "")):
+        raise ValueError("image plan has no valid producer workflow SHA")
+    selected = receipt.get("selected_images")
+    if not isinstance(selected, list) or len(selected) != len(set(selected)):
+        raise ValueError("image plan selection is malformed")
+    if any(image not in malrunar_image.IMAGES for image in selected):
+        raise ValueError("image plan contains an unknown image")
+    if selected != [image for image in malrunar_image.IMAGES if image in set(selected)]:
+        raise ValueError("image plan selection is not in canonical order")
+    hashes = receipt.get("content_hashes")
+    versions = receipt.get("versions")
+    expected_images = set(malrunar_image.IMAGES)
+    if not isinstance(hashes, dict) or set(hashes) != expected_images:
+        raise ValueError("image plan content hash inventory is incomplete")
+    if not isinstance(versions, dict) or set(versions) != expected_images:
+        raise ValueError("image plan version inventory is incomplete")
+    for image in malrunar_image.IMAGES:
+        if hashes[image] != malrunar_image.image_hash(image, root=root):
+            raise ValueError(f"image plan content hash differs from accepted main: {image}")
+        if versions[image] != malrunar_image.version(image, root=root):
+            raise ValueError(f"image plan version differs from accepted main: {image}")
+    return base_sha
+
+
+def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, root, image):
+    if metadata.get("workflow_run", {}).get("id") != run["id"]:
+        raise ValueError("image plan artifact belongs to another workflow run")
+    expected_name = f"{PLAN_PREFIX}-{run['id']}-{run['run_attempt']}"
+    if metadata.get("name") != expected_name:
+        raise ValueError("image plan artifact name does not match its producer run")
+    files = zip_members(archive_zip.read_bytes(), {"image-plan.json"})
+    receipt = json.loads(files["image-plan.json"])
+    base_sha = validate_plan_receipt(receipt, run, pr, merge_tree, root)
+    if image not in receipt["selected_images"]:
+        paths = [PR_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
+        trusted_blobs(paths, base_sha, receipt["workflow_sha"])
+    return receipt, base_sha
+
+
 def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, merge_tree, image, root, image_path):
     if metadata.get("workflow_run", {}).get("id") != run["id"]:
         raise ValueError("image candidate artifact belongs to another workflow run")
@@ -734,8 +848,31 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as directory:
         temp = Path(directory)
+        plan_metadata = plan_artifact(run)
+        plan_zip = download_artifact(plan_metadata, temp / "image-plan.zip")
+        plan, base_sha = verify_plan_artifact(plan_metadata, plan_zip, run, pr, merge_tree, root, image)
+        artifacts = candidate_artifacts(run, image)
+        if image not in plan["selected_images"]:
+            if artifacts:
+                raise ValueError(f"unselected image unexpectedly has candidate artifacts: {image}")
+            quickstart = verify_quickstart(pr, merge_tree, merge_sha, base_sha)
+            accepted = {
+                "schema": 1, "repository": REPOSITORY, "accepted_commit": merge_sha,
+                "accepted_tree": merge_tree, "pr_number": pr["number"], "pr_head_sha": pr["head"]["sha"],
+                "source_base_sha": base_sha, "pr_run_id": run["id"],
+                "pr_run_attempt": run["run_attempt"], "quickstart": quickstart,
+                "image": image, "candidate": None,
+                "plan": {"receipt": plan, "artifact_id": plan_metadata["id"],
+                         "artifact_digest": plan_metadata["digest"]},
+                "no_change": {"image": image, "content_hash": plan["content_hashes"][image],
+                              "version": plan["versions"][image]},
+            }
+            (output / "accepted-image.json").write_text(json.dumps(accepted, sort_keys=True) + "\n")
+            return None
+        if image not in malrunar_image.IMAGES:
+            raise ValueError(f"unknown image candidate: {image}")
         candidates = []
-        for metadata in candidate_artifacts(run, image):
+        for metadata in artifacts:
             archive_zip = download_artifact(metadata, temp / f"artifact-{metadata['id']}.zip")
             verified = verify_candidate_artifact(metadata, archive_zip, run, pr, merge_sha,
                                                  merge_tree, image, root, temp / "image.oci.tar")
@@ -744,6 +881,8 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
         if len(candidates) != 1:
             raise ValueError(f"expected one exact PR-tested image artifact for {image}, found {len(candidates)}")
         selected = candidates[0]
+        if selected["base_sha"] != base_sha:
+            raise ValueError("image plan and candidate artifacts were tested against different bases")
         quickstart = verify_quickstart(pr, merge_tree, merge_sha, selected["base_sha"])
         archive_path = output / "image.oci.tar"
         shutil.copyfile(selected["archive_path"], archive_path)
@@ -753,6 +892,8 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
             "source_base_sha": selected["base_sha"], "pr_run_id": run["id"],
             "pr_run_attempt": run["run_attempt"], "quickstart": quickstart,
             "image": image, "candidate": {k: v for k, v in selected.items() if k != "archive_path"},
+            "plan": {"receipt": plan, "artifact_id": plan_metadata["id"],
+                     "artifact_digest": plan_metadata["digest"]},
         }
         (output / "accepted-image.json").write_text(json.dumps(accepted, sort_keys=True) + "\n")
         return selected["receipt"]
@@ -766,7 +907,8 @@ def _skopeo_digest(reference):
     return "sha256:" + sha(result.stdout)
 
 
-def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str, github_output: Path):
+def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str, github_output: Path,
+                      existing_digest: str = ""):
     accepted_path = accepted_dir / "accepted-image.json"
     archive_path = accepted_dir / "image.oci.tar"
     accepted = json.loads(accepted_path.read_text())
@@ -774,6 +916,44 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
             or accepted.get("image") != image or accepted.get("accepted_commit") != git(root, "rev-parse", "HEAD^{commit}")
             or accepted.get("accepted_tree") != git(root, "rev-parse", "HEAD^{tree}")):
         raise ValueError("accepted image mapping does not match the publisher checkout")
+    if accepted.get("candidate") is None:
+        plan = accepted.get("plan") or {}
+        receipt = plan.get("receipt") or {}
+        no_change = accepted.get("no_change") or {}
+        if (not existing_digest or not re.fullmatch(r"sha256:[0-9a-f]{64}", existing_digest)
+                or receipt.get("workflow_path") != PR_WORKFLOW
+                or receipt.get("run_id") != accepted.get("pr_run_id")
+                or receipt.get("run_attempt") != accepted.get("pr_run_attempt")
+                or receipt.get("head_sha") != accepted.get("pr_head_sha")
+                or receipt.get("base_sha") != accepted.get("source_base_sha")
+                or receipt.get("pr_number") != accepted.get("pr_number")
+                or receipt.get("tested_tree") != accepted.get("accepted_tree")
+                or image in receipt.get("selected_images", [])
+                or no_change.get("image") != image
+                or no_change.get("content_hash") != malrunar_image.image_hash(image, root=root)
+                or no_change.get("version") != malrunar_image.version(image, root=root)):
+            raise ValueError("unchanged image is not bound to the accepted PR plan")
+        if (receipt.get("content_hashes", {}).get(image) != no_change.get("content_hash")
+                or receipt.get("versions", {}).get(image) != no_change.get("version")):
+            raise ValueError("unchanged image identity differs from the accepted PR plan")
+        artifact_digest = plan.get("artifact_digest", "")
+        if (not str(plan.get("artifact_id", "")).isdigit()
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest)):
+            raise ValueError("unchanged image plan artifact identity is invalid")
+        target = f"{registry}/{image}"
+        hash_tag = "h-" + no_change["content_hash"]
+        if _skopeo_digest(f"{target}:{hash_tag}") != existing_digest:
+            raise ValueError("existing canonical h- tag changed during publication; refusing overwrite")
+        identity = _registry_identity(f"{target}@{existing_digest}", str(Path.home() / ".docker" / "config.json"))
+        if _skopeo_digest(f"{target}:{no_change['version']}") != existing_digest:
+            raise ValueError("existing canonical image has a mismatched version tag; refusing copy")
+        accepted["published_digest"] = existing_digest
+        accepted["published_config_digest"] = identity["config_digest"]
+        accepted["published_tags"] = [hash_tag, no_change["version"]]
+        accepted_path.write_text(json.dumps(accepted, sort_keys=True) + "\n")
+        with github_output.open("a") as stream:
+            stream.write(f"digest={existing_digest}\n")
+        return
     receipt = accepted["candidate"]["receipt"]
     identity = oci_identity(archive_path)
     for key, value in identity.items():
@@ -790,17 +970,28 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
             raise ValueError("published parent image differs from the parent tested with the candidate")
     target = f"{registry}/{image}"
     hash_tag = "h-" + receipt["content_hash"]
-    digest = receipt["index_digest"]
+    digest = receipt["publishable_root_digest"]
     authfile = str(Path.home() / ".docker" / "config.json")
-    subprocess.run(["skopeo", "copy", "--dest-authfile", authfile, "--all", "--preserve-digests",
-                    f"oci-archive:{archive_path}", f"docker://{target}:{hash_tag}"], check=True)
-    if _skopeo_digest(f"{target}:{hash_tag}") != digest:
-        raise ValueError("published OCI index digest differs from the tested candidate")
-    subprocess.run(["skopeo", "copy", "--src-authfile", authfile, "--dest-authfile", authfile,
-                    "--all", "--preserve-digests",
-                    f"docker://{target}@{digest}", f"docker://{target}:{receipt['version']}"], check=True)
-    if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
-        raise ValueError("version tag does not resolve to the exact tested OCI index")
+    if existing_digest:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", existing_digest):
+            raise ValueError("existing canonical tag has an invalid digest")
+        if _skopeo_digest(f"{target}:{hash_tag}") != existing_digest:
+            raise ValueError("existing canonical h- tag changed during publication; refusing overwrite")
+        existing_identity = _registry_identity(f"{target}@{existing_digest}", authfile)
+        if existing_digest != digest or existing_identity["config_digest"] != identity["config_digest"]:
+            raise ValueError("existing canonical h- tag differs from the accepted candidate; refusing overwrite")
+        if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
+            raise ValueError("existing canonical image has a mismatched version tag; refusing copy")
+    else:
+        subprocess.run(["skopeo", "copy", "--dest-authfile", authfile, "--all", "--preserve-digests",
+                        f"oci-archive:{archive_path}", f"docker://{target}:{hash_tag}"], check=True)
+        if _skopeo_digest(f"{target}:{hash_tag}") != digest:
+            raise ValueError("published OCI root digest differs from the tested candidate")
+        subprocess.run(["skopeo", "copy", "--src-authfile", authfile, "--dest-authfile", authfile,
+                        "--all", "--preserve-digests",
+                        f"docker://{target}@{digest}", f"docker://{target}:{receipt['version']}"], check=True)
+        if _skopeo_digest(f"{target}:{receipt['version']}") != digest:
+            raise ValueError("version tag does not resolve to the exact tested OCI root")
     accepted["published_digest"] = digest
     accepted["published_tags"] = [hash_tag, receipt["version"]]
     accepted_path.write_text(json.dumps(accepted, sort_keys=True) + "\n")
@@ -808,11 +999,69 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
         stream.write(f"digest={digest}\n")
 
 
+def _registry_identity(reference, authfile):
+    result = subprocess.run(["skopeo", "inspect", "--raw", "--authfile", authfile,
+                             f"docker://{reference}"], check=True, capture_output=True)
+    raw = result.stdout
+    value = json.loads(raw)
+    if isinstance(value.get("manifests"), list):
+        matches = [item for item in value["manifests"]
+                   if item.get("platform", {}).get("os") == "linux"
+                   and item.get("platform", {}).get("architecture") == "amd64"]
+        if len(matches) != 1:
+            raise ValueError("published registry index does not select exactly one linux/amd64 image")
+        child = subprocess.run(["skopeo", "inspect", "--raw", "--authfile", authfile,
+                                f"docker://{reference.split('@', 1)[0]}@{matches[0]['digest']}"],
+                               check=True, capture_output=True)
+        value = json.loads(child.stdout)
+    config_digest = value.get("config", {}).get("digest")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest or ""):
+        raise ValueError("published registry image has no valid config digest")
+    return {"config_digest": config_digest}
+
+
+def reuse_canonical(root: Path, image: str, output: Path):
+    """Materialize a trusted main image for PR smoke tests when its inputs match."""
+    content_hash = malrunar_image.image_hash(image, root=root)
+    target = f"ghcr.io/{REPOSITORY}/{image}"
+    tag = f"h-{content_hash}"
+    reference = f"{target}:{tag}"
+    try:
+        raw = subprocess.run(["skopeo", "inspect", "--raw", f"docker://{reference}"],
+                             check=True, capture_output=True).stdout
+        digest = "sha256:" + sha(raw)
+        subprocess.run(["cosign", "verify", f"{target}@{digest}",
+                        "--certificate-identity",
+                        "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
+                        "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["skopeo", "copy", "--all", "--preserve-digests",
+                        f"docker://{target}@{digest}", f"oci-archive:{output}:{tag}"], check=True)
+        identity = oci_identity(output)
+        if identity["publishable_root_digest"] != digest:
+            raise ValueError("trusted image copy changed the published root digest")
+        print(f"reusing trusted canonical {reference} ({digest}) for smoke testing")
+        return True
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, json.JSONDecodeError):
+        output.unlink(missing_ok=True)
+        print(f"no reusable trusted canonical image for {reference}; building once")
+        return False
+
+
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: image_candidate.py select|record|diagnose|quickstart|retrieve|publish-candidate ...")
+        raise SystemExit("usage: image_candidate.py select|record|record-plan|diagnose|quickstart|retrieve|publish-candidate ...")
     command = sys.argv[1]
-    if command == "select":
+    if command == "reuse-canonical":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, required=True)
+        parser.add_argument("--image", required=True)
+        parser.add_argument("--output", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        raise SystemExit(0 if reuse_canonical(args.root.resolve(), args.image,
+                                              args.output.resolve()) else 3)
+    elif command == "select":
         parser = argparse.ArgumentParser()
         parser.add_argument("--candidates", required=True)
         parser.add_argument("--built", required=True)
@@ -824,6 +1073,12 @@ def main():
         parser.add_argument("--out", type=Path, required=True)
         args = parser.parse_args(sys.argv[2:])
         record_images(args.root.resolve(), args.out.resolve())
+    elif command == "record-plan":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, required=True)
+        parser.add_argument("--out", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        record_plan(args.root.resolve(), args.out.resolve())
     elif command == "diagnose":
         parser = argparse.ArgumentParser()
         parser.add_argument("--images", required=True)
@@ -852,9 +1107,10 @@ def main():
         parser.add_argument("--accepted-dir", type=Path, required=True)
         parser.add_argument("--registry", required=True)
         parser.add_argument("--github-output", type=Path, required=True)
+        parser.add_argument("--existing-digest", default="")
         args = parser.parse_args(sys.argv[2:])
         publish_candidate(args.root.resolve(), args.image, args.accepted_dir.resolve(),
-                          args.registry, args.github_output)
+                          args.registry, args.github_output, args.existing_digest)
     else:
         raise SystemExit("unknown command: " + command)
 

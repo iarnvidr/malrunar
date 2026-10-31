@@ -1,7 +1,7 @@
 # Publish the images to ghcr.io/iarnvidr/<image> on every push to main.
 # Tags: <version> and h-<content hash> (scripts/malrunar_image.py). An image whose h-<hash> tag
-# already exists is skipped (the hash covers only the pins the image uses, so a weekly pin bump does not
-# republish an image it does not touch). Each pushed image gets a BuildKit SBOM and max-mode provenance
+# already exists is reused only after the accepted PR artifact's OCI root and config are verified against it.
+# Each newly published image gets a BuildKit SBOM and max-mode provenance
 # attestation and a keyless cosign signature (GitHub OIDC identity of this workflow).
 # Hosted runners only; GITHUB_TOKEN only; write permissions are granted per job below.
 name: publish
@@ -70,16 +70,18 @@ jobs:
             hash="$(python3 scripts/malrunar_image.py hash "$image")"
             ref="$REGISTRY/$OWNER/$image"
             digest=''
+            was_existing=false
             if docker buildx imagetools inspect "$ref:h-$hash" >/dev/null 2>&1; then
               digest="$(docker buildx imagetools inspect "$ref:h-$hash" --format '{{.Manifest.Digest}}')"
+              was_existing=true
               cosign verify "$ref@$digest" \
                 --certificate-identity "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main" \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
-              echo "$image h-$hash already exists; verified and skipped"
-              continue
+              echo "$image h-$hash already exists and is trusted; checking the accepted candidate before reuse"
+              if [ "$GITHUB_EVENT_NAME" != push ]; then continue; fi
             fi
             legacy="$(python3 scripts/malrunar_image.py legacy-hash "$image")"
-            if [ "$legacy" != "$hash" ] && docker buildx imagetools inspect "$ref:h-$legacy" >/dev/null 2>&1; then
+            if [ "$GITHUB_EVENT_NAME" != push ] && [ "$legacy" != "$hash" ] && docker buildx imagetools inspect "$ref:h-$legacy" >/dev/null 2>&1; then
               old_digest="$(docker buildx imagetools inspect "$ref:h-$legacy" --format '{{.Manifest.Digest}}')"
               docker buildx imagetools create --tag "$ref:h-$hash" "$ref@$old_digest"
               new_digest="$(docker buildx imagetools inspect "$ref:h-$hash" --format '{{.Manifest.Digest}}')"
@@ -97,9 +99,11 @@ jobs:
               mkdir -p "$output"
               python3 scripts/image_candidate.py retrieve \
                 --root "$GITHUB_WORKSPACE" --image "$image" --merge-sha "$GITHUB_SHA" --output "$image_dir"
+              publish_args=()
+              [ -z "$digest" ] || publish_args+=(--existing-digest "$digest")
               python3 scripts/image_candidate.py publish-candidate \
                 --root "$GITHUB_WORKSPACE" --image "$image" --accepted-dir "$image_dir" \
-                --registry "$REGISTRY/$OWNER" --github-output "$output/github-output"
+                --registry "$REGISTRY/$OWNER" --github-output "$output/github-output" "${publish_args[@]}"
               digest="$(sed -n 's/^digest=//p' "$output/github-output")"
               test -n "$digest"
               cp "$image_dir/accepted-image.json" "$accepted_dir/$image.json"
@@ -119,7 +123,9 @@ jobs:
             fi
 
             image_digest="$ref@$digest"
-            cosign sign "$image_digest"
+            if [ "$was_existing" = false ]; then
+              cosign sign "$image_digest"
+            fi
             cosign verify "$image_digest" \
               --certificate-identity "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
@@ -132,7 +138,7 @@ jobs:
         with:
           name: malrunar-accepted-foundation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/malrunar-accepted-foundation/*.json
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 90
 
   publish:
@@ -176,22 +182,27 @@ jobs:
           set -eu
           hash="$(python3 scripts/malrunar_image.py hash "$IMAGE")"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          echo "existing_digest=" >> "$GITHUB_OUTPUT"
           ref="$REGISTRY/$OWNER/$IMAGE"
           if docker buildx imagetools inspect "$ref:h-$hash" >/dev/null 2>&1; then
             digest="$(docker buildx imagetools inspect "$ref:h-$hash" --format '{{.Manifest.Digest}}')"
             cosign verify "$ref@$digest" \
               --certificate-identity "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
-            echo "$IMAGE h-$hash is already published; skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "existing_digest=$digest" >> "$GITHUB_OUTPUT"
+            if [ "$GITHUB_EVENT_NAME" != push ]; then
+              echo "$IMAGE h-$hash is already published; skipping trusted manual rebuild"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "$IMAGE h-$hash exists; verifying exact accepted candidate before reuse"
           fi
           # Transitional: before the hash only covered the pins an image's Dockerfile declares, it also
           # covered every root pin (scripts/malrunar_image.py legacy-hash). The same inputs published under
           # that older hash are the same image: give the digest the new tag instead of rebuilding it.
           # Anything whose old-scheme hash is not published is a real change and is built below.
           legacy="$(python3 scripts/malrunar_image.py legacy-hash "$IMAGE")"
-          if [ "$legacy" != "$hash" ] && docker buildx imagetools inspect "$ref:h-$legacy" >/dev/null 2>&1; then
+          if [ "$GITHUB_EVENT_NAME" != push ] && [ "$legacy" != "$hash" ] && docker buildx imagetools inspect "$ref:h-$legacy" >/dev/null 2>&1; then
             old_digest="$(docker buildx imagetools inspect "$ref:h-$legacy" --format '{{.Manifest.Digest}}')"
             docker buildx imagetools create --tag "$ref:h-$hash" "$ref@$old_digest"
             new_digest="$(docker buildx imagetools inspect "$ref:h-$hash" --format '{{.Manifest.Digest}}')"
@@ -240,12 +251,15 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
           GH_TOKEN: ${{ github.token }}
+          EXISTING_DIGEST: ${{ steps.plan.outputs.existing_digest }}
         run: |
           set -eu
+          publish_args=()
+          [ -z "$EXISTING_DIGEST" ] || publish_args+=(--existing-digest "$EXISTING_DIGEST")
           python3 scripts/image_candidate.py publish-candidate \
             --root "$GITHUB_WORKSPACE" --image "$IMAGE" \
             --accepted-dir "$RUNNER_TEMP/malrunar-candidate" --registry "$REGISTRY/$OWNER" \
-            --github-output "$GITHUB_OUTPUT"
+            --github-output "$GITHUB_OUTPUT" "${publish_args[@]}"
       - name: Build and push (with SBOM and provenance)
         id: build
         if: steps.plan.outputs.skip == 'false' && github.event_name == 'workflow_dispatch' && inputs.trusted_rebuild
@@ -260,7 +274,7 @@ jobs:
           digest="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['containerimage.digest'])" "$RUNNER_TEMP/metadata.json")"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Sign with cosign (keyless) and verify
-        if: steps.plan.outputs.skip == 'false'
+        if: steps.plan.outputs.skip == 'false' && steps.plan.outputs.existing_digest == ''
         env:
           IMAGE: ${{ matrix.image }}
           DIGEST: ${{ steps.candidate.outputs.digest || steps.build.outputs.digest }}
