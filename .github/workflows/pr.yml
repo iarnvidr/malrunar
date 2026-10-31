@@ -700,7 +700,8 @@ jobs:
           name: debug-obs-control-e2e
 
   # Stable branch protection context that validates every selected PR job, including dynamic matrices.
-  required:
+  image-release-gate:
+    name: image-release-gate
     if: always()
     needs:
       - scripts

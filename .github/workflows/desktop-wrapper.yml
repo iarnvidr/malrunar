@@ -200,7 +200,8 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ github.event_name == 'workflow_dispatch' && 30 || 3 }}
 
-  required:
+  desktop-release-gate:
+    name: desktop-release-gate
     if: always()
     needs: [plan, test, macos]
     runs-on: ubuntu-latest
