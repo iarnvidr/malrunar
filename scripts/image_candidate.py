@@ -33,6 +33,7 @@ ACTION = ".github/actions/record-image-candidates/action.yml"
 IMAGE_PREFIX = "malrunar-image-candidates"
 QUICKSTART_PREFIX = "malrunar-quickstart-candidate"
 MAX_BYTES = 8 * 1024 * 1024 * 1024
+MAX_CONFIG_BYTES = 256 * 1024
 
 
 class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -228,6 +229,130 @@ def oci_identity(source):
             "attestation_predicates": sorted(predicates),
             "attestation_digests": sorted(set(attestation_digests)),
         }
+
+
+def _safe_config(value, key=""):
+    """Keep diagnostic config useful without copying any credential-looking values."""
+    sensitive = re.compile(r"(?:token|secret|password|passwd|api[_-]?key|authorization)", re.I)
+    if isinstance(value, dict):
+        return {name: _safe_config(child, name) for name, child in value.items()}
+    if isinstance(value, list):
+        return [_safe_config(child, key) for child in value]
+    if isinstance(value, str):
+        if key.lower() == "env" and "=" in value and sensitive.search(value.split("=", 1)[0]):
+            return value.split("=", 1)[0] + "=***"
+        if sensitive.search(key):
+            return "***"
+        return value[:2048]
+    return value
+
+
+def _flatten_config(value, prefix=""):
+    if isinstance(value, dict):
+        result = {}
+        for key, child in value.items():
+            result.update(_flatten_config(child, f"{prefix}.{key}" if prefix else key))
+        return result
+    if isinstance(value, list):
+        return {prefix: value}
+    return {prefix: value}
+
+
+def _docker_saved_config(reference):
+    """Read only the config member from `docker image save`; never persist the layers."""
+    image = image_id(reference)
+    expected = image.removeprefix("sha256:") + ".json"
+    process = subprocess.Popen(["docker", "image", "save", reference], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+    raw = None
+    try:
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            for member in archive:
+                if member.name != expected:
+                    continue
+                stream = archive.extractfile(member)
+                raw = stream.read(MAX_CONFIG_BYTES + 1) if stream else None
+                break
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        if process.stdout:
+            process.stdout.close()
+    if raw is None:
+        raise ValueError("docker save did not contain the inspected image config")
+    if len(raw) > MAX_CONFIG_BYTES:
+        raise ValueError("docker saved image config exceeds the diagnostic size limit")
+    return image, raw
+
+
+def diagnose_image_identity(image, candidate_dir):
+    """Return bounded OCI-versus-Docker config evidence for a failed candidate comparison."""
+    archive_path = Path(candidate_dir) / f"{image}.oci.tar"
+    identity = oci_identity(archive_path)
+    with tarfile.open(archive_path, mode="r:") as archive:
+        members = {item.name: item for item in archive.getmembers() if item.isfile()}
+        config_member = members.get("blobs/sha256/" + identity["config_digest"].split(":", 1)[1])
+        if not config_member or config_member.size > MAX_CONFIG_BYTES:
+            raise ValueError("selected OCI config is missing or exceeds the diagnostic size limit")
+        config_stream = archive.extractfile(config_member)
+        oci_raw = config_stream.read(MAX_CONFIG_BYTES + 1) if config_stream else None
+        index_member = members.get("index.json")
+        index = json.loads(archive.extractfile(index_member).read()) if index_member else {}
+    if not oci_raw or len(oci_raw) > MAX_CONFIG_BYTES:
+        raise ValueError("selected OCI config could not be read within the diagnostic size limit")
+    oci_config = json.loads(oci_raw)
+    reference = f"malrunar/{image}:h-{malrunar_image.image_hash(image)}"
+    docker_image, docker_raw = _docker_saved_config(reference)
+    docker_config = json.loads(docker_raw)
+    safe_oci, safe_docker = _safe_config(oci_config), _safe_config(docker_config)
+    left, right = _flatten_config(safe_oci), _flatten_config(safe_docker)
+    differences = []
+    for key in sorted(set(left) | set(right)):
+        if left.get(key) != right.get(key):
+            differences.append({"field": key, "oci": left.get(key), "docker": right.get(key)})
+            if len(differences) == 100:
+                break
+    return {
+        "image": image,
+        "archive_sha256": identity["archive_sha256"],
+        "oci_index_digest": identity["index_digest"],
+        "oci_manifest_digest": identity["manifest_digest"],
+        "oci_config_digest": identity["config_digest"],
+        "docker_image_id": docker_image,
+        "docker_saved_config_sha256": "sha256:" + sha(docker_raw),
+        "index_descriptors": [
+            {"digest": item.get("digest"), "annotations": item.get("annotations", {}),
+             "platform": item.get("platform")}
+            for item in index.get("manifests", []) if isinstance(item, dict)
+        ],
+        "oci_config": safe_oci,
+        "docker_saved_config": safe_docker,
+        "field_differences": differences,
+        "differences_truncated": len(differences) == 100,
+    }
+
+
+def diagnose_images(images, candidate_dir, output):
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    evidence = {"schema": 1, "images": [], "errors": []}
+    for image in images:
+        try:
+            evidence["images"].append(diagnose_image_identity(image, candidate_dir))
+        except Exception as error:
+            evidence["errors"].append({"image": image, "error": str(error)[:500]})
+    output.write_text(json.dumps(evidence, sort_keys=True) + "\n")
+    print(json.dumps({"diagnostics": str(output), "images": [
+        {"image": item["image"], "oci_config_digest": item["oci_config_digest"],
+         "docker_image_id": item["docker_image_id"],
+         "docker_saved_config_sha256": item["docker_saved_config_sha256"],
+         "field_difference_count": len(item["field_differences"])}
+        for item in evidence["images"]], "errors": evidence["errors"]}, sort_keys=True))
 
 
 def record_images(root: Path, output: Path):
@@ -664,7 +789,7 @@ def publish_candidate(root: Path, image: str, accepted_dir: Path, registry: str,
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: image_candidate.py select|record|quickstart|retrieve|publish-candidate ...")
+        raise SystemExit("usage: image_candidate.py select|record|diagnose|quickstart|retrieve|publish-candidate ...")
     command = sys.argv[1]
     if command == "select":
         parser = argparse.ArgumentParser()
@@ -678,6 +803,13 @@ def main():
         parser.add_argument("--out", type=Path, required=True)
         args = parser.parse_args(sys.argv[2:])
         record_images(args.root.resolve(), args.out.resolve())
+    elif command == "diagnose":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--images", required=True)
+        parser.add_argument("--candidate-dir", type=Path, required=True)
+        parser.add_argument("--output", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        diagnose_images(args.images.split(), args.candidate_dir, args.output)
     elif command == "quickstart":
         parser = argparse.ArgumentParser()
         parser.add_argument("--root", type=Path, required=True)
