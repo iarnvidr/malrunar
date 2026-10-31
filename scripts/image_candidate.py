@@ -650,7 +650,7 @@ def verify_run_receipt(receipt, run, workflow, pr, tree):
     return base_sha
 
 
-def verify_quickstart(pr, tree, merge_sha, source_base_sha):
+def verify_quickstart(pr, tree, merge_sha, source_base_sha, accepted_policy_sha):
     run = successful_run(QUICKSTART_WORKFLOW, pr)
     artifacts = api(f"repos/{REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
     name = f"{QUICKSTART_PREFIX}-{run['id']}-{run['run_attempt']}"
@@ -667,7 +667,7 @@ def verify_quickstart(pr, tree, merge_sha, source_base_sha):
     if receipt.get("check") != "quickstart":
         raise ValueError("quickstart receipt does not identify the required end-to-end check")
     trusted_blobs([QUICKSTART_WORKFLOW, HELPER, BUILD, "examples/quickstart/test/build-images.sh",
-                   "examples/quickstart/test/run.sh"], source_base_sha, receipt["workflow_sha"])
+                   "examples/quickstart/test/run.sh"], accepted_policy_sha, receipt["workflow_sha"])
     return {"run_id": run["id"], "run_attempt": run["run_attempt"],
             "artifact_id": found[0]["id"], "artifact_digest": found[0]["digest"],
             "workflow_sha": receipt["workflow_sha"]}
@@ -723,7 +723,7 @@ def validate_plan_receipt(receipt, run, pr, merge_tree, root):
     return base_sha
 
 
-def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, root, image):
+def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, accepted_policy_sha, root, image):
     if metadata.get("workflow_run", {}).get("id") != run["id"]:
         raise ValueError("image plan artifact belongs to another workflow run")
     expected_name = f"{PLAN_PREFIX}-{run['id']}-{run['run_attempt']}"
@@ -732,9 +732,8 @@ def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, root,
     files = zip_members(archive_zip.read_bytes(), {"image-plan.json"})
     receipt = json.loads(files["image-plan.json"])
     base_sha = validate_plan_receipt(receipt, run, pr, merge_tree, root)
-    if image not in receipt["selected_images"]:
-        paths = [PR_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
-        trusted_blobs(paths, base_sha, receipt["workflow_sha"])
+    paths = [PR_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
+    trusted_blobs(paths, accepted_policy_sha, receipt["workflow_sha"])
     return receipt, base_sha
 
 
@@ -826,10 +825,10 @@ def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, m
     if candidate.get("tested_with") != test_deps:
         raise ValueError("candidate dependency inventory is incomplete or unexpected")
     paths = [PR_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
-    # Trust the producer only when its policy files match the base revision against
-    # which this PR run was tested. Comparing with the merge commit would let a PR
-    # alter both the producer and the comparison target.
-    trusted_blobs(paths, base_sha, candidate["workflow_sha"])
+    # This runs only in the protected main publisher after the PR is merged. Verify
+    # the producer's workflow and helper blobs against that exact accepted merge,
+    # while the receipt and plan remain bound to the original PR base and tested tree.
+    trusted_blobs(paths, merge_sha, candidate["workflow_sha"])
     return {
         "receipt": candidate, "archive_path": image_path, "base_sha": base_sha,
         "artifact_id": metadata["id"], "artifact_digest": metadata["digest"],
@@ -850,12 +849,13 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
         temp = Path(directory)
         plan_metadata = plan_artifact(run)
         plan_zip = download_artifact(plan_metadata, temp / "image-plan.zip")
-        plan, base_sha = verify_plan_artifact(plan_metadata, plan_zip, run, pr, merge_tree, root, image)
+        plan, base_sha = verify_plan_artifact(
+            plan_metadata, plan_zip, run, pr, merge_tree, merge_sha, root, image)
         artifacts = candidate_artifacts(run, image)
         if image not in plan["selected_images"]:
             if artifacts:
                 raise ValueError(f"unselected image unexpectedly has candidate artifacts: {image}")
-            quickstart = verify_quickstart(pr, merge_tree, merge_sha, base_sha)
+            quickstart = verify_quickstart(pr, merge_tree, merge_sha, base_sha, merge_sha)
             accepted = {
                 "schema": 1, "repository": REPOSITORY, "accepted_commit": merge_sha,
                 "accepted_tree": merge_tree, "pr_number": pr["number"], "pr_head_sha": pr["head"]["sha"],
@@ -883,7 +883,7 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
         selected = candidates[0]
         if selected["base_sha"] != base_sha:
             raise ValueError("image plan and candidate artifacts were tested against different bases")
-        quickstart = verify_quickstart(pr, merge_tree, merge_sha, selected["base_sha"])
+        quickstart = verify_quickstart(pr, merge_tree, merge_sha, selected["base_sha"], merge_sha)
         archive_path = output / "image.oci.tar"
         shutil.copyfile(selected["archive_path"], archive_path)
         accepted = {
