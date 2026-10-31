@@ -198,6 +198,22 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("CI_APP_ID", text)
         self.assertIn("CI_APP_PRIVATE_KEY", text)
 
+    def test_weekly_app_preflight_only_mints_token_and_reads_repo_metadata(self):
+        text = (mi.ROOT / ".github/workflows/weekly.yml").read_text()
+        self.assertIn("preflight_only:", text)
+        self.assertIn("default: false", text)
+        self.assertIn("if: ${{ inputs.preflight_only == true }}", text)
+        self.assertIn("gh api repos/iarnvidr/malrunar --jq .full_name", text)
+        self.assertIn("test \"$GITHUB_REPOSITORY\" = iarnvidr/malrunar", text)
+        steps = text.split("\n      - ")
+        for marker in (
+            "uses: actions/checkout@",
+            "run: python3 -I scripts/bump_pins.py",
+            "name: Open or update the pull request",
+        ):
+            step = next(part for part in steps if marker in part)
+            self.assertIn("if: ${{ inputs.preflight_only != true }}", step)
+
     def test_candidate_oci_export_has_one_explicit_image_name(self):
         text = (mi.ROOT / "scripts/build.sh").read_text()
         export = text.split('if [ "$candidate" = true ]; then', 1)[1].split("\nelse", 1)[0]
