@@ -224,6 +224,12 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn('ref="malrunar/media-bridge:h-$hash"', block)
         self.assertIn('echo "BRIDGE_REF=$ref" >> "$GITHUB_ENV"', block)
 
+    def test_media_bridge_consumer_uses_private_runtime_dir(self):
+        text = (mi.ROOT / "media-bridge/test/consumer/bridge-test.sh").read_text()
+        self.assertIn('XDG_RUNTIME_DIR="$work/runtime"', text)
+        self.assertIn('mkdir -m 700 "$XDG_RUNTIME_DIR"', text)
+        self.assertNotIn('XDG_RUNTIME_DIR="/run/user/$(id -u)"', text)
+
     def test_every_image_has_its_files(self):
         for image in mi.IMAGES:
             self.assertTrue((mi.ROOT / image / "Dockerfile").is_file(), image)

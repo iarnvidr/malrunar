@@ -21,7 +21,8 @@ bridge=/opt/malrunar/media-bridge/bin/malrunar-media-bridge
 port=15004
 mic=smoke_mic
 work="$(mktemp -d)"
-XDG_RUNTIME_DIR="/run/user/$(id -u)"
+XDG_RUNTIME_DIR="$work/runtime"
+mkdir -m 700 "$XDG_RUNTIME_DIR"
 export XDG_RUNTIME_DIR
 export HOME="${HOME:-/home/tester}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
