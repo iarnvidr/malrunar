@@ -74,12 +74,18 @@ def git(root: Path, *args: str) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
-def image_id(reference: str) -> str:
+def _docker_inspect_id(reference: str) -> str:
     value = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", reference],
                            check=True, capture_output=True, text=True).stdout.strip()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
         raise ValueError(f"Docker returned an invalid image id for {reference}")
     return value
+
+
+def image_id(reference: str) -> str:
+    """Return the selected linux/amd64 config digest, independent of Docker's image-ID model."""
+    _inspect_id, raw, _member = _docker_saved_config(reference)
+    return "sha256:" + sha(raw)
 
 
 def json_env(name: str):
@@ -259,19 +265,34 @@ def _flatten_config(value, prefix=""):
 
 
 def _docker_saved_config(reference):
-    """Read only the config member from `docker image save`; never persist the layers."""
-    image = image_id(reference)
-    expected = image.removeprefix("sha256:") + ".json"
-    process = subprocess.Popen(["docker", "image", "save", reference], stdout=subprocess.PIPE,
+    """Read only the selected platform's config from `docker image save`; never save layers."""
+    inspect_id = _docker_inspect_id(reference)
+    process = subprocess.Popen(["docker", "image", "save", "--platform", "linux/amd64", reference],
+                               stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL)
-    raw = None
+    raw, member_name, observed = None, None, []
     try:
         with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
             for member in archive:
-                if member.name != expected:
+                if member.name.endswith(".json") or member.name.startswith("blobs/sha256/"):
+                    observed.append(member.name[:180])
+                if not (member.name.endswith(".json") or member.name.startswith("blobs/sha256/")):
+                    continue
+                if member.size > MAX_CONFIG_BYTES:
                     continue
                 stream = archive.extractfile(member)
-                raw = stream.read(MAX_CONFIG_BYTES + 1) if stream else None
+                candidate = stream.read(MAX_CONFIG_BYTES + 1) if stream else None
+                if not candidate or len(candidate) > MAX_CONFIG_BYTES:
+                    continue
+                try:
+                    document = json.loads(candidate)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(document, dict) or not isinstance(document.get("rootfs"), dict):
+                    continue
+                if document.get("os") != "linux" or document.get("architecture") != "amd64":
+                    continue
+                raw, member_name = candidate, member.name
                 break
     finally:
         if process.poll() is None:
@@ -284,10 +305,9 @@ def _docker_saved_config(reference):
         if process.stdout:
             process.stdout.close()
     if raw is None:
-        raise ValueError("docker save did not contain the inspected image config")
-    if len(raw) > MAX_CONFIG_BYTES:
-        raise ValueError("docker saved image config exceeds the diagnostic size limit")
-    return image, raw
+        raise ValueError("docker save did not contain the inspected image config; members="
+                         + json.dumps(observed[:20], sort_keys=True))
+    return inspect_id, raw, member_name
 
 
 def diagnose_image_identity(image, candidate_dir):
@@ -307,7 +327,7 @@ def diagnose_image_identity(image, candidate_dir):
         raise ValueError("selected OCI config could not be read within the diagnostic size limit")
     oci_config = json.loads(oci_raw)
     reference = f"malrunar/{image}:h-{malrunar_image.image_hash(image)}"
-    docker_image, docker_raw = _docker_saved_config(reference)
+    docker_inspect_id, docker_raw, docker_member = _docker_saved_config(reference)
     docker_config = json.loads(docker_raw)
     safe_oci, safe_docker = _safe_config(oci_config), _safe_config(docker_config)
     left, right = _flatten_config(safe_oci), _flatten_config(safe_docker)
@@ -323,7 +343,8 @@ def diagnose_image_identity(image, candidate_dir):
         "oci_index_digest": identity["index_digest"],
         "oci_manifest_digest": identity["manifest_digest"],
         "oci_config_digest": identity["config_digest"],
-        "docker_image_id": docker_image,
+        "docker_image_id": docker_inspect_id,
+        "docker_config_member": docker_member,
         "docker_saved_config_sha256": "sha256:" + sha(docker_raw),
         "index_descriptors": [
             {"digest": item.get("digest"), "annotations": item.get("annotations", {}),

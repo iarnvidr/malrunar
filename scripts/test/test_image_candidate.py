@@ -148,6 +148,47 @@ class OciIdentityTests(unittest.TestCase):
             self.assertEqual(candidate.oci_identity(path)["manifest_digest"], manifest)
 
 
+class DockerSavedConfigTests(unittest.TestCase):
+    def test_image_identity_uses_saved_config_digest_not_inspect_descriptor(self):
+        inspect_descriptor = "sha256:" + "b" * 64
+        config = b'{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
+        with mock.patch.object(candidate, "_docker_saved_config",
+                                return_value=(inspect_descriptor, config, "blobs/sha256/config")):
+            self.assertEqual(candidate.image_id("malrunar/node:test"), digest(config))
+
+    def test_reads_legacy_and_oci_layout_config_members_without_saving_layers(self):
+        image = "sha256:" + "a" * 64
+        config = b'{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
+
+        class Process:
+            def __init__(self, archive):
+                self.stdout = io.BytesIO(archive)
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                raise AssertionError("completed docker save should not be terminated")
+
+            def kill(self):
+                raise AssertionError("completed docker save should not be killed")
+
+        for member_name in ("a" * 64 + ".json", "blobs/sha256/" + "a" * 64):
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w:") as archive:
+                member = tarfile.TarInfo(member_name)
+                member.size = len(config)
+                archive.addfile(member, io.BytesIO(config))
+            with self.subTest(member_name=member_name), \
+                    mock.patch.object(candidate, "_docker_inspect_id", return_value=image), \
+                    mock.patch.object(candidate.subprocess, "Popen", return_value=Process(stream.getvalue())):
+                self.assertEqual(candidate._docker_saved_config("malrunar/node:test"),
+                                 (image, config, member_name))
+
+
 class ReceiptBindingTests(unittest.TestCase):
     def setUp(self):
         self.run = {"id": 123, "run_attempt": 2, "head_sha": "a" * 40,
