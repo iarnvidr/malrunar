@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +22,7 @@ import zipfile
 import malrunar_image
 
 REPOSITORY = "iarnvidr/malrunar"
+IMAGE_REGISTRY = "ghcr.io/iarnvidr"
 PR_WORKFLOW = ".github/workflows/pr.yml"
 QUICKSTART_WORKFLOW = ".github/workflows/quickstart.yml"
 PUBLISH_WORKFLOW = ".github/workflows/publish.yml"
@@ -30,8 +32,10 @@ SMOKE = "scripts/smoke.sh"
 HASHER = "scripts/malrunar_image.py"
 CHANGED = "scripts/changed_images.py"
 ACTION = ".github/actions/record-image-candidates/action.yml"
+LOADER = "scripts/load_tested_images.py"
 IMAGE_PREFIX = "malrunar-image-candidates"
 PLAN_PREFIX = "malrunar-image-plan"
+PREFLIGHT_PREFIX = "malrunar-image-preflight"
 QUICKSTART_PREFIX = "malrunar-quickstart-candidate"
 MAX_BYTES = 8 * 1024 * 1024 * 1024
 MAX_CONFIG_BYTES = 256 * 1024
@@ -68,6 +72,14 @@ def open_github_request(request, timeout):
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def sha_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def git(root: Path, *args: str) -> str:
@@ -519,13 +531,52 @@ def record_quickstart(root: Path, output: Path):
     pr = payload.get("pull_request") or {}
     if not pr:
         raise ValueError("quickstart event has no pull request")
+    source_path = os.environ.get("MALRUNAR_TESTED_IMAGE_MANIFEST")
+    if not source_path:
+        raise ValueError("quickstart must record the exact tested-image manifest")
+    source_file = Path(source_path)
+    if source_file.is_symlink() or not source_file.is_file():
+        raise ValueError("quickstart tested-image manifest is missing or unsafe")
+    source = json.loads(source_file.read_text())
+    tested_tree = git(root, "rev-parse", "HEAD^{tree}")
+    expected = {
+        "schema": 1,
+        "source_run_id": int(os.environ["MALRUNAR_PR_RUN_ID"]),
+        "source_run_attempt": int(os.environ["MALRUNAR_PR_RUN_ATTEMPT"]),
+        "pr_number": pr.get("number"), "head_sha": pr.get("head", {}).get("sha"),
+        "base_sha": pr.get("base", {}).get("sha"), "tested_tree": tested_tree,
+    }
+    if any(source.get(key) != value for key, value in expected.items()):
+        raise ValueError("loaded image manifest is not bound to this exact PR producer run")
+    if (not isinstance(source.get("images"), list) or not source["images"]
+            or any(not isinstance(item, dict) for item in source["images"])):
+        raise ValueError("loaded image manifest has no verified image mapping")
+    expected_targets = set()
+    pending = ["obs-control", "media-bridge"]
+    while pending:
+        image = pending.pop()
+        if image in expected_targets:
+            continue
+        expected_targets.add(image)
+        pending.extend(malrunar_image.TESTED_WITH.get(image, ()))
+        parent = malrunar_image.IMAGES[image]
+        if parent:
+            pending.append(parent)
+    if [item.get("image") for item in source["images"]] != [
+            image for image in malrunar_image.IMAGES if image in expected_targets]:
+        raise ValueError("loaded image manifest does not cover the quickstart dependency closure")
+    for item in source["images"]:
+        image = item["image"]
+        expected_local = f"malrunar/{image}:h-{malrunar_image.image_hash(image, root=root)}"
+        if item.get("local_reference") != expected_local:
+            raise ValueError(f"loaded image has an invalid local smoke-test reference: {image}")
     receipt = {
         "schema": 1, "repository": REPOSITORY, "workflow_path": QUICKSTART_WORKFLOW,
         "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
         "event": "pull_request", "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
         "head_sha": pr.get("head", {}).get("sha"), "base_sha": pr.get("base", {}).get("sha"),
-        "pr_number": pr.get("number"), "tested_tree": git(root, "rev-parse", "HEAD^{tree}"),
-        "check": "quickstart",
+        "pr_number": pr.get("number"), "tested_tree": tested_tree,
+        "check": "quickstart", "source_images": source,
     }
     output.write_text(json.dumps(receipt, sort_keys=True) + "\n")
 
@@ -650,7 +701,8 @@ def verify_run_receipt(receipt, run, workflow, pr, tree):
     return base_sha
 
 
-def verify_quickstart(pr, tree, merge_sha, source_base_sha, accepted_policy_sha):
+def verify_quickstart(pr, tree, merge_sha, source_base_sha, accepted_policy_sha,
+                      producer_run, plan, root):
     run = successful_run(QUICKSTART_WORKFLOW, pr)
     artifacts = api(f"repos/{REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
     name = f"{QUICKSTART_PREFIX}-{run['id']}-{run['run_attempt']}"
@@ -666,8 +718,71 @@ def verify_quickstart(pr, tree, merge_sha, source_base_sha, accepted_policy_sha)
         raise ValueError("quickstart and image candidate runs were tested against different bases")
     if receipt.get("check") != "quickstart":
         raise ValueError("quickstart receipt does not identify the required end-to-end check")
-    trusted_blobs([QUICKSTART_WORKFLOW, HELPER, BUILD, "examples/quickstart/test/build-images.sh",
-                   "examples/quickstart/test/run.sh"], accepted_policy_sha, receipt["workflow_sha"])
+    source = receipt.get("source_images")
+    if not isinstance(source, dict) or any(source.get(key) != value for key, value in {
+            "schema": 1, "source_run_id": producer_run["id"],
+            "source_run_attempt": producer_run["run_attempt"], "pr_number": pr["number"],
+            "head_sha": pr["head"]["sha"], "base_sha": source_base_sha,
+            "tested_tree": tree,
+    }.items()):
+        raise ValueError("quickstart image evidence is not bound to the accepted PR image run")
+    expected_images = set()
+    pending = ["obs-control", "media-bridge"]
+    while pending:
+        image = pending.pop()
+        if image in expected_images:
+            continue
+        expected_images.add(image)
+        pending.extend(malrunar_image.TESTED_WITH.get(image, ()))
+        parent = malrunar_image.IMAGES[image]
+        if parent:
+            pending.append(parent)
+    ordered = [item.get("image") for item in source.get("images", []) if isinstance(item, dict)]
+    expected_order = [image for image in malrunar_image.IMAGES if image in expected_images]
+    if ordered != expected_order:
+        raise ValueError("quickstart image evidence has an incomplete dependency closure")
+    preflight_meta = preflight_artifact(producer_run)
+    if (preflight_meta.get("workflow_run", {}).get("id") != producer_run["id"]
+            or preflight_meta.get("workflow_run", {}).get("head_sha") != pr["head"]["sha"]):
+        raise ValueError("quickstart preflight artifact belongs to another PR producer run")
+    with tempfile.TemporaryDirectory() as directory:
+        preflight_zip = download_artifact(preflight_meta, Path(directory) / "preflight.zip")
+        preflight_files = zip_members(preflight_zip.read_bytes(), {"canonical-preflight.json"})
+    cached, missing = _preflight_entries(json.loads(preflight_files["canonical-preflight.json"]),
+                                         producer_run, pr, tree, root)
+    selected = set(plan.get("selected_images", []))
+    for entry in source["images"]:
+        image = entry["image"]
+        if (entry.get("content_hash") != plan["content_hashes"].get(image)
+                or entry.get("version") != plan["versions"].get(image)
+                or entry.get("local_reference") != f"malrunar/{image}:h-{plan['content_hashes'][image]}"):
+            raise ValueError(f"quickstart loaded a different image version: {image}")
+        if image in selected:
+            candidates = candidate_artifacts(producer_run, image)
+            if len(candidates) != 1:
+                raise ValueError(f"quickstart image has no unique producer artifact: {image}")
+            artifact = candidates[0]
+            job_key = artifact["name"].removeprefix(
+                f"{IMAGE_PREFIX}-{producer_run['id']}-{producer_run['run_attempt']}-")
+            expected_job = _producer_job_name(job_key)
+            if (entry.get("source") != "candidate"
+                    or str(entry.get("artifact_id")) != str(artifact.get("id"))
+                    or entry.get("artifact_digest") != artifact.get("digest")
+                    or entry.get("artifact_name") != artifact.get("name")
+                    or entry.get("job_key") != job_key
+                    or entry.get("producer_job") != expected_job):
+                raise ValueError(f"quickstart candidate mapping differs from the exact producer artifact: {image}")
+        else:
+            record = cached.get(image)
+            if (image in missing or record is None or entry.get("source") != "canonical"
+                    or entry.get("root_digest") != record["root_digest"]
+                    or entry.get("config_digest") != record["config_digest"]
+                    or entry.get("reference") != f"{IMAGE_REGISTRY}/{image}@{record['root_digest']}"):
+                raise ValueError(f"quickstart canonical mapping differs from preflight: {image}")
+    trusted_blobs([QUICKSTART_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION,
+                   "scripts/load_tested_images.py", "examples/quickstart/test/build-images.sh",
+                   "examples/quickstart/test/run.sh"],
+                  accepted_policy_sha, receipt["workflow_sha"])
     return {"run_id": run["id"], "run_attempt": run["run_attempt"],
             "artifact_id": found[0]["id"], "artifact_digest": found[0]["digest"],
             "workflow_sha": receipt["workflow_sha"]}
@@ -697,6 +812,102 @@ def plan_artifact(run):
     return found[0]
 
 
+def preflight_artifact(run):
+    artifacts = api(f"repos/{REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
+    name = f"{PREFLIGHT_PREFIX}-{run['id']}-{run['run_attempt']}"
+    found = [item for item in artifacts if item.get("name") == name and not item.get("expired")]
+    if len(found) != 1:
+        raise ValueError("producer run has no unique immutable canonical preflight artifact")
+    return found[0]
+
+
+def wait_for_pr_run(root: Path, pr_event_path: Path, timeout_seconds: int,
+                    output: Path, preflight_output: Path, poll_seconds: int = 15):
+    """Wait boundedly for the exact PR image producer workflow attempt and fetch its preflight."""
+    if timeout_seconds < 1 or timeout_seconds > 3600 or poll_seconds < 1 or poll_seconds > 60:
+        raise ValueError("producer wait bounds are invalid")
+    event = json.loads(pr_event_path.read_text())
+    pr = event.get("pull_request") or {}
+    if (event.get("repository", {}).get("full_name") != REPOSITORY
+            or not isinstance(pr.get("number"), int)
+            or pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
+            or pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY
+            or not re.fullmatch(r"[0-9a-f]{40}", pr.get("head", {}).get("sha", ""))
+            or not re.fullmatch(r"[0-9a-f]{40}", pr.get("base", {}).get("sha", ""))):
+        raise ValueError("quickstart requires a same-repository pull request event")
+    current_pr = api(f"repos/{REPOSITORY}/pulls/{pr['number']}")
+    if (current_pr.get("number") != pr["number"]
+            or current_pr.get("head", {}).get("sha") != pr["head"]["sha"]
+            or current_pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
+            or current_pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY):
+        raise ValueError("quickstart PR no longer matches its triggering head")
+
+    deadline = time.monotonic() + timeout_seconds
+    selected = None
+    while time.monotonic() < deadline:
+        query = urllib.parse.urlencode({"head_sha": pr["head"]["sha"], "event": "pull_request",
+                                        "per_page": 100, "page": 1})
+        runs = api(f"repos/{REPOSITORY}/actions/workflows/{Path(PR_WORKFLOW).name}/runs?{query}")
+        found = [run for run in runs.get("workflow_runs", [])
+                 if run.get("repository", {}).get("full_name") == REPOSITORY
+                 and run.get("head_repository", {}).get("full_name") == REPOSITORY
+                 and run.get("path") == PR_WORKFLOW and run.get("event") == "pull_request"
+                 and run.get("head_sha") == pr["head"]["sha"]
+                 and (not run.get("pull_requests")
+                      or any(item.get("number") == pr["number"] for item in run["pull_requests"]))]
+        if found:
+            selected = max(found, key=lambda item: (item.get("id", 0), item.get("run_attempt", 0)))
+            if selected.get("status") == "completed":
+                if selected.get("conclusion") != "success":
+                    raise ValueError("exact PR image producer workflow completed unsuccessfully")
+                break
+        time.sleep(poll_seconds)
+    if not selected or selected.get("status") != "completed" or selected.get("conclusion") != "success":
+        raise ValueError("timed out waiting for the exact successful PR image producer workflow")
+
+    run_id, run_attempt = selected.get("id"), selected.get("run_attempt")
+    if not isinstance(run_id, int) or run_id <= 0 or not isinstance(run_attempt, int) or run_attempt <= 0:
+        raise ValueError("successful PR image producer run identity is invalid")
+    attempt = api(f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}")
+    if (attempt.get("id") != run_id or attempt.get("run_attempt") != run_attempt
+            or attempt.get("path") != PR_WORKFLOW or attempt.get("event") != "pull_request"
+            or attempt.get("status") != "completed" or attempt.get("conclusion") != "success"
+            or attempt.get("head_sha") != pr["head"]["sha"]
+            or attempt.get("repository", {}).get("full_name") != REPOSITORY
+            or (attempt.get("pull_requests") and not any(
+                item.get("number") == pr["number"] for item in attempt["pull_requests"]))):
+        raise ValueError("successful PR run attempt does not match the exact triggering pull request")
+    jobs = _attempt_jobs(run_id, run_attempt)
+    for name in ("plan", "canonical-preflight"):
+        matching = [job for job in jobs if job.get("name") == name]
+        if len(matching) != 1 or matching[0].get("conclusion") != "success":
+            raise ValueError(f"PR image producer is missing a successful {name} job")
+    manifest_metadata = preflight_artifact({"id": run_id, "run_attempt": run_attempt})
+    if (manifest_metadata.get("workflow_run", {}).get("id") != run_id
+            or manifest_metadata.get("workflow_run", {}).get("head_sha") != pr["head"]["sha"]):
+        raise ValueError("canonical preflight artifact does not belong to the successful PR run")
+    with tempfile.TemporaryDirectory() as directory:
+        archive = download_artifact(manifest_metadata, Path(directory) / "preflight.zip")
+        files = zip_members(archive.read_bytes(), {"canonical-preflight.json"})
+    manifest = json.loads(files["canonical-preflight.json"])
+    if (manifest.get("run_id") != run_id or manifest.get("run_attempt") != run_attempt
+            or manifest.get("pr_number") != pr["number"]
+            or manifest.get("head_sha") != pr["head"]["sha"]
+            or manifest.get("base_sha") != pr["base"]["sha"]
+            or manifest.get("workflow_path") != PR_WORKFLOW
+            or manifest.get("registry") != IMAGE_REGISTRY):
+        raise ValueError("canonical preflight manifest is not bound to the successful PR run")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps({
+        "run_id": run_id, "run_attempt": run_attempt,
+        "pr_number": pr["number"], "head_sha": pr["head"]["sha"],
+        "base_sha": pr["base"]["sha"], "tested_tree": manifest.get("tested_tree"),
+    }, sort_keys=True) + "\n")
+    preflight_output.parent.mkdir(parents=True, exist_ok=True)
+    preflight_output.write_bytes(files["canonical-preflight.json"])
+    return {"run_id": run_id, "run_attempt": run_attempt, "preflight": manifest_metadata}
+
+
 def validate_plan_receipt(receipt, run, pr, merge_tree, root):
     base_sha = verify_run_receipt(receipt, run, PR_WORKFLOW, pr, merge_tree)
     if not re.fullmatch(r"[0-9a-f]{40}", receipt.get("workflow_sha", "")):
@@ -723,7 +934,8 @@ def validate_plan_receipt(receipt, run, pr, merge_tree, root):
     return base_sha
 
 
-def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, accepted_policy_sha, root, image):
+def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, accepted_policy_sha, root, image,
+                        *, verify_source_policy=True):
     if metadata.get("workflow_run", {}).get("id") != run["id"]:
         raise ValueError("image plan artifact belongs to another workflow run")
     expected_name = f"{PLAN_PREFIX}-{run['id']}-{run['run_attempt']}"
@@ -732,12 +944,14 @@ def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, accep
     files = zip_members(archive_zip.read_bytes(), {"image-plan.json"})
     receipt = json.loads(files["image-plan.json"])
     base_sha = validate_plan_receipt(receipt, run, pr, merge_tree, root)
-    paths = [PR_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
-    trusted_blobs(paths, accepted_policy_sha, receipt["workflow_sha"])
+    if verify_source_policy:
+        paths = [PR_WORKFLOW, HELPER, LOADER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
+        trusted_blobs(paths, accepted_policy_sha, receipt["workflow_sha"])
     return receipt, base_sha
 
 
-def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, merge_tree, image, root, image_path):
+def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, merge_tree, image, root, image_path,
+                              *, verify_source_policy=True):
     if metadata.get("workflow_run", {}).get("id") != run["id"]:
         raise ValueError("image candidate artifact belongs to another workflow run")
     with zipfile.ZipFile(archive_zip) as inner:
@@ -824,16 +1038,274 @@ def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, m
         test_deps.append(found)
     if candidate.get("tested_with") != test_deps:
         raise ValueError("candidate dependency inventory is incomplete or unexpected")
-    paths = [PR_WORKFLOW, HELPER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
-    # This runs only in the protected main publisher after the PR is merged. Verify
-    # the producer's workflow and helper blobs against that exact accepted merge,
-    # while the receipt and plan remain bound to the original PR base and tested tree.
-    trusted_blobs(paths, merge_sha, candidate["workflow_sha"])
+    if verify_source_policy:
+        paths = [PR_WORKFLOW, HELPER, LOADER, BUILD, SMOKE, HASHER, CHANGED, ACTION]
+        # This runs only in the protected main publisher after the PR is merged. Verify
+        # the producer's workflow and helper blobs against that exact accepted merge,
+        # while the receipt and plan remain bound to the original PR base and tested tree.
+        trusted_blobs(paths, merge_sha, candidate["workflow_sha"])
     return {
         "receipt": candidate, "archive_path": image_path, "base_sha": base_sha,
         "artifact_id": metadata["id"], "artifact_digest": metadata["digest"],
         "artifact_name": metadata["name"],
     }
+
+
+def _producer_job_name(job_key):
+    if job_key.startswith("build-targets--"):
+        targets = job_key.removeprefix("build-targets--").split("--")
+        return "build (" + " ".join(targets) + ")"
+    return job_key
+
+
+def _attempt_jobs(run_id, run_attempt):
+    jobs = []
+    for page in range(1, 11):
+        data = api(f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
+                   f"?per_page=100&page={page}")
+        jobs.extend(data.get("jobs", []))
+        if len(data.get("jobs", [])) < 100:
+            break
+    return jobs
+
+
+def _preflight_entries(manifest, run, pr, tested_tree, root):
+    expected = {
+        "schema": 1, "repository": REPOSITORY, "workflow_path": PR_WORKFLOW,
+        "run_id": run["id"], "run_attempt": run["run_attempt"], "event": "pull_request",
+        "head_sha": pr["head"]["sha"], "base_sha": pr["base"]["sha"],
+        "pr_number": pr["number"], "tested_tree": tested_tree, "registry": IMAGE_REGISTRY,
+    }
+    if any(manifest.get(key) != value for key, value in expected.items()):
+        raise ValueError("canonical preflight manifest does not match the producing PR run")
+    cached = manifest.get("cached")
+    missing = manifest.get("missing")
+    if not isinstance(cached, list) or not isinstance(missing, list):
+        raise ValueError("canonical preflight image inventory is malformed")
+    by_image = {}
+    for item in cached:
+        image = item.get("image")
+        if image not in malrunar_image.IMAGES or image in by_image:
+            raise ValueError("canonical preflight contains a duplicate or unknown image")
+        content_hash = malrunar_image.image_hash(image, root=root)
+        reference = f"{IMAGE_REGISTRY}/{image}:h-{content_hash}"
+        if (item.get("content_hash") != content_hash or item.get("reference") != reference
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", item.get("root_digest", ""))
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", item.get("config_digest", ""))):
+            raise ValueError(f"canonical preflight identity is invalid for {image}")
+        by_image[image] = item
+    missing_by_image = {}
+    for item in missing:
+        image = item.get("image")
+        if image not in malrunar_image.IMAGES or image in missing_by_image or image in by_image:
+            raise ValueError("canonical preflight missing inventory is malformed")
+        content_hash = malrunar_image.image_hash(image, root=root)
+        if (item.get("content_hash") != content_hash
+                or item.get("reference") != f"{IMAGE_REGISTRY}/{image}:h-{content_hash}"):
+            raise ValueError(f"canonical preflight missing reference is invalid for {image}")
+        missing_by_image[image] = item
+    if set(by_image) | set(missing_by_image) != set(malrunar_image.IMAGES):
+        raise ValueError("canonical preflight inventory does not cover every image")
+    return by_image, missing_by_image
+
+
+def resolve_tested_images(root: Path, targets: list[str], run_id: int, run_attempt: int,
+                          pr_event_path: Path, tested_tree: str, preflight_json: Path, *,
+                          current_run_in_progress: bool, candidate_dir: Path | None = None) -> list[dict]:
+    """Resolve exact PR-tested candidate artifacts or preflight-verified immutable canonical roots.
+
+    This is the unprivileged consumer path used by PR integrations and quickstart. It omits only
+    the accepted-main source-blob comparison; all PR, attempt, tree, artifact, image, and dependency
+    identities are still checked. The protected publisher continues to use that source comparison.
+    """
+    if (not isinstance(run_id, int) or run_id <= 0 or not isinstance(run_attempt, int)
+            or run_attempt <= 0 or not re.fullmatch(r"[0-9a-f]{40}", tested_tree)):
+        raise ValueError("candidate producer run identity is malformed")
+    if candidate_dir is None:
+        raise ValueError("candidate consumer must provide a temporary archive directory")
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    if not isinstance(targets, list) or not targets or len(targets) != len(set(targets)) \
+            or any(not isinstance(image, str) or image not in malrunar_image.IMAGES for image in targets):
+        raise ValueError("tested image selection is empty, duplicated, or unknown")
+    if git(root, "rev-parse", "HEAD^{tree}") != tested_tree:
+        raise ValueError("candidate consumer checkout tree differs from the producer receipt")
+    event = json.loads(pr_event_path.read_text())
+    pr = event.get("pull_request") or {}
+    if (event.get("repository", {}).get("full_name") != REPOSITORY
+            or not isinstance(pr.get("number"), int)
+            or not re.fullmatch(r"[0-9a-f]{40}", pr.get("head", {}).get("sha", ""))
+            or not re.fullmatch(r"[0-9a-f]{40}", pr.get("base", {}).get("sha", ""))
+            or pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
+            or pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY):
+        raise ValueError("candidate consumer requires the exact same-repository PR event")
+    pr_number = pr["number"]
+    attempt = api(f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}")
+    if (attempt.get("id") != run_id or attempt.get("run_attempt") != run_attempt
+            or attempt.get("event") != "pull_request" or attempt.get("path") != PR_WORKFLOW
+            or attempt.get("head_sha") != pr["head"]["sha"]
+            or attempt.get("repository", {}).get("full_name") != REPOSITORY):
+        raise ValueError("candidate producer is not the exact same-repository PR workflow attempt")
+    if current_run_in_progress:
+        if attempt.get("status") not in {"in_progress", "completed"} \
+                or (attempt.get("status") == "completed" and attempt.get("conclusion") != "success"):
+            raise ValueError("current PR producer workflow is not active or successful")
+    elif attempt.get("status") != "completed" or attempt.get("conclusion") != "success":
+        raise ValueError("separate workflow requires a terminal successful PR producer run")
+    if attempt.get("pull_requests"):
+        if not any(item.get("number") == pr_number for item in attempt["pull_requests"]):
+            raise ValueError("producer workflow run is associated with a different pull request")
+
+    run = {"id": run_id, "run_attempt": run_attempt}
+    jobs = _attempt_jobs(run_id, run_attempt)
+    for name in ("plan", "canonical-preflight"):
+        matching_jobs = [job for job in jobs if job.get("name") == name]
+        if len(matching_jobs) != 1 or matching_jobs[0].get("conclusion") != "success":
+            raise ValueError(f"PR image producer is missing a successful {name} job")
+    plan_metadata = plan_artifact(run)
+    preflight_metadata = preflight_artifact(run)
+    for metadata in (plan_metadata, preflight_metadata):
+        workflow_run = metadata.get("workflow_run", {})
+        if (workflow_run.get("id") != run_id
+                or workflow_run.get("head_sha") != pr["head"]["sha"]):
+            raise ValueError("plan or preflight artifact belongs to a different PR producer run")
+    with tempfile.TemporaryDirectory(dir=candidate_dir) as temporary:
+        temporary_root = Path(temporary)
+        plan_zip = download_artifact(plan_metadata, temporary_root / "image-plan.zip")
+        plan, plan_base = verify_plan_artifact(
+            plan_metadata, plan_zip, run, pr, tested_tree, None, root, targets[0],
+            verify_source_policy=False)
+        if plan_base != pr["base"]["sha"]:
+            raise ValueError("image plan base differs from the pull request event")
+        preflight_zip = download_artifact(preflight_metadata, temporary_root / "image-preflight.zip")
+        preflight_files = zip_members(preflight_zip.read_bytes(), {"canonical-preflight.json"})
+        provided_preflight = preflight_json.read_bytes()
+        if provided_preflight.rstrip(b"\n") != preflight_files["canonical-preflight.json"].rstrip(b"\n"):
+            raise ValueError("supplied canonical preflight differs from its immutable producer artifact")
+        preflight = json.loads(preflight_files["canonical-preflight.json"])
+        cached, missing = _preflight_entries(preflight, run, pr, tested_tree, root)
+        artifacts = api(f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")["artifacts"]
+        artifacts_by_id = {}
+        for item in artifacts:
+            if (item.get("workflow_run", {}).get("id") == run_id
+                    and item.get("workflow_run", {}).get("head_sha") == pr["head"]["sha"]
+                    and not item.get("expired")):
+                artifacts_by_id[item.get("id")] = item
+
+        required = set(targets)
+        pending = list(targets)
+        while pending:
+            image = pending.pop()
+            dependencies = list(malrunar_image.TESTED_WITH.get(image, ()))
+            parent = malrunar_image.IMAGES[image]
+            if parent:
+                dependencies.append(parent)
+            for dependency in dependencies:
+                if dependency not in required:
+                    required.add(dependency)
+                    pending.append(dependency)
+
+        resolved = {}
+        archive_zips = {}
+        for image in [name for name in malrunar_image.IMAGES if name in required]:
+            selected = image in plan.get("selected_images", [])
+            prefix = f"{IMAGE_PREFIX}-{run_id}-{run_attempt}-"
+            matching = []
+            for metadata in artifacts_by_id.values():
+                name = metadata.get("name", "")
+                if not name.startswith(prefix):
+                    continue
+                key = name.removeprefix(prefix)
+                listed = key.removeprefix("build-targets--").split("--") if key.startswith("build-targets--") else [key]
+                if image in listed:
+                    matching.append(metadata)
+            if selected:
+                if image in missing:
+                    # A selected target may be built once in its producer job; the preflight miss
+                    # must be visible and is not itself an error.
+                    pass
+                if len(matching) != 1:
+                    raise ValueError(f"selected image has no unique exact candidate artifact: {image}")
+                metadata = matching[0]
+                job_key = metadata["name"].removeprefix(prefix)
+                expected_job = _producer_job_name(job_key)
+                producers = [job for job in jobs if job.get("name") == expected_job]
+                if len(producers) != 1 or producers[0].get("conclusion") != "success":
+                    raise ValueError(f"selected image producer job did not succeed in this attempt: {image}")
+                if metadata["id"] not in archive_zips:
+                    archive_zips[metadata["id"]] = download_artifact(
+                        metadata, temporary_root / f"candidate-{metadata['id']}.zip")
+                archive_path = candidate_dir / f"{image}.oci.tar"
+                verified = verify_candidate_artifact(
+                    metadata, archive_zips[metadata["id"]], run, pr, None,
+                    tested_tree, image, root, archive_path, verify_source_policy=False)
+                if verified is None or verified["base_sha"] != plan_base:
+                    raise ValueError(f"selected candidate artifact differs from the exact run plan: {image}")
+                receipt = verified["receipt"]
+                if image in cached and (receipt["publishable_root_digest"] != cached[image]["root_digest"]
+                                        or receipt["config_digest"] != cached[image]["config_digest"]):
+                    raise ValueError(f"selected candidate differs from its verified canonical image: {image}")
+                entry = {
+                    "image": image, "source": "candidate", "content_hash": receipt["content_hash"],
+                    "version": receipt["version"], "config_digest": receipt["config_digest"],
+                    "root_digest": receipt["publishable_root_digest"],
+                    "manifest_digest": receipt["manifest_digest"],
+                    "archive_path": str(archive_path), "archive_sha256": sha_file(archive_path),
+                    "artifact_id": metadata["id"], "artifact_digest": metadata["digest"],
+                    "artifact_name": metadata["name"], "job_key": job_key,
+                    "producer_job": expected_job, "producer_run_id": run_id,
+                    "producer_run_attempt": run_attempt, "head_sha": pr["head"]["sha"],
+                    "base_sha": plan_base, "tested_tree": tested_tree, "pr_number": pr_number,
+                    "preflight_artifact_id": preflight_metadata["id"],
+                    "preflight_artifact_digest": preflight_metadata["digest"],
+                    "preflight_artifact_name": preflight_metadata["name"],
+                }
+            else:
+                if matching:
+                    raise ValueError(f"unselected image unexpectedly has a candidate artifact: {image}")
+                if image in missing or image not in cached:
+                    raise ValueError(f"unselected dependency lacks a preflight-verified canonical image: {image}")
+                record = cached[image]
+                entry = {
+                    "image": image, "source": "canonical", "content_hash": record["content_hash"],
+                    "version": malrunar_image.version(image, root=root),
+                    "config_digest": record["config_digest"], "root_digest": record["root_digest"],
+                    "reference": f"{IMAGE_REGISTRY}/{image}@{record['root_digest']}",
+                    "artifact_id": None, "artifact_digest": None, "artifact_name": None,
+                    "job_key": None, "producer_job": None, "producer_run_id": run_id,
+                    "producer_run_attempt": run_attempt, "head_sha": pr["head"]["sha"],
+                    "base_sha": plan_base, "tested_tree": tested_tree, "pr_number": pr_number,
+                    "preflight_artifact_id": preflight_metadata["id"],
+                    "preflight_artifact_digest": preflight_metadata["digest"],
+                    "preflight_artifact_name": preflight_metadata["name"],
+                }
+            resolved[image] = entry
+
+        for image, entry in resolved.items():
+            if entry["source"] != "candidate":
+                continue
+            # Candidate receipts are retained from the verified bundle for dependency checks below.
+            metadata = next(item for item in artifacts_by_id.values() if item.get("id") == entry["artifact_id"])
+            archive_zip = archive_zips[metadata["id"]]
+            with zipfile.ZipFile(archive_zip) as bundle:
+                receipt = json.loads(bundle.read(f"images/{image}/candidate.json"))
+            parent = receipt.get("parent")
+            if malrunar_image.IMAGES[image]:
+                loaded_parent = resolved.get(malrunar_image.IMAGES[image])
+                if not loaded_parent or parent.get("config_digest") != loaded_parent["config_digest"]:
+                    raise ValueError(f"candidate parent differs from the exact loaded image: {image}")
+            expected_tested = []
+            for dependency in malrunar_image.TESTED_WITH.get(image, ()):
+                loaded_dependency = resolved.get(dependency)
+                match = next((item for item in receipt.get("tested_with", [])
+                              if item.get("name") == dependency), None)
+                if (not loaded_dependency or not match
+                        or match.get("config_digest") != loaded_dependency["config_digest"]
+                        or match.get("content_hash") != loaded_dependency["content_hash"]):
+                    raise ValueError(f"candidate tested dependency differs from the exact loaded image: {image}")
+                expected_tested.append(match)
+            if receipt.get("tested_with") != expected_tested:
+                raise ValueError(f"candidate tested dependency inventory is incomplete: {image}")
+        return [resolved[image] for image in malrunar_image.IMAGES if image in resolved]
 
 
 def retrieve(root: Path, image: str, merge_sha: str, output: Path):
@@ -855,7 +1327,8 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
         if image not in plan["selected_images"]:
             if artifacts:
                 raise ValueError(f"unselected image unexpectedly has candidate artifacts: {image}")
-            quickstart = verify_quickstart(pr, merge_tree, merge_sha, base_sha, merge_sha)
+            quickstart = verify_quickstart(pr, merge_tree, merge_sha, base_sha, merge_sha,
+                                           run, plan, root)
             accepted = {
                 "schema": 1, "repository": REPOSITORY, "accepted_commit": merge_sha,
                 "accepted_tree": merge_tree, "pr_number": pr["number"], "pr_head_sha": pr["head"]["sha"],
@@ -883,7 +1356,8 @@ def retrieve(root: Path, image: str, merge_sha: str, output: Path):
         selected = candidates[0]
         if selected["base_sha"] != base_sha:
             raise ValueError("image plan and candidate artifacts were tested against different bases")
-        quickstart = verify_quickstart(pr, merge_tree, merge_sha, selected["base_sha"], merge_sha)
+        quickstart = verify_quickstart(pr, merge_tree, merge_sha, selected["base_sha"], merge_sha,
+                                       run, plan, root)
         archive_path = output / "image.oci.tar"
         shutil.copyfile(selected["archive_path"], archive_path)
         accepted = {
@@ -1020,38 +1494,171 @@ def _registry_identity(reference, authfile):
     return {"config_digest": config_digest}
 
 
+def _registry_tag_is_missing(error):
+    text = " ".join(
+        part.decode("utf-8", "replace") if isinstance(part, bytes) else str(part or "")
+        for part in (getattr(error, "stdout", None), getattr(error, "stderr", None))
+    ).lower()
+    return any(marker in text for marker in (
+        "manifest unknown", "manifest not found", "name unknown", "404 not found",
+        "404 page not found", "statuscode: 404",
+    ))
+
+
+def _reuse_failure(stage, error=None):
+    if isinstance(error, subprocess.CalledProcessError):
+        print(f"trusted canonical reuse failed at {stage} (exit {error.returncode}); refusing to rebuild")
+    else:
+        print(f"trusted canonical reuse failed at {stage}; refusing to rebuild")
+    raise SystemExit(2)
+
+
+def preflight_canonical(root: Path, output: Path | None = None):
+    """Verify readable signed main tags and linux/amd64 config identities before build jobs fan out."""
+    binding = {}
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path:
+        payload = json.loads(Path(event_path).read_text())
+        pr = payload.get("pull_request") or {}
+        if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+            if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
+                    or not pr or not re.fullmatch(r"[0-9a-f]{40}", pr.get("head", {}).get("sha", ""))
+                    or not re.fullmatch(r"[0-9a-f]{40}", pr.get("base", {}).get("sha", ""))
+                    or not isinstance(pr.get("number"), int)):
+                raise ValueError("canonical preflight requires a same-repository pull request")
+            binding = {
+                "run_id": int(os.environ["GITHUB_RUN_ID"]),
+                "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                "event": "pull_request", "head_sha": pr["head"]["sha"],
+                "base_sha": pr["base"]["sha"], "pr_number": pr["number"],
+                "tested_tree": git(root, "rev-parse", "HEAD^{tree}"),
+            }
+        elif output is not None or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+            raise ValueError("only pull_request or manual workflow_dispatch may run canonical preflight")
+    elif output is not None:
+        raise ValueError("preflight manifest requires the pull request event binding")
+    docker_config = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "config.json"
+    auth_args = ["--authfile", str(docker_config)] if docker_config.is_file() else []
+    cached, missing = [], []
+    for image in malrunar_image.IMAGES:
+        content_hash = malrunar_image.image_hash(image, root=root)
+        target = f"{IMAGE_REGISTRY}/{image}"
+        reference = f"{target}:h-{content_hash}"
+        try:
+            raw = subprocess.run(["skopeo", "inspect", "--raw", *auth_args,
+                                  f"docker://{reference}"], check=True, capture_output=True).stdout
+        except subprocess.CalledProcessError as error:
+            if _registry_tag_is_missing(error):
+                missing.append({"image": image, "content_hash": content_hash,
+                                "reference": reference})
+                continue
+            _reuse_failure("skopeo inspect preflight", error)
+        except OSError as error:
+            _reuse_failure("skopeo inspect preflight", error)
+
+        root_digest = "sha256:" + sha(raw)
+        try:
+            subprocess.run(["cosign", "verify", f"{target}@{root_digest}",
+                            "--certificate-identity",
+                            "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
+                            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            document = json.loads(raw)
+            descriptors = document.get("manifests")
+            if descriptors is not None:
+                linux_amd64 = [entry for entry in descriptors
+                               if entry.get("platform", {}).get("os") == "linux"
+                               and entry.get("platform", {}).get("architecture") == "amd64"]
+                if len(linux_amd64) != 1:
+                    raise ValueError("canonical index must identify one linux/amd64 image")
+                child_digest = linux_amd64[0].get("digest", "")
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", child_digest):
+                    raise ValueError("canonical linux/amd64 manifest digest is invalid")
+                child_raw = subprocess.run(
+                    ["skopeo", "inspect", "--raw", *auth_args, f"docker://{target}@{child_digest}"],
+                    check=True, capture_output=True).stdout
+                document = json.loads(child_raw)
+            config_digest = document.get("config", {}).get("digest")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest or ""):
+                raise ValueError("canonical image has no valid config digest")
+        except (OSError, subprocess.CalledProcessError) as error:
+            _reuse_failure("canonical cosign or config preflight", error)
+        except (ValueError, KeyError, json.JSONDecodeError):
+            _reuse_failure("canonical index/config preflight")
+        cached.append({"image": image, "content_hash": content_hash, "reference": reference,
+                       "root_digest": root_digest, "config_digest": config_digest})
+    manifest = {"schema": 1, "repository": REPOSITORY, "workflow_path": PR_WORKFLOW,
+                **binding, "registry": IMAGE_REGISTRY, "cached": cached, "missing": missing}
+    encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(encoded + "\n")
+    print(encoded)
+    return manifest
+
+
+def write_manifest_output(path: Path, key: str, value):
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", key):
+        raise ValueError("GitHub output key is invalid")
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    with path.open("a") as stream:
+        stream.write(f"{key}={encoded}\n")
+
+
 def reuse_canonical(root: Path, image: str, output: Path):
     """Materialize a trusted main image for PR smoke tests when its inputs match."""
     content_hash = malrunar_image.image_hash(image, root=root)
-    target = f"ghcr.io/{REPOSITORY}/{image}"
+    target = f"{IMAGE_REGISTRY}/{image}"
     tag = f"h-{content_hash}"
     reference = f"{target}:{tag}"
+    docker_config = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "config.json"
+    auth_args = ["--authfile", str(docker_config)] if docker_config.is_file() else []
     try:
-        raw = subprocess.run(["skopeo", "inspect", "--raw", f"docker://{reference}"],
+        raw = subprocess.run(["skopeo", "inspect", "--raw", *auth_args, f"docker://{reference}"],
                              check=True, capture_output=True).stdout
-        digest = "sha256:" + sha(raw)
+    except subprocess.CalledProcessError as error:
+        if _registry_tag_is_missing(error):
+            print(f"no canonical tag for {reference}; building once")
+            return False
+        _reuse_failure("skopeo inspect", error)
+    except OSError as error:
+        _reuse_failure("skopeo inspect", error)
+
+    digest = "sha256:" + sha(raw)
+    try:
         subprocess.run(["cosign", "verify", f"{target}@{digest}",
                         "--certificate-identity",
                         "https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
                         "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as error:
+        _reuse_failure("cosign verify", error)
+
+    try:
         output.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["skopeo", "copy", "--all", "--preserve-digests",
+        copy_auth_args = ["--src-authfile", str(docker_config)] if docker_config.is_file() else []
+        subprocess.run(["skopeo", "copy", *copy_auth_args, "--all", "--preserve-digests",
                         f"docker://{target}@{digest}", f"oci-archive:{output}:{tag}"], check=True)
-        identity = oci_identity(output)
-        if identity["publishable_root_digest"] != digest:
-            raise ValueError("trusted image copy changed the published root digest")
-        print(f"reusing trusted canonical {reference} ({digest}) for smoke testing")
-        return True
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, json.JSONDecodeError):
+    except (OSError, subprocess.CalledProcessError) as error:
         output.unlink(missing_ok=True)
-        print(f"no reusable trusted canonical image for {reference}; building once")
-        return False
+        _reuse_failure("skopeo copy", error)
+
+    try:
+        identity = oci_identity(output)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        output.unlink(missing_ok=True)
+        _reuse_failure("OCI identity verification")
+    if identity["publishable_root_digest"] != digest:
+        output.unlink(missing_ok=True)
+        print("trusted canonical reuse failed at OCI root digest verification; refusing to rebuild")
+        raise SystemExit(2)
+    print(f"reusing trusted canonical {reference} ({digest}) for smoke testing")
+    return True
 
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: image_candidate.py select|record|record-plan|diagnose|quickstart|retrieve|publish-candidate ...")
+        raise SystemExit("usage: image_candidate.py select|record|record-plan|diagnose|quickstart|retrieve|publish-candidate|reuse-canonical|preflight-canonical ...")
     command = sys.argv[1]
     if command == "reuse-canonical":
         parser = argparse.ArgumentParser()
@@ -1060,7 +1667,16 @@ def main():
         parser.add_argument("--output", type=Path, required=True)
         args = parser.parse_args(sys.argv[2:])
         raise SystemExit(0 if reuse_canonical(args.root.resolve(), args.image,
-                                              args.output.resolve()) else 3)
+                                              args.output.resolve()) else 1)
+    elif command == "preflight-canonical":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, required=True)
+        parser.add_argument("--output", type=Path)
+        parser.add_argument("--github-output", type=Path)
+        args = parser.parse_args(sys.argv[2:])
+        manifest = preflight_canonical(args.root.resolve(), args.output.resolve() if args.output else None)
+        if args.github_output:
+            write_manifest_output(args.github_output, "manifest", manifest)
     elif command == "select":
         parser = argparse.ArgumentParser()
         parser.add_argument("--candidates", required=True)
@@ -1092,6 +1708,17 @@ def main():
         parser.add_argument("--output", type=Path, required=True)
         args = parser.parse_args(sys.argv[2:])
         record_quickstart(args.root.resolve(), args.output.resolve())
+    elif command == "wait-pr-run":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, required=True)
+        parser.add_argument("--pr-event", type=Path, required=True)
+        parser.add_argument("--timeout-seconds", type=int, default=2100)
+        parser.add_argument("--run-output", type=Path, required=True)
+        parser.add_argument("--preflight-output", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        result = wait_for_pr_run(args.root.resolve(), args.pr_event.resolve(), args.timeout_seconds,
+                                 args.run_output.resolve(), args.preflight_output.resolve())
+        print(json.dumps(result, sort_keys=True))
     elif command == "retrieve":
         parser = argparse.ArgumentParser()
         parser.add_argument("--root", type=Path, required=True)

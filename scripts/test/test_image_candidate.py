@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tarfile
 import tempfile
@@ -387,6 +388,142 @@ class RetrievePlanSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "expected one exact PR-tested image artifact"):
                 self._retrieve([self.image], Path(directory) / "accepted")
 
+
+class QuickstartSourceManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.pr = {
+            "number": 17,
+            "head": {"sha": "a" * 40, "repo": {"full_name": candidate.REPOSITORY}},
+            "base": {"sha": "b" * 40, "repo": {"full_name": candidate.REPOSITORY}},
+        }
+        self.tree = "c" * 40
+
+    def test_receipt_binds_verified_loader_manifest_to_triggering_pr_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event = root / "event.json"
+            manifest = root / "images.json"
+            output = root / "receipt.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": self.pr}))
+            manifest.write_text(json.dumps({
+                "schema": 1, "source_run_id": 123, "source_run_attempt": 2,
+                "pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                "tested_tree": self.tree,
+                "images": [{"image": image, "local_reference": f"malrunar/{image}:h-{'f' * 16}"}
+                           for image in ("desktop-base", "obs-runtime", "obs-control", "media-bridge")],
+            }))
+            env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": candidate.REPOSITORY,
+                   "GITHUB_EVENT_PATH": str(event), "GITHUB_RUN_ID": "456",
+                   "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_SHA": "d" * 40,
+                   "MALRUNAR_TESTED_IMAGE_MANIFEST": str(manifest),
+                   "MALRUNAR_PR_RUN_ID": "123", "MALRUNAR_PR_RUN_ATTEMPT": "2"}
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(candidate, "git", return_value=self.tree), \
+                    mock.patch.object(candidate.malrunar_image, "image_hash", return_value="f" * 16):
+                candidate.record_quickstart(root, output)
+            receipt = json.loads(output.read_text())
+            self.assertEqual(receipt["source_images"]["source_run_id"], 123)
+            self.assertEqual(receipt["source_images"]["source_run_attempt"], 2)
+            self.assertEqual(receipt["source_images"]["tested_tree"], self.tree)
+
+    def test_receipt_rejects_loader_manifest_from_another_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event, manifest = root / "event.json", root / "images.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": self.pr}))
+            manifest.write_text(json.dumps({
+                "schema": 1, "source_run_id": 123, "source_run_attempt": 1,
+                "pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                "tested_tree": self.tree,
+                "images": [{"image": image, "local_reference": f"malrunar/{image}:h-{'f' * 16}"}
+                           for image in ("desktop-base", "obs-runtime", "obs-control", "media-bridge")],
+            }))
+            env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": candidate.REPOSITORY,
+                   "GITHUB_EVENT_PATH": str(event), "GITHUB_RUN_ID": "456",
+                   "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_SHA": "d" * 40,
+                   "MALRUNAR_TESTED_IMAGE_MANIFEST": str(manifest),
+                   "MALRUNAR_PR_RUN_ID": "123", "MALRUNAR_PR_RUN_ATTEMPT": "2"}
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(candidate, "git", return_value=self.tree):
+                with self.assertRaisesRegex(ValueError, "not bound to this exact PR producer run"):
+                    candidate.record_quickstart(root, root / "receipt.json")
+
+    def test_output_writer_accepts_action_output_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-output"
+            candidate.write_manifest_output(output, "manifest", {"schema": 1})
+            self.assertEqual(output.read_text(), 'manifest={"schema":1}\n')
+
+    def test_image_resolver_requires_successful_preflight_in_exact_attempt(self):
+        tree, head, base = "c" * 40, "a" * 40, "b" * 40
+        pr = {"number": 17, "head": {"sha": head, "repo": {"full_name": candidate.REPOSITORY}},
+              "base": {"sha": base, "repo": {"full_name": candidate.REPOSITORY}}}
+        attempt = {"id": 123, "run_attempt": 2, "status": "in_progress", "event": "pull_request",
+                   "path": candidate.PR_WORKFLOW, "head_sha": head,
+                   "repository": {"full_name": candidate.REPOSITORY},
+                   "pull_requests": [{"number": 17}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event, preflight = root / "event.json", root / "preflight.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": pr}))
+            with mock.patch.object(candidate, "git", return_value=tree), \
+                    mock.patch.object(candidate, "api", return_value=attempt), \
+                    mock.patch.object(candidate, "_attempt_jobs", return_value=[
+                        {"name": "plan", "conclusion": "success"}]), \
+                    mock.patch.object(candidate, "plan_artifact") as plan_artifact:
+                with self.assertRaisesRegex(ValueError, "successful canonical-preflight job"):
+                    candidate.resolve_tested_images(root, ["obs-control"], 123, 2,
+                                                    event, tree, preflight,
+                                                    current_run_in_progress=True,
+                                                    candidate_dir=root / "archives")
+            plan_artifact.assert_not_called()
+
+    def test_image_resolver_binds_pr_number_on_canonical_entries(self):
+        tree, head, base = "c" * 40, "a" * 40, "b" * 40
+        pr = {"number": 17, "head": {"sha": head, "repo": {"full_name": candidate.REPOSITORY}},
+              "base": {"sha": base, "repo": {"full_name": candidate.REPOSITORY}}}
+        attempt = {"id": 123, "run_attempt": 2, "status": "completed", "conclusion": "success",
+                   "event": "pull_request", "path": candidate.PR_WORKFLOW, "head_sha": head,
+                   "repository": {"full_name": candidate.REPOSITORY}, "pull_requests": [{"number": 17}]}
+        run = {"id": 123, "run_attempt": 2}
+        plan_metadata = {"id": 55, "digest": "sha256:" + "1" * 64,
+                         "name": f"{candidate.PLAN_PREFIX}-123-2",
+                         "workflow_run": {"id": 123, "head_sha": head}}
+        preflight_metadata = {"id": 56, "digest": "sha256:" + "2" * 64,
+                              "name": f"{candidate.PREFLIGHT_PREFIX}-123-2",
+                              "workflow_run": {"id": 123, "head_sha": head}}
+        image_names = ["desktop-base", "obs-runtime", "obs-control"]
+        cached = {image: {"content_hash": images.image_hash(image),
+                          "root_digest": "sha256:" + "3" * 64,
+                          "config_digest": "sha256:" + "4" * 64} for image in image_names}
+        plan = {"selected_images": []}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event, preflight = root / "event.json", root / "preflight.json"
+            event.write_text(json.dumps({"repository": {"full_name": candidate.REPOSITORY},
+                                        "pull_request": pr}))
+            preflight.write_bytes(b"{}")
+            with mock.patch.object(candidate, "git", return_value=tree), \
+                    mock.patch.object(candidate, "api", side_effect=[attempt, {"artifacts": []}]), \
+                    mock.patch.object(candidate, "_attempt_jobs", return_value=[
+                        {"name": "plan", "conclusion": "success"},
+                        {"name": "canonical-preflight", "conclusion": "success"}]), \
+                    mock.patch.object(candidate, "plan_artifact", return_value=plan_metadata), \
+                    mock.patch.object(candidate, "preflight_artifact", return_value=preflight_metadata), \
+                    mock.patch.object(candidate, "download_artifact", return_value=preflight), \
+                    mock.patch.object(candidate, "zip_members", return_value={"canonical-preflight.json": b"{}"}), \
+                    mock.patch.object(candidate, "verify_plan_artifact", return_value=(plan, base)), \
+                    mock.patch.object(candidate, "_preflight_entries", return_value=(cached, {})):
+                resolved = candidate.resolve_tested_images(
+                    images.ROOT, ["obs-control"], 123, 2, event, tree, preflight,
+                    current_run_in_progress=False, candidate_dir=root / "archives")
+        self.assertEqual([entry["image"] for entry in resolved], image_names)
+        self.assertTrue(all(entry["pr_number"] == 17 for entry in resolved))
+
+class MainPublisherTrustTests(RetrievePlanSelectionTests):
     @mock.patch.object(candidate, "trusted_blobs")
     @mock.patch.object(candidate, "validate_plan_receipt", return_value="b" * 40)
     @mock.patch.object(candidate, "zip_members")
@@ -652,37 +789,54 @@ class CandidatePromotionTests(unittest.TestCase):
 
 
 class CanonicalProducerReuseTests(unittest.TestCase):
+    def test_registry_root_matches_main_publisher_configuration(self):
+        publish = (images.ROOT / candidate.PUBLISH_WORKFLOW).read_text()
+        registry = re.search(r"^\s+REGISTRY:\s*([^\s#]+)", publish, re.MULTILINE)
+        owner = re.search(r"^\s+OWNER:\s*([^\s#]+)", publish, re.MULTILINE)
+        self.assertIsNotNone(registry)
+        self.assertIsNotNone(owner)
+        self.assertEqual(candidate.IMAGE_REGISTRY, f"{registry.group(1)}/{owner.group(1)}")
+
     def test_reuses_verified_canonical_archive_for_actual_smoke_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "canonical.oci.tar"
             output = root / "candidate/image.oci.tar"
+            docker_config = root / "docker"
+            docker_config.mkdir()
+            authfile = docker_config / "config.json"
+            authfile.write_text("{}\n")
             layout(source)
             identity = candidate.oci_identity(source)
             with tarfile.open(source) as archive:
                 raw_index = archive.extractfile("index.json").read()
 
             def run(args, **kwargs):
-                if args[1:3] == ["inspect", "--raw"]:
+                if args[:3] == ["skopeo", "inspect", "--raw"]:
                     return __import__("subprocess").CompletedProcess(args, 0, stdout=raw_index)
-                if args[1:3] == ["copy", "--all"]:
+                if args[:2] == ["skopeo", "copy"]:
                     output.parent.mkdir(parents=True, exist_ok=True)
                     output.write_bytes(source.read_bytes())
                 return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
 
             with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.dict(os.environ, {"DOCKER_CONFIG": str(docker_config)}), \
                     mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
                 self.assertTrue(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
             commands = [call.args[0] for call in run_process.call_args_list]
+            inspect = next(args for args in commands if args[:2] == ["skopeo", "inspect"])
+            self.assertEqual(inspect[inspect.index("--authfile") + 1], str(authfile))
+            self.assertEqual(inspect[-1], "docker://ghcr.io/iarnvidr/desktop-base:h-aaaaaaaaaaaaaaaa")
             verify = next(args for args in commands if args[0] == "cosign")
             self.assertIn("https://github.com/iarnvidr/malrunar/.github/workflows/publish.yml@refs/heads/main",
                           verify)
             copy = next(args for args in commands if args[1] == "copy")
+            self.assertEqual(copy[copy.index("--src-authfile") + 1], str(authfile))
             self.assertIn("--all", copy)
             self.assertIn("--preserve-digests", copy)
             self.assertEqual(candidate.oci_identity(output), identity)
 
-    def test_untrusted_canonical_image_falls_back_to_one_build_path(self):
+    def test_untrusted_existing_canonical_image_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "candidate/image.oci.tar"
@@ -694,8 +848,78 @@ class CanonicalProducerReuseTests(unittest.TestCase):
 
             with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
                     mock.patch.object(candidate.subprocess, "run", side_effect=run):
-                self.assertFalse(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
+                with self.assertRaises(SystemExit) as raised:
+                    candidate.reuse_canonical(images.ROOT, "desktop-base", output)
+                self.assertEqual(raised.exception.code, 2)
             self.assertFalse(output.exists())
+
+    def test_missing_registry_tag_is_the_only_rebuild_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "candidate/image.oci.tar"
+
+            def run(args, **kwargs):
+                raise __import__("subprocess").CalledProcessError(
+                    1, args, stderr=b"manifest unknown: requested image tag does not exist")
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                self.assertFalse(candidate.reuse_canonical(images.ROOT, "desktop-base", output))
+            self.assertEqual(run_process.call_count, 1)
+            self.assertFalse(output.exists())
+
+    def test_registry_auth_failure_does_not_fall_back_to_a_different_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "candidate/image.oci.tar"
+
+            def run(args, **kwargs):
+                raise __import__("subprocess").CalledProcessError(
+                    1, args, stderr=b"unauthorized: authentication required")
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                with self.assertRaises(SystemExit) as raised:
+                    candidate.reuse_canonical(images.ROOT, "desktop-base", output)
+                self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(run_process.call_count, 1)
+            self.assertFalse(output.exists())
+
+    def test_metadata_preflight_checks_signed_canonical_config_before_build_fanout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            docker_config = Path(directory) / "docker"
+            docker_config.mkdir()
+            authfile = docker_config / "config.json"
+            authfile.write_text("{}\n")
+            child_digest = "sha256:" + "b" * 64
+            config_digest = "sha256:" + "c" * 64
+            root_index = json.dumps({"schemaVersion": 2, "manifests": [{
+                "digest": child_digest,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            }]}).encode()
+            child_manifest = json.dumps({"schemaVersion": 2, "config": {
+                "digest": config_digest,
+            }}).encode()
+
+            def run(args, **kwargs):
+                if args[0] == "cosign":
+                    return __import__("subprocess").CompletedProcess(args, 0, stdout=b"")
+                reference = args[-1]
+                raw = child_manifest if "@" in reference else root_index
+                return __import__("subprocess").CompletedProcess(args, 0, stdout=raw)
+
+            with mock.patch.object(candidate.malrunar_image, "image_hash", return_value="a" * 16), \
+                    mock.patch.dict(os.environ, {"DOCKER_CONFIG": str(docker_config)}), \
+                    mock.patch.object(candidate.subprocess, "run", side_effect=run) as run_process:
+                candidate.preflight_canonical(images.ROOT)
+            commands = [call.args[0] for call in run_process.call_args_list]
+            inspections = [args for args in commands if args[:2] == ["skopeo", "inspect"]]
+            verifications = [args for args in commands if args[0] == "cosign"]
+            self.assertEqual(len(inspections), 2 * len(images.IMAGES))
+            self.assertEqual(len(verifications), len(images.IMAGES))
+            self.assertTrue(all("docker://ghcr.io/iarnvidr/" in args[-1] for args in inspections))
+            self.assertTrue(all("ghcr.io/iarnvidr/" in args[2] for args in verifications))
+            self.assertTrue(all(args[args.index("--authfile") + 1] == str(authfile)
+                                for args in inspections))
 
 
 if __name__ == "__main__":

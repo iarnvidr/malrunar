@@ -65,8 +65,14 @@ if [ "$candidate" = true ]; then
     hash="$(python3 "$tool" hash "$image")"
     mkdir -p "$MALRUNAR_CANDIDATE_DIR"
     archive="$MALRUNAR_CANDIDATE_DIR/$image.oci.tar"
-    if ! python3 "$root/scripts/image_candidate.py" reuse-canonical \
+    if python3 "$root/scripts/image_candidate.py" reuse-canonical \
         --root "$root" --image "$image" --output "$archive"; then
+        : # The exact trusted canonical OCI archive was smoke-tested.
+    else
+        reuse_status=$?
+        if [ "$reuse_status" -ne 1 ]; then
+            exit "$reuse_status"
+        fi
         docker buildx build \
             --platform linux/amd64 \
             --file "$root/$image/Dockerfile" \
