@@ -115,8 +115,10 @@ class OciIdentityTests(unittest.TestCase):
 
 class ReceiptBindingTests(unittest.TestCase):
     def setUp(self):
-        self.run = {"id": 123, "run_attempt": 2, "pull_requests": [{"base": {"sha": "b" * 40}}]}
-        self.pr = {"head": {"sha": "a" * 40}, "number": 7}
+        self.run = {"id": 123, "run_attempt": 2, "head_sha": "a" * 40,
+                    "event": "pull_request", "path": candidate.PR_WORKFLOW,
+                    "conclusion": "success", "pull_requests": []}
+        self.pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}, "number": 7}
         self.receipt = {"schema": 1, "repository": candidate.REPOSITORY,
                         "workflow_path": candidate.PR_WORKFLOW, "run_id": 123,
                         "run_attempt": 2, "event": "pull_request", "head_sha": "a" * 40,
@@ -131,6 +133,13 @@ class ReceiptBindingTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "does not identify"):
                 candidate.verify_run_receipt(changed, self.run, candidate.PR_WORKFLOW,
                                               self.pr, "c" * 40)
+
+    @mock.patch.object(candidate, "api")
+    def test_successful_merged_pr_run_does_not_need_pull_request_association(self, github_api):
+        run = dict(self.run, repository={"full_name": candidate.REPOSITORY},
+                   head_repository={"full_name": candidate.REPOSITORY})
+        github_api.return_value = {"workflow_runs": [run]}
+        self.assertEqual(candidate.successful_run(candidate.PR_WORKFLOW, self.pr), run)
 
     @mock.patch.object(candidate, "api")
     def test_policy_files_compare_to_trusted_run_base(self, github_api):

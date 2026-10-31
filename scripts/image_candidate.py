@@ -367,8 +367,7 @@ def successful_run(workflow, pr):
                      and run.get("head_repository", {}).get("full_name") == REPOSITORY
                      and run.get("path") == workflow and run.get("event") == "pull_request"
                      and run.get("head_sha") == pr["head"]["sha"] and run.get("conclusion") == "success"
-                     and len(run.get("pull_requests", [])) == 1
-                     and run["pull_requests"][0].get("number") == pr["number"])
+                     )
         if len(items) < 100:
             break
     if not found:
@@ -394,7 +393,10 @@ def exact_pr(merge_sha):
 
 
 def verify_run_receipt(receipt, run, workflow, pr, tree):
-    base_sha = run["pull_requests"][0].get("base", {}).get("sha")
+    # GitHub can omit the pull_requests association after a PR has merged. The
+    # retained immutable receipt binds the run to the PR; the merged PR API
+    # object supplies its original base/head facts for independent comparison.
+    base_sha = pr.get("base", {}).get("sha")
     expected = {
         "schema": 1, "repository": REPOSITORY, "workflow_path": workflow,
         "run_id": run["id"], "run_attempt": run["run_attempt"], "event": "pull_request",
