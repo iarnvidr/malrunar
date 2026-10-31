@@ -64,7 +64,6 @@ fi
 if [ "$candidate" = true ]; then
     hash="$(python3 "$tool" hash "$image")"
     mkdir -p "$MALRUNAR_CANDIDATE_DIR"
-    docker_archive="$MALRUNAR_CANDIDATE_DIR/$image.docker.tar"
     docker buildx build \
         --platform linux/amd64 \
         --file "$root/$image/Dockerfile" \
@@ -73,13 +72,11 @@ if [ "$candidate" = true ]; then
         --sbom=true --provenance=mode=max \
         ${extra[@]+"${extra[@]}"} \
         "$root/$image"
-    # Convert the exact exported OCI image to a Docker archive for the smoke-test daemon.
-    # The retained OCI index still contains its provenance and SBOM attestations.
-    skopeo copy --override-os linux --override-arch amd64 --format v2s2 \
-        "oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar" \
-        "docker-archive:$docker_archive:malrunar/$image:h-$hash"
-    docker load --input "$docker_archive"
-    rm -f "$docker_archive"
+    # Select the tagged linux/amd64 image from the exact OCI archive for smoke tests.
+    # Keep the original archive, including its attestation descriptors, unchanged.
+    skopeo copy --override-os linux --override-arch amd64 \
+        "oci-archive:$MALRUNAR_CANDIDATE_DIR/$image.oci.tar:h-$hash" \
+        "docker-daemon:malrunar/$image:h-$hash"
 else
     exec docker buildx build \
         --file "$root/$image/Dockerfile" \
