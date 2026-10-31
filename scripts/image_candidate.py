@@ -81,7 +81,7 @@ def _member_bytes(archive, member, max_size=16 * 1024 * 1024):
 
 def _blob(archive, members, digest, read=False):
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(digest)):
-        raise ValueError("OCI descriptor has an invalid SHA-256 digest")
+        raise ValueError(f"OCI descriptor has an invalid SHA-256 digest: {digest!r}")
     member = members.get("blobs/sha256/" + digest.split(":", 1)[1])
     if member is None:
         raise ValueError("OCI blob is missing")
@@ -98,6 +98,31 @@ def _blob(archive, members, digest, read=False):
     if hasher.hexdigest() != digest.split(":", 1)[1]:
         raise ValueError("OCI blob digest mismatch")
     return bytes(body) if body is not None else None
+
+
+def _resolve_oci_descriptor(archive, members, descriptor, inherited_platform, seen, images, attestations):
+    annotations = descriptor.get("annotations", {})
+    if annotations.get("vnd.docker.reference.type") == "attestation-manifest":
+        attestations.append(descriptor)
+        return
+    digest = descriptor.get("digest")
+    if digest in seen:
+        raise ValueError("OCI index contains a descriptor cycle")
+    raw = _blob(archive, members, digest, read=True)
+    body = json.loads(raw)
+    platform = descriptor.get("platform") or inherited_platform
+    if isinstance(body.get("manifests"), list):
+        for child in body["manifests"]:
+            _resolve_oci_descriptor(archive, members, child, platform, seen | {digest}, images, attestations)
+        return
+    if not isinstance(body.get("config"), dict) or not isinstance(body.get("layers"), list):
+        raise ValueError("OCI descriptor is neither an image manifest nor an index")
+    config_digest = body["config"].get("digest")
+    config = json.loads(_blob(archive, members, config_digest, read=True))
+    actual_platform = {"os": config.get("os"), "architecture": config.get("architecture")}
+    if platform and any(platform.get(key) not in (None, value) for key, value in actual_platform.items()):
+        raise ValueError("OCI index platform does not match its image configuration")
+    images.append((descriptor, body, actual_platform))
 
 
 def oci_identity(source):
@@ -135,25 +160,22 @@ def oci_identity(source):
         descriptors = json.loads(index_raw).get("manifests")
         if not isinstance(descriptors, list) or not descriptors:
             raise ValueError("OCI image index has no manifests")
-        images = [d for d in descriptors if d.get("annotations", {}).get("vnd.docker.reference.type") != "attestation-manifest"
-                  and d.get("platform", {}).get("os") == "linux"
-                  and d.get("platform", {}).get("architecture") == "amd64"]
-        if not images:
-            images = [d for d in descriptors if d.get("annotations", {}).get("vnd.docker.reference.type") != "attestation-manifest"]
-        if len(images) != 1:
-            raise ValueError("OCI layout must contain exactly one linux/amd64 image manifest")
-        image_descriptor = images[0]
-        image_raw = _blob(archive, members, image_descriptor.get("digest"), read=True)
-        image_manifest = json.loads(image_raw)
+        images, attestations = [], []
+        for descriptor in descriptors:
+            _resolve_oci_descriptor(archive, members, descriptor, None, set(), images, attestations)
+        images = [item for item in images if item[2] == {"os": "linux", "architecture": "amd64"}]
+        # Multi-tag OCI exporters can repeat the same descriptor. That is one image
+        # identity; distinct manifest digests remain ambiguous and are rejected.
+        unique_images = {item[0].get("digest"): item for item in images}
+        if len(unique_images) != 1:
+            raise ValueError("OCI layout must contain exactly one distinct linux/amd64 image manifest")
+        image_descriptor, image_manifest, _ = next(iter(unique_images.values()))
         config_digest = image_manifest.get("config", {}).get("digest")
-        _blob(archive, members, config_digest)
         for layer in image_manifest.get("layers", []):
             _blob(archive, members, layer.get("digest"))
         predicates, attestation_digests = set(), []
         image_digest = image_descriptor["digest"]
-        for descriptor in descriptors:
-            if descriptor is image_descriptor or descriptor.get("annotations", {}).get("vnd.docker.reference.type") != "attestation-manifest":
-                continue
+        for descriptor in attestations:
             attestation = json.loads(_blob(archive, members, descriptor.get("digest"), read=True))
             for layer in attestation.get("layers", []):
                 predicate = layer.get("annotations", {}).get("in-toto.io/predicate-type", "")

@@ -18,7 +18,8 @@ def digest(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def layout(path, predicates=("https://spdx.dev/Document", "https://slsa.dev/provenance/v1")):
+def layout(path, predicates=("https://spdx.dev/Document", "https://slsa.dev/provenance/v1"),
+           duplicate=False, nested=False):
     config = b'{"architecture":"amd64","os":"linux"}'
     layer = b"layer-bytes"
     manifest = json.dumps({"schemaVersion": 2, "config": {"digest": digest(config)},
@@ -33,6 +34,8 @@ def layout(path, predicates=("https://spdx.dev/Document", "https://slsa.dev/prov
     descriptors = [{"mediaType": "application/vnd.oci.image.manifest.v1+json",
                     "digest": manifest_digest, "size": len(manifest),
                     "platform": {"os": "linux", "architecture": "amd64"}}]
+    if duplicate:
+        descriptors.append(dict(descriptors[0]))
     for predicate in predicates:
         statement = json.dumps({"_type": "https://in-toto.io/Statement/v1",
                                 "subject": [{"digest": {"sha256": manifest_digest[7:]}}],
@@ -49,8 +52,17 @@ def layout(path, predicates=("https://spdx.dev/Document", "https://slsa.dev/prov
         descriptors.append({"mediaType": "application/vnd.oci.image.manifest.v1+json",
                             "digest": attestation_digest, "size": len(attestation),
                             "annotations": {"vnd.docker.reference.type": "attestation-manifest"}})
-    files["index.json"] = json.dumps({"schemaVersion": 2, "manifests": descriptors},
-                                     separators=(",", ":")).encode()
+    inner_index = json.dumps({"schemaVersion": 2, "manifests": descriptors},
+                             separators=(",", ":")).encode()
+    if nested:
+        nested_digest = digest(inner_index)
+        files["blobs/sha256/" + nested_digest[7:]] = inner_index
+        files["index.json"] = json.dumps({"schemaVersion": 2, "manifests": [{
+            "mediaType": "application/vnd.oci.image.index.v1+json", "digest": nested_digest,
+            "size": len(inner_index), "platform": {"os": "linux", "architecture": "amd64"},
+        }]}, separators=(",", ":")).encode()
+    else:
+        files["index.json"] = inner_index
     with tarfile.open(path, "w") as archive:
         for name, data in files.items():
             info = tarfile.TarInfo(name)
@@ -87,6 +99,18 @@ class OciIdentityTests(unittest.TestCase):
             layout(path, ("https://spdx.dev/Document",))
             with self.assertRaisesRegex(ValueError, "provenance"):
                 candidate.oci_identity(path)
+
+    def test_duplicate_platform_descriptor_is_one_image_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.oci.tar"
+            manifest, _, _ = layout(path, duplicate=True)
+            self.assertEqual(candidate.oci_identity(path)["manifest_digest"], manifest)
+
+    def test_resolves_image_manifest_nested_under_exported_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.oci.tar"
+            manifest, _, _ = layout(path, nested=True)
+            self.assertEqual(candidate.oci_identity(path)["manifest_digest"], manifest)
 
 
 class ReceiptBindingTests(unittest.TestCase):
