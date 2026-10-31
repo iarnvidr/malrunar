@@ -217,6 +217,13 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("--existing-digest", text)
         self.assertIn("Upload accepted image mapping", text)
 
+    def test_pr_plan_records_even_an_empty_docs_only_selection(self):
+        text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
+        self.assertIn("MALRUNAR_PLAN_IMAGES: ${{ steps.plan.outputs.images }}", text)
+        self.assertIn("image_candidate.py record-plan", text)
+        self.assertIn("name: malrunar-image-plan-${{ github.run_id }}-${{ github.run_attempt }}", text)
+        self.assertIn("if-no-files-found: error", text)
+
     def test_published_desktop_base_alias_matches_candidate_tested_with_reference(self):
         text = (mi.ROOT / ".github/workflows/pr.yml").read_text()
         marker = '      - name: Get desktop-base (published image if it exists, else build it)\n'

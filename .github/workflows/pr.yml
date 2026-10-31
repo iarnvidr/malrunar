@@ -141,6 +141,19 @@ jobs:
               echo "Images this change would publish after merging (content hash differs): $(python3 scripts/changed_images.py "$base" --republish | tr '\n' ' ')"
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Record the accepted image plan
+        if: github.event_name == 'pull_request'
+        env:
+          MALRUNAR_PLAN_IMAGES: ${{ steps.plan.outputs.images }}
+        run: python3 scripts/image_candidate.py record-plan --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/image-plan.json"
+      - name: Upload the accepted image plan
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: malrunar-image-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/image-plan.json
+          if-no-files-found: error
+          retention-days: 90
 
   build:
     needs: [scripts, plan]
