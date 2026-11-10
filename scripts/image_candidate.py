@@ -950,6 +950,22 @@ def verify_plan_artifact(metadata, archive_zip: Path, run, pr, merge_tree, accep
     return receipt, base_sha
 
 
+def expected_candidate_job(image):
+    """Bind each registered image to its allowed PR-tested producer job.
+
+    Component images have dedicated jobs. Other registered images are built by
+    the generic build-targets matrix; only a matrix containing this image may
+    supply its accepted candidate archive.
+    """
+    if image not in malrunar_image.IMAGES:
+        raise ValueError(f"unknown image in candidate receipt: {image}")
+    dedicated_jobs = {
+        "media-bridge", "work-browser", "session-kit", "thunderbird",
+        "thunderbird-mcp", "msteams-mcp", "teams-service",
+    }
+    return image if image in dedicated_jobs else "build-targets--"
+
+
 def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, merge_tree, image, root, image_path,
                               *, verify_source_policy=True):
     if metadata.get("workflow_run", {}).get("id") != run["id"]:
@@ -993,14 +1009,7 @@ def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, m
         with inner.open(info) as source, image_path.open("wb") as destination:
             shutil.copyfileobj(source, destination, length=1024 * 1024)
     base_sha = verify_run_receipt(candidate, run, PR_WORKFLOW, pr, merge_tree)
-    expected_job = {
-        "desktop-base": "build-targets--", "obs-runtime": "build-targets--", "obs-control": "build-targets--",
-        "guacd": "build-targets--", "guacamole-tunnel": "build-targets--", "tail-browser-mcp": "build-targets--",
-        "office-convert": "build-targets--", "node": "build-targets--", "devops-service": "build-targets--",
-        "media-bridge": "media-bridge", "work-browser": "work-browser", "session-kit": "session-kit",
-        "thunderbird": "thunderbird", "thunderbird-mcp": "thunderbird-mcp",
-        "msteams-mcp": "msteams-mcp", "teams-service": "teams-service",
-    }[image]
+    expected_job = expected_candidate_job(image)
     if expected_job.startswith("build-"):
         targets = job_key.removeprefix(expected_job).split("--")
         if image not in targets or not all(item in malrunar_image.IMAGES for item in targets):
