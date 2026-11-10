@@ -8,6 +8,12 @@ on:
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: Mint the scoped App token and verify read access without changing pins or opening a PR
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -45,12 +51,25 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ inputs.preflight_only != true }}
         with:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true  # the scoped App token pushes the pin branch and opens the PR
+      - name: Verify scoped App repository access
+        if: ${{ inputs.preflight_only == true }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -eu
+          test "$GITHUB_REPOSITORY" = iarnvidr/malrunar
+          repository="$(gh api repos/iarnvidr/malrunar --jq .full_name)"
+          test "$repository" = iarnvidr/malrunar
+          echo "Scoped App token can read $repository metadata. No pin update or PR was created."
       - name: Bump pins
+        if: ${{ inputs.preflight_only != true }}
         run: python3 -I scripts/bump_pins.py
       - name: Open or update the pull request
+        if: ${{ inputs.preflight_only != true }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
