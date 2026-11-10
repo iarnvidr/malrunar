@@ -42,6 +42,8 @@ BUILD_GROUPS = (
     ("office-convert",),
     ("node",),
     ("devops-service",),
+    ("paseo-runtime",),
+    ("agent-dev-base",),
     ("desktop-base", "obs-runtime", "obs-control"),
 )
 # Images with a job of their own, and what runs them. Names are `plan` outputs.

@@ -1552,9 +1552,9 @@ def preflight_canonical(root: Path, output: Path | None = None):
                 missing.append({"image": image, "content_hash": content_hash,
                                 "reference": reference})
                 continue
-            _reuse_failure("skopeo inspect preflight", error)
+            _reuse_failure(f"skopeo inspect preflight for {reference}", error)
         except OSError as error:
-            _reuse_failure("skopeo inspect preflight", error)
+            _reuse_failure(f"skopeo inspect preflight for {reference}", error)
 
         root_digest = "sha256:" + sha(raw)
         try:

@@ -19,7 +19,13 @@ RUN if getent passwd 1000 >/dev/null; then userdel -r "$(getent passwd 1000 | cu
     if getent group 1000 >/dev/null; then groupdel "$(getent group 1000 | cut -d: -f1)"; fi; \
     useradd --create-home --uid 1000 --shell /bin/bash tester; \
     . /usr/local/share/malrunar/lib/apt-snapshot.sh; \
-    malrunar_snapshot_enable; \
-    malrunar_retry malrunar_apt install -y --no-install-recommends xvfb; \
-    malrunar_snapshot_disable
+    if (malrunar_snapshot_enable && malrunar_retry malrunar_apt install -y --no-install-recommends xvfb); then \
+      malrunar_snapshot_disable; \
+    else \
+      echo "WARNING: Ubuntu snapshot unavailable; using signed live Ubuntu archive for throwaway integration-test packages" >&2; \
+      malrunar_snapshot_disable; \
+      malrunar_retry malrunar_apt update; \
+      malrunar_retry malrunar_apt install -y --no-install-recommends xvfb; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 RUN python3 /opt/malrunar/thunderbird/consumer/customize.py policies /opt/malrunar/thunderbird-mcp/share/policies-extension.json.example
