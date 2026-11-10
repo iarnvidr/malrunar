@@ -523,6 +523,24 @@ class QuickstartSourceManifestTests(unittest.TestCase):
         self.assertEqual([entry["image"] for entry in resolved], image_names)
         self.assertTrue(all(entry["pr_number"] == 17 for entry in resolved))
 
+class CandidateJobBindingTests(unittest.TestCase):
+    def test_every_registered_image_uses_its_producer_class(self):
+        dedicated = {
+            "media-bridge", "work-browser", "session-kit", "thunderbird",
+            "thunderbird-mcp", "msteams-mcp", "teams-service",
+        }
+        self.assertIn("paseo-runtime", images.IMAGES)
+        self.assertIn("agent-dev-base", images.IMAGES)
+        for image in images.IMAGES:
+            with self.subTest(image=image):
+                expected = image if image in dedicated else "build-targets--"
+                self.assertEqual(candidate.expected_candidate_job(image), expected)
+
+    def test_unregistered_image_cannot_be_retrieved(self):
+        with self.assertRaisesRegex(ValueError, "unknown image"):
+            candidate.expected_candidate_job("not-registered")
+
+
 class MainPublisherTrustTests(RetrievePlanSelectionTests):
     @mock.patch.object(candidate, "trusted_blobs")
     @mock.patch.object(candidate, "validate_plan_receipt", return_value="b" * 40)
