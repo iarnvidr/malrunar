@@ -25,6 +25,32 @@ func (m *MalrunarCi) Checks(ctx context.Context,
 	return err
 }
 
+// Evaluate each command with its exit code preserved so a failing unittest
+// reports its assertion/traceback instead of an opaque Dagger "exit code 1".
+func runCheck(ctx context.Context, label string, container *dagger.Container, args []string) (*dagger.Container, string, error) {
+	container = container.WithExec(args, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny})
+	code, err := container.ExitCode(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: read exit status: %w", label, err)
+	}
+	stdout, err := container.Stdout(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: read stdout: %w", label, err)
+	}
+	stderr, err := container.Stderr(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: read stderr: %w", label, err)
+	}
+	if code != 0 {
+		detail := stdout + "\n" + stderr
+		if len(detail) > 12000 {
+			detail = detail[len(detail)-12000:]
+		}
+		return nil, "", fmt.Errorf("%s exited %d:\n%s", label, code, detail)
+	}
+	return container, stdout, nil
+}
+
 func (m *MalrunarCi) checksOutput(ctx context.Context, source *dagger.Directory) (string, error) {
 	var out strings.Builder
 	nodeTools := dag.Container().From(nodeImage)
@@ -33,28 +59,37 @@ func (m *MalrunarCi) checksOutput(ctx context.Context, source *dagger.Directory)
 		WithEnvVariable("PYTHONPATH", "/src/obs-control").
 		WithFile("/usr/local/bin/node", nodeTools.File("/usr/local/bin/node")).
 		WithDirectory("/src", source).WithWorkdir("/src").
-		WithUser("10001:10001").WithEnvVariable("HOME", "/home/ci").
-		WithExec([]string{"sh", "-ec", "for pattern in test_config.py test_scenes.py test_docs.py; do python3 -m unittest discover -s obs-control/test -p \"$pattern\"; done"}).
-		WithExec([]string{"python3", "-m", "unittest", "discover", "-s", "scripts/test", "-v"}).
-		WithExec([]string{"python3", "-m", "unittest", "discover", "-s", "session-kit/test", "-v"}).
-		WithExec([]string{"python3", "-I", "-m", "unittest", "discover", "-s", "thunderbird/test", "-v"}).
-		WithExec([]string{"python3", "-m", "unittest", "discover", "-s", "devops-service/test", "-p", "test_*.py", "-v"}).
-		WithExec([]string{"python3", "-I", "scripts/bump_pins.py", "--dry-run"}).
-		WithExec([]string{"bash", "work-browser/test/launcher-test.sh"}).
-		WithExec([]string{"bash", "msteams-mcp/test/unit/common.test.sh"})
-	text, err := python.Stdout(ctx)
-	if err != nil {
-		return "", fmt.Errorf("Python and shell unit checks: %w", err)
+		WithUser("10001:10001").WithEnvVariable("HOME", "/home/ci")
+	checks := []struct {
+		name string
+		args []string
+	}{
+		{"obs-control", []string{"sh", "-ec", "for pattern in test_config.py test_scenes.py test_docs.py; do python3 -m unittest discover -s obs-control/test -p \"$pattern\"; done"}},
+		{"registry-and-planner", []string{"python3", "-m", "unittest", "discover", "-s", "scripts/test", "-v"}},
+		{"session-kit", []string{"python3", "-m", "unittest", "discover", "-s", "session-kit/test", "-v"}},
+		{"thunderbird", []string{"python3", "-I", "-m", "unittest", "discover", "-s", "thunderbird/test", "-v"}},
+		{"devops-service", []string{"python3", "-m", "unittest", "discover", "-s", "devops-service/test", "-p", "test_*.py", "-v"}},
+		{"pin-dry-run", []string{"python3", "-I", "scripts/bump_pins.py", "--dry-run"}},
+		{"browser-launcher", []string{"bash", "work-browser/test/launcher-test.sh"}},
+		{"teams-common", []string{"bash", "msteams-mcp/test/unit/common.test.sh"}},
 	}
-	out.WriteString(text)
+	for _, check := range checks {
+		var result string
+		var err error
+		python, result, err = runCheck(ctx, check.name, python, check.args)
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(result)
+	}
 
 	node := dag.Container().From(nodeImage).
-		WithDirectory("/src", source).WithWorkdir("/src").
-		WithExec([]string{"sh", "-ec", "for file in msteams-mcp/libexec/*.mjs msteams-mcp/patches/*.cjs teams-service/src/*.mjs teams-service/dev/*.mjs; do node --check \"$file\"; done"})
-	text, err = node.Stdout(ctx)
+		WithDirectory("/src", source).WithWorkdir("/src")
+	_, result, err := runCheck(ctx, "node-syntax", node, []string{"sh", "-ec", "for file in msteams-mcp/libexec/*.mjs msteams-mcp/patches/*.cjs teams-service/src/*.mjs teams-service/dev/*.mjs; do node --check \"$file\"; done"})
 	if err != nil {
-		return "", fmt.Errorf("Node syntax checks: %w", err)
+		return "", err
 	}
-	out.WriteString(text)
+	out.WriteString(result)
 	return out.String(), nil
 }
+
