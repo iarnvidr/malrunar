@@ -64,12 +64,13 @@ func (m *MalrunarCi) checksOutput(ctx context.Context, source *dagger.Directory)
 		name string
 		args []string
 	}{
+		// Live pin discovery belongs to the weekly maintenance workflow: PR validation
+		// must not depend on the availability of snapshot.ubuntu.com or Mozilla mirrors.
 		{"obs-control", []string{"sh", "-ec", "for pattern in test_config.py test_scenes.py test_docs.py; do python3 -m unittest discover -s obs-control/test -p \"$pattern\"; done"}},
 		{"registry-and-planner", []string{"python3", "-m", "unittest", "discover", "-s", "scripts/test", "-v"}},
 		{"session-kit", []string{"python3", "-m", "unittest", "discover", "-s", "session-kit/test", "-v"}},
 		{"thunderbird", []string{"python3", "-I", "-m", "unittest", "discover", "-s", "thunderbird/test", "-v"}},
 		{"devops-service", []string{"python3", "-m", "unittest", "discover", "-s", "devops-service/test", "-p", "test_*.py", "-v"}},
-		{"pin-dry-run", []string{"python3", "-I", "scripts/bump_pins.py", "--dry-run"}},
 		{"browser-launcher", []string{"bash", "work-browser/test/launcher-test.sh"}},
 		{"teams-common", []string{"bash", "msteams-mcp/test/unit/common.test.sh"}},
 	}
