@@ -1,6 +1,6 @@
 # Conventions
 
-Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, tail-browser-mcp, media-bridge, office-convert, node, work-browser, session-kit, thunderbird, thunderbird-mcp, msteams-mcp, teams-service) has:
+Every image `<image>` (desktop-base, obs-runtime, obs-control, guacd, guacamole-tunnel, tail-browser-mcp, media-bridge, office-convert, node, work-browser, session-kit, thunderbird, thunderbird-mcp, msteams-mcp, teams-service, devops-service, paseo-runtime, agent-dev-base) has:
 
 - `<image>/Dockerfile`: build context is `<image>/` only (copy nothing from outside it).
 - `<image>/pins.env`: `KEY=VALUE` lines, passed as `--build-arg`. Must define `VERSION` (the human tag).

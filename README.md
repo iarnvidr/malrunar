@@ -35,6 +35,9 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`msteams-mcp`](msteams-mcp/) | A Microsoft Teams MCP server for the desktop | The [msteams-mcp](https://github.com/m0nkmaster/msteams-mcp) MCP server (MIT) at a pinned commit with five build-time patches, a pinned Playwright Firefox and one command (`malrunar-msteams-mcp`): serve, interactive and password+MFA sign-in, cookie sync into the visible browser, a visual browser MCP, and an optional device-code sign-in that is **off** unless you opt in. A `FROM scratch` layer; it needs `node`, `desktop-base` and `work-browser` and says so (exit 78) when one is missing |
 | [`teams-service`](teams-service/) | A local, queryable copy of Teams chats and calendar | A PocketBase (pinned, built from source) mirror kept in sync through the `msteams-mcp` package, behind a small bearer-token HTTP API, with a supervisord program. A `FROM scratch` layer; it needs `node` and `msteams-mcp` only |
 
+| [`paseo-runtime`](paseo-runtime/) | Generic upstream Paseo base for your own runtime overlay | Official Paseo 0.14.0 at a pinned digest, with safe in-process Git maintenance; no site policy, plugins or credentials |
+| [`agent-dev-base`](agent-dev-base/) | Reusable non-root agent development base | Pinned code-server, Node 24 and checksum-verified Dagger v1 CLI; no broker, private skills, user policy or engine socket |
+
 ## Using them
 
 Pin by digest in anything you deploy. Tags are listed under [Tags](#tags).

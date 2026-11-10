@@ -19,7 +19,7 @@ import malrunar_image as mi  # noqa: E402
 
 IGNORE = shutil.ignore_patterns(".git", "__pycache__", "node_modules")
 # Images that use no root pin at all, or only the one named in the test.
-NO_ROOT_PINS = ("media-bridge", "work-browser", "session-kit", "node", "tail-browser-mcp", "thunderbird", "thunderbird-mcp", "msteams-mcp", "teams-service")
+NO_ROOT_PINS = ("media-bridge", "work-browser", "session-kit", "node", "tail-browser-mcp", "thunderbird", "thunderbird-mcp", "msteams-mcp", "teams-service", "paseo-runtime", "agent-dev-base")
 
 
 def edit_pin(root, key, value):
