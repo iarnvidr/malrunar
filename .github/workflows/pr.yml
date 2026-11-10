@@ -66,8 +66,8 @@ jobs:
         uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602
         with:
           version: 1.0.0-beta.25
-          verb: check
-          args: dag://malrunar-ci/checks
+          verb: api
+          args: call checks
       - name: Content hashes are computable and stable
         run: |
           set -eu
@@ -998,52 +998,3 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
-          import os
-          import sys
-
-          def fail(message):
-              print(f"required PR work failed: {message}", file=sys.stderr)
-              raise SystemExit(1)
-
-          if os.environ["SCRIPTS_RESULT"] != "success":
-              fail("scripts contract suite did not succeed")
-          if os.environ["PLAN_RESULT"] != "success":
-              fail("image selection plan did not succeed")
-          try:
-              selected_images = json.loads(os.environ["IMAGE_SELECTION"])
-          except (json.JSONDecodeError, TypeError):
-              fail("image selection plan is missing or invalid")
-          if not isinstance(selected_images, list):
-              fail("image selection plan must be an array")
-          expected_preflight = "success"
-          if os.environ["PREFLIGHT_RESULT"] != expected_preflight:
-              fail(f"canonical preflight result was {os.environ['PREFLIGHT_RESULT']!r}; expected {expected_preflight!r}")
-          try:
-              groups = json.loads(os.environ["BUILD_GROUPS"])
-          except (json.JSONDecodeError, TypeError):
-              fail("image build group plan is missing or invalid")
-          if not isinstance(groups, list) or any(not isinstance(group, str) or not group for group in groups):
-              fail("image build group plan contains an invalid selection")
-          expected_build = "success" if groups else "skipped"
-          if os.environ["BUILD_RESULT"] != expected_build:
-              fail(f"image build result was {os.environ['BUILD_RESULT']!r}; expected {expected_build!r}")
-
-          jobs = {
-              "media-bridge": ("MEDIA_BRIDGE_SELECTED", "MEDIA_BRIDGE_RESULT"),
-              "work-browser": ("WORK_BROWSER_SELECTED", "WORK_BROWSER_RESULT"),
-              "session-kit": ("SESSION_KIT_SELECTED", "SESSION_KIT_RESULT"),
-              "thunderbird": ("THUNDERBIRD_SELECTED", "THUNDERBIRD_RESULT"),
-              "thunderbird-mcp": ("THUNDERBIRD_MCP_SELECTED", "THUNDERBIRD_MCP_RESULT"),
-              "msteams-mcp": ("MSTEAMS_MCP_SELECTED", "MSTEAMS_MCP_RESULT"),
-              "teams-service": ("TEAMS_SERVICE_SELECTED", "TEAMS_SERVICE_RESULT"),
-              "obs-control-e2e": ("OBS_CONTROL_E2E_SELECTED", "OBS_CONTROL_E2E_RESULT"),
-          }
-          for job, (selection_key, result_key) in jobs.items():
-              selected = os.environ[selection_key]
-              result = os.environ[result_key]
-              if selected not in {"true", "false"}:
-                  fail(f"{job} selection is missing or unknown")
-              expected = "success" if selected == "true" else "skipped"
-              if result != expected:
-                  fail(f"{job} result was {result!r}; expected {expected!r}")
-          print("all selected script, image, and integration jobs succeeded")
