@@ -1,0 +1,12 @@
+[modules.malrunar-ci]
+source = "ci/dagger/check"
+main = true
+
+[modules.dagger-go-sdk]
+source = "github.com/dagger/go-sdk"
+
+[sdks.go]
+module = "dagger-go-sdk"
+
+[sdks.go.scopes."ci/dagger/check"]
+is-module = true
