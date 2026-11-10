@@ -16,7 +16,16 @@ const (
 )
 
 // Checks runs the repository's isolated Linux unit and syntax suites.
-func (m *MalrunarCi) Checks(ctx context.Context, source *dagger.Directory) (string, error) {
+// +check
+func (m *MalrunarCi) Checks(ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) error {
+	_, err := m.checksOutput(ctx, source)
+	return err
+}
+
+func (m *MalrunarCi) checksOutput(ctx context.Context, source *dagger.Directory) (string, error) {
 	var out strings.Builder
 	nodeTools := dag.Container().From(nodeImage)
 	python := dag.Container().From(pythonImage).

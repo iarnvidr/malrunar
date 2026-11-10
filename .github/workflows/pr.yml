@@ -65,10 +65,9 @@ jobs:
       - name: Isolated Python, shell, and Node unit checks
         uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602
         with:
-          version: 0.21.11
-          verb: call
-          module: ./ci/dagger/check
-          args: checks --source .
+          version: 1.0.0-beta.25
+          verb: check
+          args: dag://malrunar-ci/checks
       - name: Content hashes are computable and stable
         run: |
           set -eu

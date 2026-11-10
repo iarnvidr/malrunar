@@ -22,7 +22,12 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("devops-service", (ROOT / ".github/workflows/publish.yml").read_text())
         workflow = (ROOT / ".github/workflows/pr.yml").read_text()
         checks = (ROOT / "ci/dagger/check/main.go").read_text()
-        self.assertIn("args: checks --source .", workflow)
+        self.assertIn("version: 1.0.0-beta.25", workflow)
+        self.assertIn("verb: check", workflow)
+        self.assertIn("args: dag://malrunar-ci/checks", workflow)
+        self.assertIn("// +check", checks)
+        self.assertIn('engineVersion = "v1.0.0-beta.25"', (ROOT / "ci/dagger/check/dagger-module.toml").read_text())
+        self.assertIn('source = "ci/dagger/check"', (ROOT / "dagger.toml").read_text())
         self.assertIn('"devops-service/test"', checks)
 
     def test_private_site_changes_do_not_change_public_foundation_identity(self):
