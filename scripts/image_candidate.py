@@ -39,6 +39,7 @@ PREFLIGHT_PREFIX = "malrunar-image-preflight"
 QUICKSTART_PREFIX = "malrunar-quickstart-candidate"
 MAX_BYTES = 8 * 1024 * 1024 * 1024
 MAX_CONFIG_BYTES = 256 * 1024
+GITHUB_API_RETRY_DELAYS = (1, 2, 4)
 
 
 class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -63,11 +64,20 @@ def open_github_request(request, timeout):
     if (request.get_method() != "GET" or parsed.scheme != "https" or parsed.netloc != "api.github.com"
             or parsed.username or parsed.password):
         raise ValueError("refusing unsafe GitHub request")
-    try:
-        return urllib.request.build_opener(GitHubRedirectHandler()).open(request, timeout=timeout)
-    except urllib.error.HTTPError as exc:
-        failed = urllib.parse.urlsplit(exc.url or request.full_url)
-        raise ValueError(f"GitHub request returned HTTP {exc.code} for {failed.netloc}{failed.path}") from exc
+    opener = urllib.request.build_opener(GitHubRedirectHandler())
+    for attempt in range(len(GITHUB_API_RETRY_DELAYS) + 1):
+        try:
+            return opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            failed = urllib.parse.urlsplit(exc.url or request.full_url)
+            # Retry only transient API failures, never credential-bearing redirects,
+            # authorization failures, or untrusted artifact-storage responses.
+            if (exc.code in (502, 503, 504) and failed.scheme == "https"
+                    and failed.netloc == "api.github.com" and attempt < len(GITHUB_API_RETRY_DELAYS)):
+                exc.close()
+                time.sleep(GITHUB_API_RETRY_DELAYS[attempt])
+                continue
+            raise ValueError(f"GitHub request returned HTTP {exc.code} for {failed.netloc}{failed.path}") from exc
 
 
 def sha(data: bytes) -> str:
