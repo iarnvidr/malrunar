@@ -75,6 +75,40 @@ def layout(path, predicates=("https://spdx.dev/Document", "https://slsa.dev/prov
 
 
 class GitHubRedirectTests(unittest.TestCase):
+    def test_transient_github_api_error_is_retried_before_accepting_evidence(self):
+        request = candidate.urllib.request.Request("https://api.github.com/repos/iarnvidr/malrunar")
+        failure = lambda: candidate.urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO())
+        successful_response = io.BytesIO(b'{"sha":"trusted"}')
+        with mock.patch.object(candidate.urllib.request.OpenerDirector, "open",
+                               side_effect=[failure(), failure(), successful_response]) as open_request, \
+                mock.patch.object(candidate.time, "sleep") as sleep:
+            self.assertIs(candidate.open_github_request(request, timeout=1), successful_response)
+        self.assertEqual(open_request.call_count, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2])
+
+    def test_retries_are_bounded_and_fail_closed(self):
+        request = candidate.urllib.request.Request("https://api.github.com/repos/iarnvidr/malrunar")
+        def fail(*_args, **_kwargs):
+            raise candidate.urllib.error.HTTPError(request.full_url, 503, "Unavailable", {}, io.BytesIO())
+        with mock.patch.object(candidate.urllib.request.OpenerDirector, "open", side_effect=fail) as open_request, \
+                mock.patch.object(candidate.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "HTTP 503 for api.github.com/repos"):
+                candidate.open_github_request(request, timeout=1)
+        self.assertEqual(open_request.call_count, 4)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2, 4])
+
+    def test_redirected_artifact_storage_failure_is_not_retried(self):
+        request = candidate.urllib.request.Request("https://api.github.com/repos/iarnvidr/malrunar")
+        error = candidate.urllib.error.HTTPError(
+            "https://objects.example.invalid/archive?secret=signed", 502, "Bad Gateway", {}, io.BytesIO()
+        )
+        with mock.patch.object(candidate.urllib.request.OpenerDirector, "open", side_effect=error) as open_request, \
+                mock.patch.object(candidate.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "HTTP 502 for objects.example.invalid/archive"):
+                candidate.open_github_request(request, timeout=1)
+        open_request.assert_called_once()
+        sleep.assert_not_called()
+
     def test_cross_host_artifact_redirect_drops_authorization(self):
         request = candidate.urllib.request.Request(
             "https://api.github.com/repos/iarnvidr/malrunar/actions/artifacts/123/zip",
