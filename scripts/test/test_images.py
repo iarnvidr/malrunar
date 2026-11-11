@@ -220,6 +220,8 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("cron: '43 3 * * *'", text)
         self.assertIn('"$(date -u +%u)" != 1', text)
         self.assertIn("python3 -I scripts/bump_agent_runtimes.py", text)
+        self.assertIn("gh pr list --repo", text)
+        self.assertIn("Existing pin-update PR awaits review", text)
 
     def test_candidate_oci_export_has_one_explicit_image_name(self):
         text = (mi.ROOT / "scripts/build.sh").read_text()

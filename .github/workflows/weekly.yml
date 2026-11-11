@@ -87,6 +87,14 @@ jobs:
             echo 'pins are current'
             exit 0
           fi
+          # A nightly cadence must not create another identical PR each day
+          # while an earlier pin-update PR is still awaiting review.
+          pending="$(gh pr list --repo "$REPO" --state open --json headRefName,url \
+            --jq '[.[] | select(.headRefName | test("^bump-pins-[0-9]{8}$"))][0].url // ""')"
+          if [ -n "$pending" ]; then
+            echo "Existing pin-update PR awaits review: $pending"
+            exit 0
+          fi
           branch="bump-pins-$(date -u +%Y%m%d)"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
