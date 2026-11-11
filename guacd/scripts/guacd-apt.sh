@@ -15,7 +15,7 @@
 
 guacd_apt_enable() {
     if [ -n "${GUACD_APT_SNAPSHOT:-}" ]; then
-        APT_SNAPSHOT="$GUACD_APT_SNAPSHOT"
+        export APT_SNAPSHOT="$GUACD_APT_SNAPSHOT"
         malrunar_snapshot_enable
     else
         malrunar_retry malrunar_apt update
