@@ -20,5 +20,14 @@ RUN echo "${DAGGER_CLI_SHA256}  /tmp/dagger.tgz" | sha256sum -c - \
  && /opt/malrunar/dagger/dagger --help >/dev/null
 RUN git config --system maintenance.autoDetach false \
  && git config --system gc.autoDetach false
+# Only the final CLI layer is invalidated when Codex or Claude Code updates.
+ARG CODEX_VERSION
+ARG CLAUDE_CODE_VERSION
+ENV PATH=/opt/malrunar/agent-clis/bin:$PATH
+RUN npm install --global --prefix /opt/malrunar/agent-clis --no-audit --no-fund \
+      "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+ && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}" \
+ && test "$(claude --version | awk '{print $1}')" = "${CLAUDE_CODE_VERSION}" \
+ && chmod -R a+rX /opt/malrunar/agent-clis
 USER coder
 WORKDIR /home/coder

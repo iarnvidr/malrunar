@@ -1,12 +1,12 @@
-# Weekly pin bump: apt snapshots, base image digests, the Node LTS release and the Firefox ESR release,
+# Nightly agent/runtime pin bump; on Monday also refresh apt snapshots, base digests, Node and Firefox ESR,
 # as a pull request. Images whose content hash does not change (scripts/malrunar_image.py: a hash covers
 # only the pins an image's Dockerfile declares) are not republished when it merges.
 # Uses a repository scoped GitHub App token so the generated PR starts the normal PR checks.
-name: weekly
+name: nightly agent and weekly base pins
 
 on:
   schedule:
-    - cron: '17 4 * * 1'
+    - cron: '43 3 * * *'
   workflow_dispatch:
     inputs:
       preflight_only:
@@ -65,9 +65,17 @@ jobs:
           repository="$(gh api repos/iarnvidr/malrunar --jq .full_name)"
           test "$repository" = iarnvidr/malrunar
           echo "Scoped App token can read $repository metadata. No pin update or PR was created."
-      - name: Bump pins
+      - name: Refresh broad base pins on Monday only (or a manual run)
         if: ${{ inputs.preflight_only != true }}
-        run: python3 -I scripts/bump_pins.py
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
+            echo 'Non-Monday run: skip broad base pins'
+            exit 0
+          fi
+          python3 -I scripts/bump_pins.py
+      - name: Refresh Paseo, Codex and Claude Code every night
+        if: ${{ inputs.preflight_only != true }}
+        run: python3 -I scripts/bump_agent_runtimes.py
       - name: Open or update the pull request
         if: ${{ inputs.preflight_only != true }}
         env:
@@ -84,7 +92,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$branch"
           git add -- pins.env '*/pins.env'
-          git commit -m 'Bump apt snapshots, base image digests, Node and Firefox ESR'
+          git commit -m 'Refresh pinned runtime dependencies'
           git push --force origin "$branch"
           # An image whose Dockerfile does not use a bumped pin keeps its content hash and is not republished.
           republished="$(python3 scripts/changed_images.py HEAD~1 --republish | tr '\n' ' ')"
@@ -94,5 +102,5 @@ jobs:
             gh pr edit "$branch" --repo "$REPO" --body "$body"
           else
             gh pr create --repo "$REPO" --base main --head "$branch" \
-              --title 'Bump apt snapshots, base image digests, Node and Firefox ESR' --body "$body"
+              --title 'Refresh pinned runtime dependencies' --body "$body"
           fi

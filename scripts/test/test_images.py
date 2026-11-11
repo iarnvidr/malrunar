@@ -208,11 +208,18 @@ class RepositoryTest(unittest.TestCase):
         steps = text.split("\n      - ")
         for marker in (
             "uses: actions/checkout@",
-            "run: python3 -I scripts/bump_pins.py",
+            "python3 -I scripts/bump_pins.py",
+            "run: python3 -I scripts/bump_agent_runtimes.py",
             "name: Open or update the pull request",
         ):
             step = next(part for part in steps if marker in part)
             self.assertIn("if: ${{ inputs.preflight_only != true }}", step)
+
+    def test_nightly_agents_do_not_rebuild_every_base_image_daily(self):
+        text = (mi.ROOT / ".github/workflows/weekly.yml").read_text()
+        self.assertIn("cron: '43 3 * * *'", text)
+        self.assertIn('"$(date -u +%u)" != 1', text)
+        self.assertIn("python3 -I scripts/bump_agent_runtimes.py", text)
 
     def test_candidate_oci_export_has_one_explicit_image_name(self):
         text = (mi.ROOT / "scripts/build.sh").read_text()

@@ -35,8 +35,8 @@ All images are published to `ghcr.io/iarnvidr/<image>`, for `linux/amd64`.
 | [`msteams-mcp`](msteams-mcp/) | A Microsoft Teams MCP server for the desktop | The [msteams-mcp](https://github.com/m0nkmaster/msteams-mcp) MCP server (MIT) at a pinned commit with five build-time patches, a pinned Playwright Firefox and one command (`malrunar-msteams-mcp`): serve, interactive and password+MFA sign-in, cookie sync into the visible browser, a visual browser MCP, and an optional device-code sign-in that is **off** unless you opt in. A `FROM scratch` layer; it needs `node`, `desktop-base` and `work-browser` and says so (exit 78) when one is missing |
 | [`teams-service`](teams-service/) | A local, queryable copy of Teams chats and calendar | A PocketBase (pinned, built from source) mirror kept in sync through the `msteams-mcp` package, behind a small bearer-token HTTP API, with a supervisord program. A `FROM scratch` layer; it needs `node` and `msteams-mcp` only |
 
-| [`paseo-runtime`](paseo-runtime/) | Generic upstream Paseo base for your own runtime overlay | Official Paseo 0.14.0 at a pinned digest, with safe in-process Git maintenance; no site policy, plugins or credentials |
-| [`agent-dev-base`](agent-dev-base/) | Reusable non-root agent development base | Pinned code-server, Node 24 and checksum-verified Dagger v1 CLI; no broker, private skills, user policy or engine socket |
+| [`paseo-runtime`](paseo-runtime/) | Generic upstream Paseo base for your own runtime overlay | Stable upstream Paseo at a pinned digest, version-pinned Codex/Claude Code, in-process Git maintenance; no site policy, plugins or credentials |
+| [`agent-dev-base`](agent-dev-base/) | Reusable non-root agent development base | Pinned code-server, Node 24, checksum-verified Dagger v1 CLI and version-pinned Codex/Claude Code; no broker, private skills, user policy or engine socket |
 
 ## Using them
 
@@ -249,9 +249,27 @@ Each image gets two tags:
 Every input is pinned: base images by digest, Ubuntu and Debian packages through a dated
 [snapshot.ubuntu.com](https://snapshot.ubuntu.com/) or
 [snapshot.debian.org](https://snapshot.debian.org/) archive, downloads by sha256 and git sources
-by commit. The pins live in [`pins.env`](pins.env) and each image's `pins.env`. A weekly workflow
-opens a pull request that moves them forward (and lists which images it republishes), which is how
-security updates arrive.
+by commit. The pins live in [`pins.env`](pins.env) and each image's `pins.env`.
+The scheduled [pin workflow](.github/workflows/weekly.yml) checks stable Paseo,
+Codex and Claude Code nightly, and refreshes the broader base pins every
+Monday. It opens a pull request listing which images would be republished;
+unchanged hashes are reused. This automation requires repository variable
+`CI_APP_ID` and secret `CI_APP_PRIVATE_KEY` for the scoped GitHub App; without
+those credentials it fails closed. The standalone updater works without any
+GitHub credentials:
+
+```sh
+python3 -I scripts/bump_agent_runtimes.py --dry-run
+python3 -I scripts/bump_agent_runtimes.py        # updates checked-in pins; review and push a PR
+```
+
+The nightly task **does not automatically deploy** private Home/RK or agent
+containers. After a green PR and merge, `publish.yml` promotes the same
+tested images by content hash and signs the published digests. If no accepted
+PR candidate exists, dispatch `publish.yml` on `main` with
+`trusted_rebuild=true` to build a new, unpublished hash. Published `h-` tags
+are never rebuilt or moved. Private consumers must adopt the new signed
+digests and perform their own rollout checks.
 
 Builds run on GitHub-hosted runners: pull requests build and smoke-test the images they change, and
 pushes to `main` publish them. An image's hash covers only the pins its Dockerfile uses, so the weekly
