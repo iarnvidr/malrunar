@@ -2,7 +2,8 @@
 #
 # A standalone, runnable image: guacd plus the exact distro libraries it links against,
 # with their copyright files. Build inputs are all pinned: base image by digest, apt by a
-# snapshot.ubuntu.com date, sources by sha256 (see pins.env). Build with scripts/build.sh guacd.
+# snapshot.ubuntu.com date (GUACD_APT_SNAPSHOT in pins.env; empty = the live Ubuntu archive while the snapshot service
+# is unavailable, see scripts/guacd-apt.sh), sources by sha256 (see pins.env). Build with scripts/build.sh guacd.
 #
 # Runs as uid 1000 (guacd), with writable HOME=/home/guacd.
 # and listens on 0.0.0.0:4822. guacd has no authentication, so never publish the port beyond
@@ -13,7 +14,7 @@ ARG UBUNTU_IMAGE
 FROM ${UBUNTU_IMAGE} AS build
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
-ARG APT_SNAPSHOT
+ARG GUACD_APT_SNAPSHOT
 ARG GUACAMOLE_VERSION
 ARG GUACAMOLE_SERVER_SHA256
 ARG GUACAMOLE_WOL_COMMIT
@@ -23,13 +24,13 @@ ARG GUACAMOLE_SOCKET_NEST_SHA256
 # apt reads the pinned snapshot over TLS (snapshot.ubuntu.com redirects http to https); the helper
 # bootstraps ca-certificates first. Index signatures and certificates are always verified.
 RUN --mount=type=bind,source=scripts,target=/scripts \
-    . /scripts/apt-snapshot.sh; \
-    malrunar_snapshot_enable; \
+    . /scripts/guacd-apt.sh; \
+    guacd_apt_enable; \
     malrunar_retry malrunar_apt upgrade -y; \
     malrunar_retry malrunar_apt install -y --no-install-recommends ca-certificates curl \
         gcc g++ make pkg-config libcairo2-dev libjpeg-dev libpng-dev uuid-dev \
         freerdp3-dev libpulse-dev libssl-dev libwebp-dev perl libcunit1-dev patch; \
-    malrunar_snapshot_disable
+    guacd_apt_disable
 # Later steps keep their original /bin/sh semantics (no pipefail in the ldd/dpkg pipeline).
 SHELL ["/bin/sh", "-c"]
 COPY guacamole-rdp-gdi.patch /tmp/rdp-gdi.patch
@@ -77,18 +78,18 @@ RUN set -eu; export LD_LIBRARY_PATH=/out/usr/local/lib; \
 FROM ${UBUNTU_IMAGE} AS runtime
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
-ARG APT_SNAPSHOT
+ARG GUACD_APT_SNAPSHOT
 # Keep the distro copyright files of every installed library (dpkg path excludes, where the base
 # image has them, would drop them).
 RUN --mount=type=bind,source=scripts,target=/scripts \
     rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/*docker*; \
-    . /scripts/apt-snapshot.sh; \
-    malrunar_snapshot_enable; \
+    . /scripts/guacd-apt.sh; \
+    guacd_apt_enable; \
     malrunar_retry malrunar_apt upgrade -y; \
     malrunar_retry malrunar_apt install -y --no-install-recommends \
         libcairo2 libjpeg-turbo8 libpng16-16t64 libssl3t64 libwebp7 libpulse0 \
         libfreerdp3-3 libfreerdp-client3-3 libwinpr3-3; \
-    malrunar_snapshot_disable
+    guacd_apt_disable
 SHELL ["/bin/sh", "-c"]
 COPY --from=build /out/ /
 # Fail the build if a library is missing, or a linked package version differs from what is installed,

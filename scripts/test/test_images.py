@@ -53,8 +53,11 @@ class PinScopeTest(CopyCase):
         changed = self.differing()
         for image in NO_ROOT_PINS:
             self.assertNotIn(image, changed, f"{image} does not use APT_SNAPSHOT but its hash changed")
-        for image in ("desktop-base", "obs-runtime", "obs-control", "guacd", "guacamole-tunnel", "office-convert"):
+        for image in ("desktop-base", "obs-runtime", "obs-control", "guacamole-tunnel", "office-convert"):
             self.assertIn(image, changed, f"{image} installs packages from the snapshot")
+        # guacd has its own GUACD_APT_SNAPSHOT (empty = live archive) so that it and the RK package layer, which must carry
+        # the very same libfreerdp versions, always share one apt source; the shared date does not move it.
+        self.assertNotIn("guacd", changed)
         self.assertEqual(set(ci.republished_images(self.base, self.head)), changed)
 
     def test_base_image_bump_does_not_touch_scripts_only_components(self):
@@ -120,7 +123,7 @@ class PlanTest(CopyCase):
         changed = set(self.run_plan(["pins.env"]))
         self.assertNotIn("tail-browser-mcp", changed)
         self.assertNotIn("node", changed)
-        self.assertIn("guacd", changed)
+        self.assertNotIn("guacd", changed)  # see GUACD_APT_SNAPSHOT
 
     def test_new_image_is_changed(self):
         shutil.rmtree(self.base / "work-browser")
