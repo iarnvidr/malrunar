@@ -208,11 +208,36 @@ class RepositoryTest(unittest.TestCase):
         steps = text.split("\n      - ")
         for marker in (
             "uses: actions/checkout@",
-            "run: python3 -I scripts/bump_pins.py",
+            "python3 -I scripts/bump_pins.py",
+            "run: python3 -I scripts/bump_agent_runtimes.py",
             "name: Open or update the pull request",
         ):
             step = next(part for part in steps if marker in part)
             self.assertIn("if: ${{ inputs.preflight_only != true }}", step)
+
+    def test_nightly_agents_do_not_rebuild_every_base_image_daily(self):
+        text = (mi.ROOT / ".github/workflows/weekly.yml").read_text()
+        self.assertIn("cron: '43 3 * * *'", text)
+        self.assertIn('"$(date -u +%u)" != 1', text)
+        self.assertIn("python3 -I scripts/bump_agent_runtimes.py", text)
+        self.assertIn("gh pr list --repo", text)
+        self.assertIn("Existing pin-update PR awaits review", text)
+
+    def test_nightly_preview_images_are_smoked_before_promotion(self):
+        text = (mi.ROOT / ".github/workflows/nightly-agent-images.yml").read_text()
+        self.assertIn("cron: '13 4 * * *'", text)
+        self.assertIn("if: github.ref == 'refs/heads/main'", text)
+        self.assertIn("image: [paseo-runtime, agent-dev-base]", text)
+        self.assertIn("python3 -I scripts/bump_agent_runtimes.py", text)
+        self.assertIn("--sbom=true --provenance=mode=max", text)
+        self.assertIn("packages: write", text)
+        self.assertLess(text.index('docker pull "$image@$digest"'),
+                        text.index('scripts/smoke.sh "$IMAGE" "$image@$digest"'))
+        self.assertLess(text.index('scripts/smoke.sh "$IMAGE" "$image@$digest"'),
+                        text.index('cosign sign "$image@$digest"'))
+        self.assertLess(text.index('cosign verify "$image@$digest"'),
+                        text.index('docker buildx imagetools create --tag "$nightly"'))
+        self.assertNotIn("trusted_rebuild", text)
 
     def test_candidate_oci_export_has_one_explicit_image_name(self):
         text = (mi.ROOT / "scripts/build.sh").read_text()
