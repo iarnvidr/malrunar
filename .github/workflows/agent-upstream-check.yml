@@ -1,0 +1,25 @@
+name: agent-upstream-resolution
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/agent-upstream-check.yml
+      - .github/workflows/weekly.yml
+      - scripts/bump_agent_runtimes.py
+      - paseo-runtime/**
+      - agent-dev-base/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve live upstream metadata without changing pins
+        run: python3 -I scripts/bump_agent_runtimes.py --dry-run
