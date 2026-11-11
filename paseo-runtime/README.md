@@ -29,3 +29,8 @@ PR CI builds and smoke-tests the new image hash. After review and merge,
 candidate is available, `publish.yml` can be dispatched on `main` with
 `trusted_rebuild=true` to build that **new, not-yet-published hash**. An
 already published `h-` tag is immutable and will be reused, not overwritten.
+
+The separate [nightly image workflow](../.github/workflows/nightly-agent-images.yml)
+builds, tests and signs a preview image every night from the latest stable
+pins, without waiting for a PR. Its unique `nightly-*` tag is intentionally
+separate from the reviewed production `h-*` release path.

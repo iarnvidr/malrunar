@@ -223,6 +223,22 @@ class RepositoryTest(unittest.TestCase):
         self.assertIn("gh pr list --repo", text)
         self.assertIn("Existing pin-update PR awaits review", text)
 
+    def test_nightly_preview_images_are_smoked_before_promotion(self):
+        text = (mi.ROOT / ".github/workflows/nightly-agent-images.yml").read_text()
+        self.assertIn("cron: '13 4 * * *'", text)
+        self.assertIn("if: github.ref == 'refs/heads/main'", text)
+        self.assertIn("image: [paseo-runtime, agent-dev-base]", text)
+        self.assertIn("python3 -I scripts/bump_agent_runtimes.py", text)
+        self.assertIn("--sbom=true --provenance=mode=max", text)
+        self.assertIn("packages: write", text)
+        self.assertLess(text.index('docker pull "$image@$digest"'),
+                        text.index('scripts/smoke.sh "$IMAGE" "$image@$digest"'))
+        self.assertLess(text.index('scripts/smoke.sh "$IMAGE" "$image@$digest"'),
+                        text.index('cosign sign "$image@$digest"'))
+        self.assertLess(text.index('cosign verify "$image@$digest"'),
+                        text.index('docker buildx imagetools create --tag "$nightly"'))
+        self.assertNotIn("trusted_rebuild", text)
+
     def test_candidate_oci_export_has_one_explicit_image_name(self):
         text = (mi.ROOT / "scripts/build.sh").read_text()
         export = text.split('if [ "$candidate" = true ]; then', 1)[1].split("\nelse", 1)[0]

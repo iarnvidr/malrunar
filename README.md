@@ -271,6 +271,15 @@ PR candidate exists, dispatch `publish.yml` on `main` with
 are never rebuilt or moved. Private consumers must adopt the new signed
 digests and perform their own rollout checks.
 
+Independently, [nightly-agent-images.yml](.github/workflows/nightly-agent-images.yml)
+builds **both** public agent images from the newest stable upstream pins every
+night, even before a dependency PR merges. The resulting registry images have
+unique `nightly-YYYYMMDD-<run>-<attempt>` tags. They are smoke-tested by the
+exact registry digest, signed, and then given the finished nightly tag. This
+preview lane needs only `GITHUB_TOKEN` and never modifies the stable `h-` tags
+or any private deployment. For production, use the separately PR-gated signed
+release digest, not an unreviewed nightly preview.
+
 Builds run on GitHub-hosted runners: pull requests build and smoke-test the images they change, and
 pushes to `main` publish them. An image's hash covers only the pins its Dockerfile uses, so the weekly
 pin update republishes only the images it actually changes. Each published image has an SBOM, a provenance attestation and a keyless
