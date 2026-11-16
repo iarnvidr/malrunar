@@ -40,7 +40,7 @@ export function normalizeEvent(raw, calendar = { id: DEFAULT_CALENDAR, name: 'Ca
 
 function eventBody(input, existing = null, timeZone = defaultTimeZone()) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new GraphError('An event is required', 400);
-  const allowed = ['subject', 'start', 'end', 'isAllDay', 'location', 'body', 'attendees', 'showAs', 'sensitivity'];
+  const allowed = ['subject', 'start', 'end', 'isAllDay', 'location', 'body', 'attendees', 'showAs', 'sensitivity', 'teamsMeeting'];
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new GraphError('Unsupported event field', 400);
   const out = {};
   for (const [field, values] of Object.entries({ showAs: ['free', 'tentative', 'busy', 'oof', 'workingElsewhere', 'unknown'],
@@ -82,6 +82,12 @@ function eventBody(input, existing = null, timeZone = defaultTimeZone()) {
   if ('attendees' in input) {
     if (!Array.isArray(input.attendees) || input.attendees.length > 100 || input.attendees.some(email => typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) throw new GraphError('Enter valid attendee email addresses', 400);
     out.attendees = input.attendees.map(address => ({ emailAddress: { address }, type: 'required' }));
+  }
+  if ('teamsMeeting' in input) {
+    if (typeof input.teamsMeeting !== 'boolean') throw new GraphError('Teams meeting must be true or false', 400);
+    // This only ever adds a Teams meeting. An event that already has a join link is left as it is, and false
+    // changes nothing: removing a meeting link from an existing event is not offered.
+    if (input.teamsMeeting && !existing?.joinUrl) { out.isOnlineMeeting = true; out.onlineMeetingProvider = 'teamsForBusiness'; }
   }
   return out;
 }

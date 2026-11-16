@@ -80,6 +80,26 @@ test('create/update/delete are live, recurrence edits target this instance, fail
   await assert.rejects(calendar.create({ subject: 'Bad', start: '2026-10-13', end: '2026-10-12' }), /end after/);
 });
 
+test('a Teams meeting is requested only when asked for, and never replaces an existing join link', async () => {
+  const { calendar, graph } = await make([delta([event('plain'), event('teams', { onlineMeeting: { joinUrl: 'https://teams.microsoft.com/l/meetup-join/x' } })]),
+    event('created', { onlineMeeting: { joinUrl: 'https://teams.microsoft.com/l/meetup-join/new' } }), event('nolink'), event('omitted'), event('plain'), event('teams')]);
+  await calendar.sync();
+  const times = { start: '2026-10-13T11:00:00Z', end: '2026-10-13T12:00:00Z' };
+  const made = await calendar.create({ subject: 'Solo test', ...times, teamsMeeting: true });
+  const created = graph.calls.at(-1).options.body;
+  assert.equal(created.isOnlineMeeting, true); assert.equal(created.onlineMeetingProvider, 'teamsForBusiness');
+  assert.equal(made.joinUrl, 'https://teams.microsoft.com/l/meetup-join/new');
+  await calendar.create({ subject: 'No link', ...times, teamsMeeting: false });
+  assert.equal('isOnlineMeeting' in graph.calls.at(-1).options.body, false);
+  await calendar.create({ subject: 'Omitted', ...times });
+  assert.equal('isOnlineMeeting' in graph.calls.at(-1).options.body, false);
+  await assert.rejects(calendar.create({ subject: 'Bad', ...times, teamsMeeting: 'yes' }), /true or false/);
+  await calendar.update('plain', { teamsMeeting: true });
+  assert.deepEqual(graph.calls.at(-1).options.body, { isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness' });
+  await calendar.update('teams', { teamsMeeting: true });
+  assert.deepEqual(graph.calls.at(-1).options.body, {});
+});
+
 test('all-day creation uses local midnight and no attendee is added implicitly', async () => {
   const { calendar, graph } = await make([delta([]), event('day', { isAllDay: true })]); await calendar.sync();
   await calendar.create({ subject: 'Holiday', isAllDay: true, start: '2026-03-29', end: '2026-03-30' });
