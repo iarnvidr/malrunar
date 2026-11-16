@@ -62,9 +62,9 @@ bash -n "$work/out/bin/malrunar-thunderbird-mcp"
 python3 -I -c 'import json,sys; [json.load(open(f)) for f in sys.argv[1:]]' "$work/out/share/policies-extension.json.example" "$work/out/share/mcp-client.json.example"
 
 echo '== the add-on: packed from the pinned source with the pinned limits'
-python3 -I - "$work/out/thunderbird-mcp.xpi" "$mcp_version" "$per_image" "$total" <<'PY'
+python3 -I - "$work/out/thunderbird-mcp.xpi" "$mcp_version" "$per_image" "$total" "$work/api.js" <<'PY'
 import json, sys, zipfile
-path, version, per_image, total = sys.argv[1:]
+path, version, per_image, total, api_out = sys.argv[1:]
 z = zipfile.ZipFile(path)
 assert z.testzip() is None
 m = json.loads(z.read("manifest.json"))
@@ -73,6 +73,8 @@ assert m["version"].startswith(version + "."), m["version"]
 api = z.read("mcp_server/api.js").decode()
 assert f"const MAX_INLINE_IMAGE_BASE64_BYTES = {per_image};" in api
 assert f"const MAX_INLINE_IMAGES_TOTAL_BASE64_BYTES = {total};" in api
+assert "availErr.result === 0x80470002" in api and "return btoa(" not in api, "the inline-image fixes are missing from the packed add-on"
+open(api_out, "w").write(api)
 print("add-on", m["version"], "ok")
 PY
 grep -q "^thunderbird-mcp ${mcp_version}\$" "$work/out/SOURCE.txt" || fail 'SOURCE.txt does not name the version'
@@ -91,12 +93,13 @@ docker build --quiet --target with-node --tag "$withnode" \
     --build-arg "MCP_IMAGE=$image" --build-arg "NODE_IMAGE=$node_image" --build-arg "BASE=$ubuntu_image" "$here/consumer" >/dev/null
 run --user 1000:1000 "$withnode" bash -c '! test -e /opt/malrunar/thunderbird && ! test -e /opt/malrunar/firefox' \
     || fail 'the test image has more than the pinned Ubuntu image, node and the component'
-cp "$here/bridge-unit.cjs" "$here/bridge-roundtrip.cjs" "$work/"
+cp "$here/bridge-unit.cjs" "$here/bridge-roundtrip.cjs" "$here/xpi-behaviour.cjs" "$work/"
 run --user 1000:1000 -e HOME=/tmp -e PATH=/opt/malrunar/node/bin:/usr/bin:/bin -v "$work:/work:ro" "$withnode" bash -c '
     set -e
     /opt/malrunar/thunderbird-mcp/bin/malrunar-thunderbird-mcp --check
     node /work/bridge-unit.cjs /opt/malrunar/thunderbird-mcp/mcp-bridge.cjs
     node /work/bridge-roundtrip.cjs /opt/malrunar/thunderbird-mcp/bin/malrunar-thunderbird-mcp
+    node /work/xpi-behaviour.cjs /work/api.js
 ' || fail 'the bridge does not work with the node component'
 
 echo '== end to end: the real add-on in a running Thunderbird, driven through the bridge'
