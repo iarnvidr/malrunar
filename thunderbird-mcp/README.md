@@ -79,6 +79,12 @@ limits>`, so a persistent profile installs it over an older build. The limits ar
 others, rebuild this component with your own `pins.env` values, or install upstream's add-on instead.
 Images are only inlined when the client asks (`includeInlineImages`), and a large total costs agent context.
 
+Upstream v0.7.4 also had two bugs that made `includeInlineImages` skip every image whatever its size, reported as
+"Image exceeds per-image base64 limit": `readMessageStreamFully` let `available()` throwing `NS_BASE_STREAM_CLOSED` at
+the end of the data escape as a failure, and the base64 encoder called `btoa`, which the add-on's scope does not
+define. `build-xpi.py` fixes both (each edit is asserted) and the add-on now names any other read failure
+("Inline image read failed: ..."). `test/xpi-behaviour.cjs` runs the patched functions against fake streams.
+
 ## Safety
 
 The add-on exposes a mailbox to an MCP client. Upstream's safeguards are kept as they are: the bearer token
