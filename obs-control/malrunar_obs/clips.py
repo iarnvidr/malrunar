@@ -143,7 +143,8 @@ class Clips:
                 current = (await ctl.obs(("GetCurrentProgramScene", {})))[0]
                 if current.get("currentProgramSceneName") == scene_name:
                     if ctl.sender_alive() and ctl.live_camera is not None:
-                        await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.live_camera.scene}))
+                        async with ctl.idle_fps.live():
+                            await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.live_camera.scene}))
                         ctl.active_clip_input = None
                         await ctl.set_program_audio_muted(ctl.program_audio_muted, strict=False)
                     else:
@@ -173,7 +174,8 @@ class Clips:
         _, path = self._path(request)
         clip = self.metadata(path)
         await self.ensure_scene(clip)
-        await self.ctl.obs(("SetCurrentProgramScene", {"sceneName": clip["scene_name"]}))
+        async with self.ctl.idle_fps.live():
+            await self.ctl.obs(("SetCurrentProgramScene", {"sceneName": clip["scene_name"]}))
         return web.json_response({"ok": True, "scene": clip["scene_name"]})
 
     async def play(self, request: web.Request) -> web.Response:
@@ -219,10 +221,11 @@ class Clips:
             )
             ctl.active_clip_input = name
             await ctl.set_program_audio_muted(ctl.program_audio_muted, strict=False)
-            await ctl.obs(
-                ("SetCurrentProgramScene", {"sceneName": clip["scene_name"]}),
-                ("TriggerMediaInputAction", {"inputName": name, "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"}),
-            )
+            async with ctl.idle_fps.live():
+                await ctl.obs(
+                    ("SetCurrentProgramScene", {"sceneName": clip["scene_name"]}),
+                    ("TriggerMediaInputAction", {"inputName": name, "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"}),
+                )
             if not looping:
                 ctl.clip_task = asyncio.create_task(self._end_after(clip["scene_name"], duration))
         return web.json_response({"ok": True, "clip_id": clip_id, "duration": duration, "loop": looping})
@@ -391,6 +394,7 @@ class Clips:
         except Exception:
             data = {}
         display_name = clean_display_name(str(data.get("name", "")))
+        await self.ctl.idle_fps.ensure_active()  # the capture must not be cut by a later restart
         capture_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slugify(display_name)}"
         self.directory.mkdir(parents=True, exist_ok=True)
         pending = self.directory / f".{capture_id}.pending.json"

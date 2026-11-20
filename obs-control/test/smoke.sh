@@ -278,3 +278,47 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 [ "$relay_ready" = true ] || fail 'relay healthcheck did not detect the relay process'
+
+echo '== idle frame rate on a real OBS: the fps-only change is accepted, a go-live restores it first'
+idle_name="${name}-idle"
+created+=("$idle_name")
+timeout -k 10 120 docker create --name "$idle_name" -e MALRUNAR_OBS_FEATURES_PROGRAM_CONTROL=true \
+    -e MALRUNAR_OBS_VIDEO_IDLE_FPS=6 -e MALRUNAR_OBS_VIDEO_IDLE_FPS_DELAY=3 "$image" >/dev/null || fail 'idle container create'
+put_dir "$idle_name" "$here" /test && put_config "$idle_name" || fail 'copying the test files into the idle container'
+timeout -k 10 120 docker start "$idle_name" >/dev/null || fail 'idle container start'
+idle_exec() { timeout -k 10 120 docker exec "$idle_name" "$@"; }
+idle_exec bash -c 'nohup python3 /test/udp-capture.py /tmp/idle-out.ts 18096 240 >/tmp/idle-capture.log 2>&1 &' || fail 'idle capture start'
+idle_get() { idle_exec curl -sS --max-time 20 "http://127.0.0.1:18095$1"; }
+idle_post() {
+    local body="${2-}"
+    [ -n "$body" ] || body='{}'
+    idle_exec curl -sS --max-time 60 -X POST -H 'Content-Type: application/json' -d "$body" "http://127.0.0.1:18095$1"
+}
+idle_state=''
+for _ in $(seq 1 90); do
+    idle_state="$(idle_get /ready 2>/dev/null | json 'd.get("idle_fps", {}).get("state", "")' 2>/dev/null || true)"
+    [ "$idle_state" = idle ] && break
+    sleep 2
+done
+if [ "$idle_state" != idle ]; then
+    idle_get /ready >&2 || true
+    docker logs "$idle_name" 2>&1 | grep -E 'idle fps' | tail -n 20 >&2 || true
+    fail 'the idle frame rate was not applied to the stopped scene'
+fi
+idle_get /health | grep -q '"healthy": true' || fail 'the program output is not running at the idle frame rate'
+echo "idle change: $(idle_get /ready | json 'd["idle_fps"]["last_change"]')"
+idle_post /api/sender-heartbeat '{"healthy": true}' >/dev/null || fail 'idle sender heartbeat'
+idle_started="$(date +%s%N)"
+idle_post /api/call/live | grep -q '"ok": true' || fail 'go live from the idle frame rate'
+idle_finished="$(date +%s%N)"
+echo "go-live from the idle frame rate took $(( (idle_finished - idle_started) / 1000000 )) ms"
+idle_ready="$(idle_get /ready)"
+[ "$(printf '%s' "$idle_ready" | json 'd["idle_fps"]["state"]')" = active ] || { echo "$idle_ready" >&2; fail 'the frame rate was not restored by the go-live'; }
+echo "restore: $(printf '%s' "$idle_ready" | json 'd["idle_fps"]["last_change"]')"
+idle_healthy=false
+for _ in $(seq 1 30); do
+    if idle_get /health | grep -q '"healthy": true'; then idle_healthy=true; break; fi
+    sleep 1
+done
+[ "$idle_healthy" = true ] || fail 'the program output did not run after the go-live restore'
+echo 'obs-control idle frame rate passed'
