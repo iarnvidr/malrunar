@@ -575,6 +575,25 @@ class CandidateJobBindingTests(unittest.TestCase):
             candidate.expected_candidate_job("not-registered")
 
 
+class ProducerJobNameTests(unittest.TestCase):
+    def test_a_selection_inside_a_chain_names_the_whole_chain_job(self):
+        chain = "build (desktop-base obs-runtime obs-control)"
+        for key in ("obs-control", "obs-runtime--obs-control", "desktop-base--obs-runtime--obs-control", "obs-runtime"):
+            with self.subTest(key=key):
+                self.assertEqual(candidate._producer_job_name(f"build-targets--{key}"), chain)
+
+    def test_single_image_chains_and_dedicated_jobs_keep_their_names(self):
+        self.assertEqual(candidate._producer_job_name("build-targets--guacd"), "build (guacd)")
+        self.assertEqual(candidate._producer_job_name("teams-service"), "teams-service")
+
+    def test_the_name_matches_the_matrix_entry_of_every_build_group(self):
+        for group in candidate.changed_images.BUILD_GROUPS:
+            for size in range(1, len(group) + 1):
+                key = "build-targets--" + "--".join(group[-size:])
+                with self.subTest(key=key):
+                    self.assertEqual(candidate._producer_job_name(key), "build (" + " ".join(group) + ")")
+
+
 class MainPublisherTrustTests(RetrievePlanSelectionTests):
     @mock.patch.object(candidate, "trusted_blobs")
     @mock.patch.object(candidate, "validate_plan_receipt", return_value="b" * 40)
