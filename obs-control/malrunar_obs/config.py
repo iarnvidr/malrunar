@@ -61,7 +61,14 @@ DEFAULTS: dict[str, Any] = {
         "preview": None,
     },
     "http": {"bind": "0.0.0.0", "port": 18095},
-    "video": {"width": 640, "height": 360, "fps": 24, "default_profile": "360p"},
+    "video": {
+        "width": 640,
+        "height": 360,
+        "fps": 24,
+        "default_profile": "360p",
+        "idle_fps": 0,  # 0: off; else the frame rate while only the stopped scene is on air (program control)
+        "idle_fps_delay": 15.0,  # seconds the stopped scene must stay on air before the idle frame rate applies
+    },
     "output": {
         "url": "udp://127.0.0.1:18096?pkt_size=1316",
         "video_bitrate_kbps": 1200,
@@ -512,6 +519,16 @@ def validate(data: dict[str, Any], *, cameras: bool = True) -> None:
     video = data["video"]
     if video["width"] <= 0 or video["height"] <= 0 or video["fps"] <= 0:
         raise ConfigError("[video] width, height and fps must be positive")
+    if video["idle_fps"] < 0 or video["idle_fps_delay"] < 0:
+        raise ConfigError("[video] idle_fps and idle_fps_delay must not be negative")
+    if video["idle_fps"]:
+        if video["idle_fps"] >= video["fps"]:
+            raise ConfigError(
+                f"[video] idle_fps ({video['idle_fps']}) must be lower than fps ({video['fps']}); "
+                "0 turns the idle frame rate off"
+            )
+        if not data["features"]["program_control"]:
+            raise ConfigError("[video] idle_fps needs features.program_control (there is no stopped scene without it)")
     rescale = data["output"]["rescale"]
     if rescale and not (rescale.count("x") == 1 and all(part.isdigit() for part in rescale.split("x"))):
         raise ConfigError("[output] rescale must look like 640x360")

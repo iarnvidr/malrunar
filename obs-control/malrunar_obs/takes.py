@@ -466,6 +466,7 @@ class Takes:
         return {
             "base": (video.get("baseWidth"), video.get("baseHeight")),
             "output": (video.get("outputWidth"), video.get("outputHeight")),
+            "fps": (video["fpsNumerator"] / (video.get("fpsDenominator") or 1)) if video.get("fpsNumerator") else None,
         }
 
     async def _start_program_output(self) -> bool:
@@ -483,24 +484,33 @@ class Takes:
             await asyncio.sleep(0.5)
         return False
 
-    async def _set_canvas(self, size: tuple[int, int], output: tuple[int, int] | None = None) -> None:
-        """Switch the OBS canvas (the caller holds ``video_lock``). The program output restarts briefly."""
+    async def _set_canvas(
+        self, size: tuple[int, int], output: tuple[int, int] | None = None, fps: int | None = None
+    ) -> None:
+        """Switch the OBS canvas (the caller holds ``video_lock``). The program output restarts briefly.
+
+        ``fps`` also sets the frame rate in the same restart (arming from the idle frame rate, see
+        idlefps.py); None leaves it alone."""
         output = tuple(output or size)
         logger.info("take canvas restore stage=current_canvas target=%s/%s", size, output)
         current = await self.current_canvas()
-        if current["base"] == tuple(size) and current["output"] == output:
+        if (
+            current["base"] == tuple(size)
+            and current["output"] == output
+            and (fps is None or (current["fps"] is not None and abs(current["fps"] - fps) < 0.01))
+        ):
             return
         # StopRecord's response acknowledges the request, not encoder teardown.
         # The program recording and the take stream both own video encoders.
         await self.ctl.obs_client.stop_record_and_wait()
         try:
             logger.info("take canvas stage=SetVideoSettings")
-            await self.ctl.obs(
-                (
-                    "SetVideoSettings",
-                    {"baseWidth": size[0], "baseHeight": size[1], "outputWidth": output[0], "outputHeight": output[1]},
-                )
-            )
+            settings: dict[str, Any] = {
+                "baseWidth": size[0], "baseHeight": size[1], "outputWidth": output[0], "outputHeight": output[1]
+            }
+            if fps is not None:
+                settings.update({"fpsNumerator": fps, "fpsDenominator": 1})
+            await self.ctl.obs(("SetVideoSettings", settings))
         finally:
             logger.info("take canvas stage=restart_program_output")
             started = await self._start_program_output()
@@ -591,7 +601,11 @@ class Takes:
                 self.armed, self.armed_by, self.layout, self.slide = True, user, layout, slide
                 self.previous_scene, self.restore_canvas = previous, restore
                 try:
-                    await self._set_canvas(self.s.canvas)
+                    # From the idle frame rate the configured one is set in the same restart as the canvas.
+                    try:
+                        await self._set_canvas(self.s.canvas, fps=ctl.idle_fps.active_fps_for_canvas())
+                    finally:
+                        ctl.idle_fps.invalidate()
                     await self.apply_slide(user, slide)
                     await self.apply_layout(layout)
                     await ctl.obs(("SetCurrentProgramScene", {"sceneName": self.s.scene}))

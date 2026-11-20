@@ -60,6 +60,7 @@ class Levels:
             try:
                 async with ctl.obs_client.session(EVENT_INPUT_VOLUME_METERS | EVENT_SCENES) as socket:
                     ctl.program_scene_generation += 1
+                    ctl.idle_fps.kick()
                     async for raw in socket:
                         message = json.loads(raw)
                         data = message.get("d", {})
@@ -69,6 +70,7 @@ class Levels:
                             self.record(data.get("eventData", {}).get("inputs", []), time.monotonic())
                         elif data.get("eventType") == "CurrentProgramSceneChanged":
                             ctl.program_scene_generation += 1
+                            ctl.idle_fps.kick()
             except asyncio.CancelledError:
                 raise
             except Exception:

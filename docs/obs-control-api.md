@@ -112,6 +112,8 @@ Settings read only from the environment: `MALRUNAR_OBS_CONFIG` (config file path
 | `width` | `640` | `MALRUNAR_OBS_VIDEO_WIDTH` | OBS canvas and output width |
 | `height` | `360` | `MALRUNAR_OBS_VIDEO_HEIGHT` | OBS canvas and output height |
 | `fps` | `24` | `MALRUNAR_OBS_VIDEO_FPS` | Frame rate |
+| `idle_fps` | `0` | `MALRUNAR_OBS_VIDEO_IDLE_FPS` | Frame rate while only the stopped scene is on air; `0` (or unset) turns the feature off. Must be lower than `fps` and needs `features.program_control`; see [Idle frame rate](#idle-frame-rate) |
+| `idle_fps_delay` | `15.0` | `MALRUNAR_OBS_VIDEO_IDLE_FPS_DELAY` | Seconds the stopped scene must stay on air before `idle_fps` is applied (only with `idle_fps`) |
 | `default_profile` | `"360p"` | `MALRUNAR_OBS_VIDEO_DEFAULT_PROFILE` | The `[profiles.*]` entry applied at start in program control with `video_profiles` |
 
 #### `[output]`
@@ -330,6 +332,64 @@ on air and when audio is released:
 `features.sender_lease = false` removes the heartbeat requirement: the sender counts as always
 present (and without program control the b-roll capture starts at startup).
 
+## Idle frame rate
+
+With no call active the stopped scene (one colour source) is on air, yet OBS renders and encodes every
+frame at `video.fps`. On a host without a GPU that is a large share of a CPU for a black picture. With
+`[video] idle_fps` set (for example `6`) the controller lowers the frame rate while the stopped scene is
+on air and puts `video.fps` back before anything else goes on air. It is off by default, so existing
+deployments are unchanged, and it needs `features.program_control`.
+
+```toml
+[video]
+fps = 24
+idle_fps = 6          # 0 or absent: off
+idle_fps_delay = 15   # seconds on the stopped scene before the low rate applies
+```
+
+**When.** A background task follows `CurrentProgramSceneChanged`. When the stopped scene has been on air for
+`idle_fps_delay` seconds (every scene change restarts that time) and nothing holds the program (no plugin
+holder such as an armed take, no clip or b-roll playing or about to play, no relay recording or b-roll
+capture running, no go-live in flight), it applies `idle_fps`. Anything else on air (a camera, a clip, b-roll, a
+take scene) has the configured `fps`.
+
+**How.** OBS changes its frame rate only while no output runs, so a change is: take `video_lock`, stop the
+program output and wait for the encoder, `SetVideoSettings` with `fpsNumerator`/`fpsDenominator` only (the canvas
+and output size stay as they are), start the output again and wait until it is active. The change is
+verified by reading the settings back. If the output was not running, nothing is started.
+
+**Before a live scene.** `POST /api/call/live` (and `POST /api/scene/<key>`), `POST /api/clip/<id>/play`,
+`POST /api/daily-fallback/play` and arming a take restore `fps` first, under the same lock, and show the live scene
+only after the output runs again. Arming a take sets the frame rate in the same restart as the take canvas.
+A scene put on air by something else (a plugin, the OBS window) is caught by the same task, which restores
+`fps` as soon as it sees the change; that is a safety net and the live picture is then briefly at the low
+rate.
+
+**Cost at call start (the restart gap).** Each change stops and restarts the program output, so the stream to the
+bridge has a gap while the restore runs. The gap was not measured when this was written (it needs a real OBS);
+the controller measures it on every change: it logs `idle fps: now 24 fps (took Ns, program output down Ns)` and
+`GET /ready` reports `idle_fps.last_change` with `seconds` and `output_gap_seconds`. Read those after the first
+deployment, and compare `output_gap_seconds` with the bridge's own 5 second restart timeout. Ways to keep the gap
+off the call start:
+
+- `POST /api/call/prepare` restores `fps` without going live; a sender or console can call it when a call is being
+  set up, so the following `call/live` finds the rate already restored (it answers `{"ok", "idle_fps", "seconds",
+  "state"}`, `503` if the restore failed, and is harmless with the feature off).
+- A sender heartbeat that arrives after the sender had gone stale (the lease expired) starts the same restore in the
+  background.
+- A longer `idle_fps_delay` (minutes) keeps short "stop sending" pauses inside a call at the full rate. After a
+  prepare, a call that never goes live falls back to the low rate after the delay.
+
+**Bounds and failures.** A go-live waits at most 10 seconds for the restore; after that it goes on air and the
+restore finishes in the background (it always starts the output again). The restore itself is bounded by the
+encoder stop (30 s) and four start attempts (about 3 s each). A failed change is logged, the output is started
+again, the frame rate is read back and the task retries after 15 s, doubling to 5 minutes. A failed restore never
+stops a go-live; the safety net retries it. A controller restart reads the real frame rate from OBS, so a profile
+that was saved at the idle rate is restored as soon as a live scene is on air.
+
+**Do not use scaled sources in the stopped scene.** The idle scene is only a colour source of the canvas size;
+scaling a small source up (bicubic) costs more per frame than the lower frame rate saves.
+
 ## HTTP API and compatibility table
 
 The API is route-compatible with the controller it was extracted from: every path and method below
@@ -344,7 +404,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 |---|---|---|---|---|
 | `GET /` | Product console page | Generic console: output state, scene buttons, preview, recording, clips | Page rewritten; the sender iframe, `https` redirect and title are configuration | Set `console.sender_url` and `console.secure_url`, or set `console.enabled = false` and use the API |
 | `GET /health` | `{healthy, obs, scene, output_active, output_timecode}`, 503 when the output is off | same | none | none |
-| `GET /ready` | `{ready, obsVersion, rpcVersion}`; with the product mode also `mode`, mute states, video profile(s), program scene | same keys; the extras appear with `features.program_control`; `mode` is `features.mode_label`; `video_profile(s)` need `features.video_profiles`; plugins can add keys | `mode` default is `program-control`. The server answers `503 {"ready": false}` while OBS starts (the old server refused connections) | Set `features.mode_label` to the old value if a client checks it |
+| `GET /ready` | `{ready, obsVersion, rpcVersion}`; with the product mode also `mode`, mute states, video profile(s), program scene | same keys; the extras appear with `features.program_control`; `mode` is `features.mode_label`; `video_profile(s)` need `features.video_profiles`; `idle_fps` (`enabled`, `fps`, `idle_fps`, `state`, `last_change`) needs `video.idle_fps`; plugins can add keys | `mode` default is `program-control`. The server answers `503 {"ready": false}` while OBS starts (the old server refused connections) | Set `features.mode_label` to the old value if a client checks it |
 | `GET /api/whoami` | not present | `{user, name, email, groups, capabilities}` of the caller as obs-control sees it (nulls and `[]` for an anonymous caller); needs `viewer` | **new** | none |
 | `GET /api/scenes` | not present | `{scenes, program, keys, stopped}` | **new** | none |
 | `GET /api/program-preview.jpg` | JPEG of the program scene (640x360), `X-OBS-Scene` header | same | none | none |
@@ -368,6 +428,7 @@ A request that needs OBS while OBS is unavailable gets `503 {"ok": false, "error
 | `POST /api/clip/<id>/scene` | simple mode: switch to the clip's scene | same; 404 in program control | none | none |
 | `POST /api/clip/<id>/play` | product mode only: play, optional `{"loop": true}`; 422 when the duration cannot be read; 409 when a plugin holds the program | needs `features.program_control`; same | flag name | as above |
 | `POST /api/call/live` | product mode: go live (409 without a live sender) | needs `features.program_control`; goes live with the first camera | flag name | as above |
+| `POST /api/call/prepare` | none | needs `features.program_control`; restores `video.fps` ahead of a go-live when `video.idle_fps` is on (see [Idle frame rate](#idle-frame-rate)); a no-op otherwise | new | none |
 | `POST /api/call/stop` | product mode: stopped scene, muted | needs `features.program_control`; also releases any plugin holding the program first | flag name | as above |
 | `POST /api/call/microphone` | `{"muted": bool}` gates the live audio | same; applies to every camera source | flag name | as above |
 | `POST /api/call/clip-audio` | `{"muted": bool}` gates the clip audio | same | flag name | as above |
@@ -428,7 +489,7 @@ a plugin registered) is refused when access checks are on, until the plugin decl
 |---|---|
 | open | `GET /health`, `GET /ready` |
 | `viewer` | `GET /` (console), `GET /api/whoami`, `GET /api/scenes`, `GET /api/program-preview.jpg`, `GET /api/program-live.mjpg`, `GET /api/input-levels`, `GET /api/recording/status`, `GET /api/daily-fallback/status` |
-| `operator` | `GET /api/clips`, `GET /clips/<id>.mp4`, `GET /api/daily-fallback/preview`, `GET /media/3-minute-video.mp4`, `POST /api/clips/upload`, `POST /api/clips/<id>/trim`, `DELETE /api/clips/<id>`, `POST /api/scene/<key>`, `POST /api/clip/<id>/scene`, `POST /api/clip/<id>/play`, `POST /api/call/*` (`live`, `stop`, `microphone`, `clip-audio`, `video-profile`), `POST /api/recording/start`, `POST /api/recording/stop`, `POST /api/daily-fallback/play`, `POST /api/daily-fallback/cancel`, `POST /api/daily-fallback/ensure`, `POST /api/sender-heartbeat`, `POST /api/restart-live`, `POST /api/restart-output`, `POST /api/stop-output`, `POST /api/start-output`; with the takes plugin enabled every `/api/takes/*` route (below) |
+| `operator` | `GET /api/clips`, `GET /clips/<id>.mp4`, `GET /api/daily-fallback/preview`, `GET /media/3-minute-video.mp4`, `POST /api/clips/upload`, `POST /api/clips/<id>/trim`, `DELETE /api/clips/<id>`, `POST /api/scene/<key>`, `POST /api/clip/<id>/scene`, `POST /api/clip/<id>/play`, `POST /api/call/*` (`live`, `prepare`, `stop`, `microphone`, `clip-audio`, `video-profile`), `POST /api/recording/start`, `POST /api/recording/stop`, `POST /api/daily-fallback/play`, `POST /api/daily-fallback/cancel`, `POST /api/daily-fallback/ensure`, `POST /api/sender-heartbeat`, `POST /api/restart-live`, `POST /api/restart-output`, `POST /api/stop-output`, `POST /api/start-output`; with the takes plugin enabled every `/api/takes/*` route (below) |
 
 A refused request gets `403 {"ok": false, "error": ...}`.
 

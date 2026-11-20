@@ -38,6 +38,7 @@ class ApiCase(TempDir, unittest.IsolatedAsyncioTestCase):
     async def start(self, plugins=(), obs_password="", env=None, **sections) -> TestClient:
         self.obs = await FakeObs(self.scenes, password=obs_password).start()
         self.addAsyncCleanup(self.obs.stop)
+        self.configure_obs(self.obs)
         sections.setdefault("obs", {})
         sections["obs"].update({"websocket_port": self.obs.port})
         if obs_password:
@@ -50,6 +51,9 @@ class ApiCase(TempDir, unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(client.close)
         await self.controller.startup_task  # the startup sequence must not race the test
         return client
+
+    def configure_obs(self, obs: FakeObs) -> None:
+        """Hook: change the fake OBS before the controller starts."""
 
     def heartbeat_now(self):
         self.controller.sender_last_seen = datetime.now().timestamp()
@@ -64,7 +68,10 @@ class RouteTests(ApiCase):
             if route.method != "HEAD"
         }
         self.assertEqual(LEGACY_ROUTES - served, set())
-        self.assertEqual(served - LEGACY_ROUTES, {("GET", "/api/scenes"), ("GET", "/api/whoami")})
+        self.assertEqual(
+            served - LEGACY_ROUTES,
+            {("GET", "/api/scenes"), ("GET", "/api/whoami"), ("POST", "/api/call/prepare")},
+        )
 
 
 class HealthTests(ApiCase):

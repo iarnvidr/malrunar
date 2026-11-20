@@ -144,7 +144,8 @@ class Broll:
                 # A fresh sender means the live feed should be on air. This also prevents
                 # yesterday's fallback from staying active while the new one is being made.
                 if not program_control and ctl.live_camera is not None:
-                    await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.live_camera.scene}))
+                    async with ctl.idle_fps.live():
+                        await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.live_camera.scene}))
                 await self._cleanup_stale_capture(day, user)
                 work_dir.mkdir(parents=True, exist_ok=True)
                 sources: list[tuple[Path, list[tuple[float, float]]]] = []
@@ -307,7 +308,8 @@ class Broll:
                 else:
                     (scene,) = await ctl.obs(("GetCurrentProgramScene", {}))
                     if scene.get("currentProgramSceneName") == ctl.config.media.scene and ctl.live_camera:
-                        await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.live_camera.scene}))
+                        async with ctl.idle_fps.live():
+                            await ctl.obs(("SetCurrentProgramScene", {"sceneName": ctl.live_camera.scene}))
                 break
             except Exception:
                 await asyncio.sleep(1)
@@ -374,11 +376,12 @@ class Broll:
             await self.set_media_source(path)
             ctl.active_clip_input = media.source
             await ctl.set_program_audio_muted(ctl.program_audio_muted, strict=False)
-            await ctl.obs(
-                ("SetInputMute", {"inputName": media.source, "inputMuted": True}),
-                ("SetCurrentProgramScene", {"sceneName": media.scene}),
-                ("TriggerMediaInputAction", {"inputName": media.source, "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"}),
-            )
+            async with ctl.idle_fps.live():
+                await ctl.obs(
+                    ("SetInputMute", {"inputName": media.source, "inputMuted": True}),
+                    ("SetCurrentProgramScene", {"sceneName": media.scene}),
+                    ("TriggerMediaInputAction", {"inputName": media.source, "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"}),
+                )
         return web.json_response({"ok": True, "scene": media.scene})
 
     async def preview(self, request: web.Request) -> web.StreamResponse:

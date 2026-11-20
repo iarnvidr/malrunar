@@ -24,6 +24,9 @@ port = 18095
 width = 640
 height = 360
 fps = 24
+# idle_fps = 6                # with features.program_control: the frame rate while only the stopped scene is on air
+                              # (0/unset: off). The configured fps is restored before anything goes on air.
+# idle_fps_delay = 15         # seconds on the stopped scene before idle_fps applies
 default_profile = "360p"      # which [profiles.*] entry program control starts with
 
 [output]                      # what OBS streams: MPEG-TS over UDP (H.264 + AAC), e.g. to media-bridge

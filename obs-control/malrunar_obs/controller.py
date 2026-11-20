@@ -18,6 +18,7 @@ from websockets.exceptions import WebSocketException
 from . import broll as broll_module
 from . import clips as clips_module
 from . import console as console_module
+from . import idlefps as idlefps_module
 from . import levels as levels_module
 from . import preview as preview_module
 from .config import ENV_RESTORE, Config, Section, load_config
@@ -60,6 +61,7 @@ ROUTE_CAPABILITIES: dict[tuple[str, str], str] = {
     ("POST", "/api/clip/{clip_id}/scene"): OPERATOR,
     ("POST", "/api/clip/{clip_id}/play"): OPERATOR,
     ("POST", "/api/call/live"): OPERATOR,
+    ("POST", "/api/call/prepare"): OPERATOR,
     ("POST", "/api/call/stop"): OPERATOR,
     ("POST", "/api/call/microphone"): OPERATOR,
     ("POST", "/api/call/clip-audio"): OPERATOR,
@@ -145,6 +147,9 @@ class Controller:
         self.clips = clips_module.Clips(self)
         self.preview = preview_module.Preview(self)
         self.levels = levels_module.Levels(self)
+        self.idle_fps = idlefps_module.IdleFps(self)
+        if self.idle_fps.enabled:
+            self.add_ready_info(self.idle_fps.ready_info)
         self.app = web.Application(
             client_max_size=1024 * 1024 * 1024,
             middlewares=[self._errors, self._access],
@@ -315,6 +320,7 @@ class Controller:
         r.add_post("/api/clip/{clip_id}/scene", self.clips.switch)
         r.add_post("/api/clip/{clip_id}/play", self.clips.play)
         r.add_post("/api/call/live", self.call_live)
+        r.add_post("/api/call/prepare", self.call_prepare)
         r.add_post("/api/call/stop", self.call_stop)
         r.add_post("/api/call/microphone", self.microphone_gate)
         r.add_post("/api/call/clip-audio", self.clip_audio_gate)
@@ -417,7 +423,8 @@ class Controller:
                 )
             await self.broll.set_media_source(fallback)
         scene = self.config.scene_keys[key]
-        await self.obs(("SetCurrentProgramScene", {"sceneName": scene}))
+        async with self.idle_fps.live():
+            await self.obs(("SetCurrentProgramScene", {"sceneName": scene}))
         return web.json_response({"ok": True, "scene": scene})
 
     async def go_live(self, key: str) -> web.Response:
@@ -430,7 +437,9 @@ class Controller:
             return web.json_response(
                 {"ok": False, "error": "Live sender is unavailable; keeping neutral output"}, status=409
             )
-        await self.obs(("SetCurrentProgramScene", {"sceneName": camera.scene}))
+        # The configured frame rate is restored before the camera scene goes on air (see idlefps.py).
+        async with self.idle_fps.live():
+            await self.obs(("SetCurrentProgramScene", {"sceneName": camera.scene}))
         self.active_clip_input = None
         await self.set_program_audio_muted(self.program_audio_muted, strict=False)
         return web.json_response({"ok": True, "scene": camera.scene})
@@ -439,6 +448,18 @@ class Controller:
         if not self.program_control or self.live_camera is None:
             raise web.HTTPNotFound()
         return await self.go_live(self.live_camera.key)
+
+    async def call_prepare(self, request: web.Request) -> web.Response:
+        """Restore the configured frame rate ahead of a go-live (a no-op unless ``video.idle_fps`` is set)."""
+        if not self.program_control:
+            raise web.HTTPNotFound()
+        idle = self.idle_fps
+        began = datetime.now().timestamp()
+        ok = await idle.ensure_active()
+        payload: dict[str, Any] = {"ok": ok, "idle_fps": idle.enabled, "seconds": round(datetime.now().timestamp() - began, 2)}
+        if idle.enabled:
+            payload["state"] = idle.state
+        return web.json_response(payload, status=200 if ok else 503)
 
     async def stop_program(self) -> dict[str, Any]:
         if self.held_by():
@@ -715,7 +736,10 @@ class Controller:
             raise
         except Exception:
             healthy = not program_control
+        was_alive = self.sender_alive()
         self.sender_last_seen = datetime.now().timestamp() if healthy else 0
+        if healthy and not was_alive:
+            self.idle_fps.warm_up()  # a sender is back: a go-live may follow, so restore the frame rate now
         if program_control:
             return web.json_response({"ok": True, "daily_fallback": "manual"})
         self.broll.auto_start()
@@ -810,6 +834,7 @@ class Controller:
             self.sender_task = asyncio.create_task(self._monitor_sender())
         if self.program_control:
             self.levels_task = asyncio.create_task(self.levels.monitor())
+        self.idle_fps.start()
 
     async def _on_cleanup(self, app: web.Application) -> None:
         if self.clip_task is not None and not self.clip_task.done():
@@ -821,6 +846,7 @@ class Controller:
                     await task
                 except asyncio.CancelledError:
                     pass
+        await self.idle_fps.shutdown()
         await self.broll.shutdown()
         await self.preview.shutdown()
 

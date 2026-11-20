@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """A minimal obs-websocket (v5) server for tests: keeps scenes, inputs and the record state."""
+import asyncio
 import base64
 import hashlib
 import json
@@ -33,7 +34,10 @@ class FakeObs:
         self.calls: list[tuple[str, dict]] = []
         self.muted: dict[str, bool] = {}
         self.profile_parameters: dict[str, str] = {}
-        self.video = {"baseWidth": 640, "baseHeight": 360, "outputWidth": 640, "outputHeight": 360}
+        self.video = {
+            "baseWidth": 640, "baseHeight": 360, "outputWidth": 640, "outputHeight": 360,
+            "fpsNumerator": 24, "fpsDenominator": 1,
+        }
         self.streaming = False
         self.delayed_stream_stop = False
         self.delayed_record_stop = False
@@ -44,6 +48,11 @@ class FakeObs:
         self.camera_luma = 200  # brightness of the BMP GetSourceScreenshot returns
         self.scene_items: dict[str, list[dict]] = {}  # scene -> [{"sourceName", "sceneItemId"}]
         self.fail: dict[str, str] = {}  # request type -> comment: make that request fail
+        self.fail_once: dict[str, str] = {}  # request type -> comment: fail the next such request only
+        self.hold: dict[str, "asyncio.Event"] = {}  # request type -> event: answer only once it is set
+        self.held: dict[str, "asyncio.Event"] = {}  # request type -> set when a request is waiting in hold
+        self._pending_events: list[tuple] = []
+        self.subscribers: list[tuple] = []  # (socket, event subscription bits)
         self.server = None
         self.port = 0
 
@@ -83,6 +92,29 @@ class FakeObs:
                 await socket.close(4009, "Authentication failed")
                 return
         await socket.send(json.dumps({"op": 2, "d": {"negotiatedRpcVersion": 1}}))
+        subscriber = (socket, subscriptions)
+        self.subscribers.append(subscriber)
+        try:
+            await self._requests(socket, subscriptions)
+        finally:
+            self.subscribers.remove(subscriber)
+
+    async def broadcast(self, event_type, intent, event_data):
+        """Send an event to every connection that subscribed to ``intent``."""
+        message = json.dumps({"op": 5, "d": {"eventType": event_type, "eventIntent": intent, "eventData": event_data}})
+        for socket, bits in list(self.subscribers):
+            if bits & intent:
+                try:
+                    await socket.send(message)
+                except websockets.ConnectionClosed:
+                    pass
+
+    async def switch_scene(self, name):
+        """Another client changes the program scene (a plugin, the OBS window): the event goes out."""
+        self.current = name
+        await self.broadcast("CurrentProgramSceneChanged", 4, {"sceneName": name})
+
+    async def _requests(self, socket, subscriptions):
         async for raw in socket:
             message = json.loads(raw)
             if message.get("op") != 6:
@@ -90,6 +122,14 @@ class FakeObs:
             data = message["d"]
             kind, request_data = data["requestType"], data.get("requestData", {})
             self.calls.append((kind, request_data))
+            if kind in self.hold:
+                self.held.setdefault(kind, asyncio.Event()).set()
+                await self.hold[kind].wait()
+            if kind in self.fail_once:
+                self.fail[kind] = self.fail_once.pop(kind)
+                failing_once = kind
+            else:
+                failing_once = None
             inactive = ((kind == "StopStream" and not self.streaming)
                         or (kind == "StopRecord" and not self.recording))
             if inactive:
@@ -100,6 +140,8 @@ class FakeObs:
             else:
                 result, response = True, self.respond(kind, request_data)
                 comment = ""
+            if failing_once:
+                del self.fail[failing_once]
             status = {"result": result, "code": 100 if result else (501 if inactive else 600)}
             if comment:
                 status["comment"] = comment
@@ -107,9 +149,10 @@ class FakeObs:
             if response is not None:
                 reply["responseData"] = response
             await socket.send(json.dumps({"op": 7, "d": reply}))
+            while self._pending_events:
+                await self.broadcast(*self._pending_events.pop(0))
             if kind in ("StopStream", "StopRecord") and result and subscriptions & 64 and not self.suppress_stop_events:
                 async def stopped_event(kind=kind):
-                    import asyncio
                     stream = kind == "StopStream"
                     await socket.send(json.dumps({"op": 5, "d": {
                         "eventType": "StreamStateChanged" if stream else "RecordStateChanged",
@@ -123,7 +166,6 @@ class FakeObs:
                         self.streaming = False
                     else:
                         self.recording = False
-                import asyncio
                 asyncio.create_task(stopped_event())
 
     def respond(self, kind, data):
@@ -141,7 +183,10 @@ class FakeObs:
         elif kind == "SetCurrentProgramScene":
             if data["sceneName"] not in self.scenes:
                 raise AssertionError(f"unknown scene {data['sceneName']}")
+            changed = self.current != data["sceneName"]
             self.current = data["sceneName"]
+            if changed:
+                self._pending_events.append(("CurrentProgramSceneChanged", 4, {"sceneName": self.current}))
         elif kind == "GetSceneList":
             return {"scenes": [{"sceneName": name, "sceneIndex": i} for i, name in enumerate(reversed(self.scenes))]}
         elif kind == "CreateScene":
