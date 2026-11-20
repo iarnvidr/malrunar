@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+import changed_images
 import malrunar_image
 
 REPOSITORY = "iarnvidr/malrunar"
@@ -1071,8 +1072,17 @@ def verify_candidate_artifact(metadata, archive_zip: Path, run, pr, merge_sha, m
 
 
 def _producer_job_name(job_key):
+    """The workflow job that produced the artifact named after ``job_key``.
+
+    The key lists the images selected for testing; the job is the matrix entry, named after its whole
+    build chain. A chain can be longer than the selection (the parents of an obs-control-only change are
+    reused by content hash and not rebuilt), so the name comes from the chain the targets belong to.
+    """
     if job_key.startswith("build-targets--"):
         targets = job_key.removeprefix("build-targets--").split("--")
+        for group in changed_images.BUILD_GROUPS:
+            if set(targets) <= set(group):
+                return "build (" + " ".join(group) + ")"
         return "build (" + " ".join(targets) + ")"
     return job_key
 
