@@ -61,5 +61,5 @@ test('call routes use only the local bridge and require the verified owner and b
 test('call integration is opt-in and requires an owner and absolute Unix socket', () => {
   assert.equal(createCalls({}), undefined);
   assert.throws(() => createCalls({ socket: 'relative.sock', owner: 'owner' }), /absolute/);
-  assert.throws(() => createCalls({ socket: '/tmp/absolute.sock' }), /CALL_OWNER/);
+  assert.throws(() => createCalls({ socket: '/tmp/absolute.sock' }), /require an owner/);
 });

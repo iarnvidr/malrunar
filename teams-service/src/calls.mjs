@@ -43,7 +43,7 @@ function validateAction(body) {
 export function createCalls({ socket, owner }) {
   if (!socket && !owner) return undefined;
   if (!socket || !path.isAbsolute(socket) || !owner) {
-    throw new Error('Teams call controls require CALL_OWNER and an absolute CALL_SOCKET');
+    throw new Error('Teams call controls require an owner and an absolute socket path');
   }
 
   function request(method, route, body) {
