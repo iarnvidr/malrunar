@@ -80,8 +80,8 @@ program, so `docker run -e`, compose `environment:` or `ENV` are all that is nee
 | `MALRUNAR_TEAMS_SERVICE_NODE` | see Dependencies | The Node to run |
 | `MALRUNAR_TEAMS_SERVICE_MCP_DIST` | `/opt/malrunar/msteams-mcp/app/dist` | The `msteams-mcp` package's `dist/` |
 | `MALRUNAR_TEAMS_SERVICE_MCP_STATE_DIR` | `$HOME/.teams-mcp-server` | The directory the guard protects: where the package keeps its session (it is not configurable in the package, so leave it) |
-| `MALRUNAR_TEAMS_SERVICE_CALL_SOCKET` | unset | Absolute Unix socket path for the signed-in Teams browser adapter. Set with `CALL_OWNER` to enable call routes. |
-| `MALRUNAR_TEAMS_SERVICE_CALL_OWNER` | unset | The trusted proxy identity permitted to use that browser session. |
+| `MALRUNAR_TEAMS_SERVICE_CALLS_SOCKET` | unset | Absolute Unix socket path for the signed-in Teams browser adapter. Set with `MALRUNAR_TEAMS_SERVICE_CALLS_OWNER` to enable call routes. |
+| `MALRUNAR_TEAMS_SERVICE_CALLS_OWNER` | unset | The trusted proxy identity permitted to use that browser session. |
 
 ## Behind an authenticating proxy
 
