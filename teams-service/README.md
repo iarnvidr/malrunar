@@ -80,6 +80,8 @@ program, so `docker run -e`, compose `environment:` or `ENV` are all that is nee
 | `MALRUNAR_TEAMS_SERVICE_NODE` | see Dependencies | The Node to run |
 | `MALRUNAR_TEAMS_SERVICE_MCP_DIST` | `/opt/malrunar/msteams-mcp/app/dist` | The `msteams-mcp` package's `dist/` |
 | `MALRUNAR_TEAMS_SERVICE_MCP_STATE_DIR` | `$HOME/.teams-mcp-server` | The directory the guard protects: where the package keeps its session (it is not configurable in the package, so leave it) |
+| `MALRUNAR_TEAMS_SERVICE_CALL_SOCKET` | unset | Absolute Unix socket path for the signed-in Teams browser adapter. Set with `CALL_OWNER` to enable call routes. |
+| `MALRUNAR_TEAMS_SERVICE_CALL_OWNER` | unset | The trusted proxy identity permitted to use that browser session. |
 
 ## Behind an authenticating proxy
 
@@ -146,6 +148,16 @@ Every route but `GET /health` needs `Authorization: Bearer <token>`. JSON in and
 | `POST /chats/<id>/send`, `/upload`, `/read`, `/messages/<id>/edit`, `/delete`, `/reaction` | Live writes (503 with `signedOut: true` when the session is gone) |
 | `GET /calendar/status`, `/calendar/events`, `/calendar/events/<id>` | The calendar copy (default and subscribed calendars) |
 | `POST /calendar/sync`, `/calendar/events`, `/calendar/events/<id>/update`, `/respond`, `/delete` | Calendar writes, through Microsoft Graph with the session's own client; subscribed calendars are read-only |
+
+### Calls
+
+With both call settings configured, `GET /calls/state` reads the observed Teams browser state.
+`POST /calls/actions` sends a command using the `sessionId` and `revision` from that state.
+For example, send `{"action":"join","sessionId":"…","revision":4}` after Teams reports that Join
+is available. The browser adapter rechecks state, capability, and the requested target before acting.
+The API requires both the service bearer token and the configured owner identity from a trusted proxy.
+The Unix socket is private to the service and the adapter. Video and audio transport continue through
+the deployment's Teams-window media service.
 
 ## What is stored
 

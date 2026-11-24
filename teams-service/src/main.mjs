@@ -16,12 +16,14 @@ import { createCalendar } from './calendar.mjs';
 import { createFileClient } from './files.mjs';
 import { mediaKey } from './messages.mjs';
 import { ConfigError, IdentityConfig } from './forward-auth.mjs';
+import { createCalls } from './calls.mjs';
 
 // Settings: MALRUNAR_TEAMS_SERVICE_* variables, documented in ../README.md.
 const env = name => process.env[`MALRUNAR_TEAMS_SERVICE_${name}`];
 const dataDir = env('DATA_DIR') || path.join(os.homedir(), '.local', 'share', 'malrunar-teams-service');
 const port = Number(env('PORT') || 18390);
 const bind = env('BIND') || '127.0.0.1';
+const calls = createCalls({ socket: env('CALL_SOCKET'), owner: env('CALL_OWNER') });
 const pbUrl = env('PB_URL') || `http://127.0.0.1:${Number(env('PB_PORT') || 18391)}`;
 const levels = { error: 0, warn: 1, info: 2, debug: 3 };
 const threshold = levels[env('LOG_LEVEL') || 'info'] ?? 2;
@@ -95,7 +97,7 @@ async function registerArchivedFiles() {
   await store.setState('file_archive_registered', true);
 }
 if (identityWarning) log('warn', identityWarning);
-const server = createServer({ token, store, sync, teams, auth, media, files, calendar, myName, identity, log });
+const server = createServer({ token, store, sync, teams, auth, media, files, calendar, calls, myName, identity, log });
 server.listen(port, bind, () => {
   log('info', `Teams service listening on ${bind}:${port}`);
   auth.ensure().then(() => sync.start()).catch(() => sync.start());

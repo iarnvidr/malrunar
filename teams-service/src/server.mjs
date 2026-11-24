@@ -10,6 +10,7 @@ import { imageSize } from './media.mjs';
 import { PRIORITY, TeamsError } from './teams.mjs';
 import { GraphError } from './calendar-auth.mjs';
 import { IdentityConfig } from './forward-auth.mjs';
+import { CallError } from './calls.mjs';
 
 const MAX_BODY = 1024 * 1024;
 const MAX_TEXT = 28000;
@@ -51,7 +52,7 @@ async function readJson(request) {
 
 const intParam = (value, fallback, low, high) => { const number = Number.parseInt(value, 10); return Number.isFinite(number) ? Math.max(low, Math.min(high, number)) : fallback; };
 
-export function createServer({ token, store, sync, teams, auth, media, files, calendar, myName = () => '', stats = () => ({}), now = () => Date.now(), identity = new IdentityConfig(), log = () => {} }) {
+export function createServer({ token, store, sync, teams, auth, media, files, calendar, calls, myName = () => '', stats = () => ({}), now = () => Date.now(), identity = new IdentityConfig(), log = () => {} }) {
   const expected = Buffer.from(token);
   const authorised = request => {
     const header = String(request.headers.authorization || '');
@@ -127,6 +128,14 @@ export function createServer({ token, store, sync, teams, auth, media, files, ca
   const routes = [];
   const route = (method, pattern, handler, options = {}) => routes.push({ method, pattern: new RegExp(`^${pattern}$`), handler, raw: !!options.raw });
   const seg = '([^/]+)';
+
+  if (calls) {
+    const requireOwner = who => {
+      if (!who.trusted || who.user !== calls.owner) throw new HttpError(403, 'This Teams call belongs to another user.');
+    };
+    route('GET', '/calls/state', ({ identity: who }) => { requireOwner(who); return calls.state(); });
+    route('POST', '/calls/actions', ({ identity: who, body }) => { requireOwner(who); return calls.action(body); });
+  }
 
   if (calendar) {
     route('GET', '/calendar/status', async () => calendar.status());
@@ -338,6 +347,7 @@ export function createServer({ token, store, sync, teams, auth, media, files, ca
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       if (error instanceof HttpError) { json(response, error.status, { error: error.message, ...error.extra }); return; }
+      if (error instanceof CallError) { json(response, error.status, { error: error.message, code: error.code }); return; }
       if (error instanceof GraphError) {
         json(response, error.signedOut ? 503 : error.status >= 400 && error.status < 500 ? error.status : 502,
           { error: error.message, ...(error.signedOut ? { signedOut: true } : {}) });
