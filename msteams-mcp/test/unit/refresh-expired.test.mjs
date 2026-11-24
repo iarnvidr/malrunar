@@ -1,4 +1,4 @@
-// patches/refresh-expired.cjs: a session whose access tokens have all expired is renewed over HTTP
+// A session whose access tokens have all expired is renewed over HTTP
 // instead of being given up on ("No token found in session").
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ test('all access tokens expired: the HTTP refresh runs and succeeds', { skip: !h
     });
     assert.equal(result.status, 0, result.stderr);
     const outcome = JSON.parse(result.stdout.trim().split('\n').pop());
-    assert.deepEqual({ ok: outcome.ok, method: outcome.method }, { ok: true, method: 'http' }, JSON.stringify(outcome));
+    assert.deepEqual({ ok: outcome.ok, refreshed: outcome.refreshed }, { ok: true, refreshed: true }, JSON.stringify(outcome));
     const refreshes = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(q => q.params.grant_type === 'refresh_token');
     assert.ok(refreshes.length >= 1, 'the refresh token was redeemed');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }

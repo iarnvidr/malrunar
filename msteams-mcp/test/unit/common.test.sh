@@ -14,12 +14,14 @@ trap 'rm -rf "$work"' EXIT
 export HOME="$work/home"
 mkdir -p "$HOME"
 
-echo '-- log level: only warn and error may reach stdout-safe output'
+echo '-- log level: allow warn and error and diagnose unsupported values on stderr'
 unset MALRUNAR_MSTEAMS_MCP_LOG_LEVEL
 [ "$(ms_server_log_level)" = warn ] || fail 'default level is not warn'
 export MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=error; [ "$(ms_server_log_level)" = error ] || fail 'error is refused'
 export MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=info; [ "$(ms_server_log_level 2>/dev/null)" = warn ] || fail 'info must be turned into warn'
-export MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=debug; ms_server_log_level 2>&1 >/dev/null | grep -q 'stdout' || fail 'the refusal of debug says nothing about stdout'
+export MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=debug
+[ "$(ms_server_log_level 2>"$work/debug.log")" = warn ] || fail 'debug must be turned into warn'
+grep -q 'Unsupported MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=debug' "$work/debug.log" || fail 'debug fallback did not log a warning on stderr'
 unset MALRUNAR_MSTEAMS_MCP_LOG_LEVEL
 
 echo '-- the visible browser profile follows the work-browser component, and can be overridden'

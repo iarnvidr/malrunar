@@ -82,8 +82,9 @@ RUN revision="$(node -p "require('/src/node_modules/playwright-core/browsers.jso
     cp /usr/share/common-licenses/MPL-2.0 "$out/licenses/MPL-2.0"; \
     node /scripts/list-licenses.cjs /src/node_modules "$out/THIRD-PARTY.txt"; \
     commit="$(git -C /src rev-parse HEAD)"; \
-    printf 'msteams-mcp (upstream version 0.27.2) built from https://github.com/m0nkmaster/msteams-mcp at commit %s (MIT)\nnpm dependencies: package-lock.json of that commit, production set (npm ci --omit=dev)\npatched at build time by the files in msteams-mcp/patches/ of https://github.com/iarnvidr/malrunar (see README.md)\n\nbrowser: Playwright Firefox build %s (Firefox %s, MPL-2.0), firefox-ubuntu-24.04.zip from cdn.playwright.dev, sha256 %s\n  the browser is built and distributed by the Playwright project from the Mozilla sources with its own patches; it is not the Firefox that Mozilla builds and is not branded or supported as such.\n  Mozilla source: https://hg.mozilla.org/mozilla-unified (the Firefox %s release); Playwright patches: https://github.com/microsoft/playwright/tree/main/browser_patches/firefox\n' \
-        "$commit" "${revision}" "${version}" "${PLAYWRIGHT_FIREFOX_SHA256}" "${version}" > "$out/SOURCE.txt"
+    package_version="$(node -p 'require("/src/package.json").version')"; \
+    printf 'msteams-mcp (upstream version %s) built from https://github.com/m0nkmaster/msteams-mcp at commit %s (MIT)\nnpm dependencies: package-lock.json of that commit, production set (npm ci --omit=dev)\npatched at build time by the files in msteams-mcp/patches/ of https://github.com/iarnvidr/malrunar (see README.md)\n\nbrowser: Playwright Firefox build %s (Firefox %s, MPL-2.0), firefox-ubuntu-24.04.zip from cdn.playwright.dev, sha256 %s\n  the browser is built and distributed by the Playwright project from the Mozilla sources with its own patches; it is not the Firefox that Mozilla builds and is not branded or supported as such.\n  Mozilla source: https://hg.mozilla.org/mozilla-unified (the Firefox %s release); Playwright patches: https://github.com/microsoft/playwright/tree/main/browser_patches/firefox\n' \
+        "$package_version" "$commit" "${revision}" "${version}" "${PLAYWRIGHT_FIREFOX_SHA256}" "${version}" > "$out/SOURCE.txt"
 
 FROM scratch AS component
 COPY --link --from=build /out/ /

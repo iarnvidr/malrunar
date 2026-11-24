@@ -77,11 +77,6 @@ replaceOnce(
   "const TEAMS_URL = process.env.MSTEAMS_TEAMS_URL || 'https://teams.cloud.microsoft'; // patched: was teams.microsoft.com",
   "TEAMS_URL",
 );
-replaceOnce(
-  "    // If on Teams domain, check for authenticated content\n    if (currentUrl.includes('teams.microsoft.com')) {",
-  "    // If on Teams domain, check for authenticated content (patched: any Teams domain)\n    if (isTeamsUrl(currentUrl)) {",
-  "getAuthStatus() Teams-domain check",
-);
 
 replaceOnce(
   "const TOKEN_REFRESH_WAIT_TIMEOUT_MS = 20000;",
@@ -122,20 +117,8 @@ replaceOnce(
   "waitForTokenRefresh() header",
 );
 
-replaceOnce(
-  "        // In visible mode, the tokens might refresh while user interacts, or they can\n" +
-    "        // manually complete any prompts. We've saved what we have.\n" +
-    "        log('Session state saved (tokens may need refresh).');\n" +
-    "        return;\n",
-  "        // patched: wait for (and prime) the Substrate token in visible mode too,\n" +
-    "        // instead of saving a session no messaging/search call can use.\n" +
-    "        const refreshed = await waitForTokenRefresh(page, context, onProgress);\n" +
-    "        log(refreshed ? 'Session state saved.' : 'Session state saved (no Substrate token acquired yet).');\n" +
-    "        return;\n",
-  "visible-mode 'tokens may need refresh' branch",
-);
 
-}, ["MSTEAMS_TOKEN_REFRESH_WAIT_MS", "MSTEAMS_TEAMS_URL", "if (isTeamsUrl(currentUrl)) {", "Session state saved (no Substrate token acquired yet)."]);
+}, ["MSTEAMS_TOKEN_REFRESH_WAIT_MS", "MSTEAMS_TEAMS_URL", "if (isTeamsUrl(currentUrl)) {"]);
 
 // Messaging (chatsvc) authenticates with two cookies, and extractMessageAuth
 // only looked for them on teams.microsoft.com. On teams.cloud.microsoft the

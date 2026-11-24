@@ -3,6 +3,7 @@
 const PKG = process.env.MALRUNAR_MSTEAMS_MCP_PKG;
 const store = await import(`${PKG}/auth/session-store.js`);
 const { refreshTokensViaBrowser } = await import(`${PKG}/auth/token-refresh.js`);
+const { extractSubstrateToken } = await import(`${PKG}/auth/token-extractor.js`);
 
 const jwt = claims => 'ey' + Buffer.from('{"alg":"none"}').toString('base64url') + '.' + Buffer.from(JSON.stringify(claims)).toString('base64url') + '.sig';
 const past = Math.floor(Date.now() / 1000) - 7200;
@@ -18,4 +19,5 @@ store.writeSessionState({
   }],
 });
 const result = await refreshTokensViaBrowser();
-console.log(JSON.stringify({ ok: result.ok, method: result.ok ? result.value.method : null, error: result.ok ? null : result.error.message }));
+console.log(JSON.stringify({ ok: result.ok, refreshed: (extractSubstrateToken()?.expiry.getTime() ?? 0) > Date.now(),
+  error: result.ok ? null : result.error.message }));

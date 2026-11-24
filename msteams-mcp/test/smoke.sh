@@ -26,6 +26,8 @@ done
 ubuntu_image="$(python3 "$tool" pins --all msteams-mcp | sed -n 's/^UBUNTU_IMAGE=//p')"
 apt_snapshot="$(python3 "$tool" pins --all msteams-mcp | sed -n 's/^APT_SNAPSHOT=//p')"
 [ -n "$ubuntu_image" ] && [ -n "$apt_snapshot" ] || fail 'UBUNTU_IMAGE or APT_SNAPSHOT pin missing'
+upstream_commit="$(python3 "$tool" pins msteams-mcp | sed -n 's/^MSTEAMS_MCP_COMMIT=//p')"
+[ -n "$upstream_commit" ] || fail 'MSTEAMS_MCP_COMMIT pin missing'
 
 work="$(mktemp -d)"
 cid=""
@@ -70,17 +72,16 @@ done
 test -x "$work/out/bin/malrunar-msteams-mcp" || fail 'bin/malrunar-msteams-mcp is not executable'
 grep -q 'Apache License' "$work/out/LICENSE" || fail 'LICENSE is not the Apache-2.0 text'
 grep -q 'MIT License' "$work/out/licenses/msteams-mcp-LICENSE" || fail 'the upstream licence is not the MIT text'
-grep -q 'a69069cd3f4852122de2db0beb1a58c51876fccd' "$work/out/SOURCE.txt" || fail 'SOURCE.txt does not name the pinned commit'
+grep -Fq "at commit $upstream_commit (MIT)" "$work/out/SOURCE.txt" || fail 'SOURCE.txt does not name the pinned commit'
 ls "$work"/out/browsers/firefox-*/firefox/firefox >/dev/null || fail "Playwright's Firefox is missing"
 test -e "$work"/out/browsers/firefox-*/INSTALLATION_COMPLETE || fail "Playwright's Firefox has no installation marker"
 test -z "$(docker image inspect --format '{{range .Config.Entrypoint}}{{.}}{{end}}' "$image")" || fail 'component image sets an entrypoint'
 bash -n "$work/out/bin/malrunar-msteams-mcp"; bash -n "$work/out/lib/common.sh"
 
 echo '== the patches are in the shipped package (the build also fails when one does not apply)'
-for needle in "import { firefox } from 'playwright';" 'MSTEAMS_LOGIN_TIMEOUT_MS' 'async function primeSubstrateToken(page)' 'newestTeamsCookie(' 'TEAMS_WEB_SPA_CLIENT_ID' 'patched: no unexpired token'; do
+for needle in 'PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH' 'MSTEAMS_LOGIN_TIMEOUT_MS' 'async function primeSubstrateToken(page)' 'newestTeamsCookie(' 'TEAMS_WEB_SPA_CLIENT_ID'; do
     grep -rqF -- "$needle" "$work/out/app/dist" || fail "'$needle' is not in the shipped dist/"
 done
-grep -rq 'chromium' "$work/out/app/dist/browser/context.js" && fail 'dist/browser/context.js still mentions chromium' || true
 ! grep -rlq 'SSEServerTransport\|StreamableHTTPServerTransport' "$work/out/app/dist" || fail 'an HTTP transport is in the package'
 test "$(find "$work/out/app/node_modules" -maxdepth 1 -name 'typescript' | wc -l)" = 0 || fail 'a development dependency (typescript) is in the package'
 

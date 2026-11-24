@@ -124,7 +124,7 @@ console.log('SESSION_SEEDED');
 
 const refreshed = await refreshTokensViaHttp();
 if (!refreshed.ok) { console.log('REFRESH_ERROR', refreshed.error?.message); process.exit(1); }
-console.log('REFRESH_OK', JSON.stringify(refreshed.value).slice(0, 300));
+console.log('REFRESH_OK');
 try {
   console.log(`REGION ${await ensureRegion()}`);
 } catch (error) {
