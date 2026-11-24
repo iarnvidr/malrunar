@@ -4,7 +4,7 @@
 FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
 COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
 COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
-COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.27.2 / /
+COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.32.0 / /
 # optional: a local copy of chats and calendar (needs node and msteams-mcp, nothing else)
 # COPY --link --from=ghcr.io/iarnvidr/teams-service:0.1.0 / /
 

@@ -25,7 +25,8 @@ export function createAuth({ lib, now = () => Date.now(), log = () => {} }) {
   let lastAttempt = 0;
   const status = { state: 'starting', since: now(), detail: '', refreshedAt: 0, mode: 'file' };
 
-  const clearCaches = () => { lib.tokenExtractor.clearTokenCache(); lib.guards.clearRegionCache(); };
+  const clearTokenCache = lib.sessionStore.clearTokenCache ?? lib.tokenExtractor.clearTokenCache;
+  const clearCaches = () => { clearTokenCache(); lib.guards.clearRegionCache(); };
 
   function snapshot() {
     let auth = null;

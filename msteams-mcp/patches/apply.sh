@@ -10,7 +10,7 @@ dist="$pkg/dist"
 [ -d "$dist" ] || { echo "msteams-mcp patches: $dist does not exist (build the package first)" >&2; exit 1; }
 
 # The order matters only for readability: each patch touches its own statements.
-patches=(browser-firefox login-timeout substrate-token refresh-origin refresh-expired)
+patches=(browser-firefox login-timeout substrate-token refresh-origin)
 tree_hash() { (cd "$dist" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
 
 for name in "${patches[@]}"; do
@@ -27,22 +27,21 @@ done
 fail() { echo "msteams-mcp patches: $*" >&2; exit 1; }
 has() { grep -qF -- "$2" "$dist/$1" || fail "expected '$2' in dist/$1 after patching"; }
 
-has browser/context.js "import { firefox } from 'playwright';"
-has browser/context.js "firefox.launchPersistentContext(BROWSER_PROFILE_DIR"
+has browser/context.js "import { chromium, firefox } from 'playwright';"
+has browser/context.js "const FIREFOX_PROFILE_DIR = path.join(CONFIG_DIR, 'browser-profile');"
 has browser/context.js "PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH"
-has tools/auth-tools.js "if (!input.forceNew) {"
+has auth/session-store.js "for (const file of [SESSION_STATE_PATH, TOKEN_CACHE_PATH"
 has cli.js "MSTEAMS_LOGIN_TIMEOUT_MS"
 has browser/auth.js "async function primeSubstrateToken(page)"
 has browser/auth.js "MSTEAMS_TEAMS_URL"
 has auth/token-extractor.js "newestTeamsCookie("
 has auth/token-refresh-http.js "clientId === TEAMS_WEB_SPA_CLIENT_ID"
-has auth/token-refresh.js "// patched: no unexpired token -> still try the HTTP refresh"
+has auth/token-refresh.js "const httpResult = await refreshTokensViaHttp();"
 
 # Assumptions of the component (not patches): fail the build if upstream changes them.
-# `info` and `debug` log to STDOUT, the stream the stdio MCP transport speaks on, and `info` is the
-# default level: the launcher therefore runs the server with LOG_LEVEL=warn (README, "LOG_LEVEL").
-grep -rqF 'console.log(`[${context}] ${message}`)' "$dist/utils/logger.js" \
-    || fail 'expected info-level logging to go to stdout in dist/utils/logger.js; re-verify LOG_LEVEL handling in bin/malrunar-msteams-mcp'
+# The stdio transport reserves stdout for protocol messages.
+has utils/logger.js 'console.error(`[${context}] ${message}`)'
+if grep -q 'console.log' "$dist/utils/logger.js"; then fail 'MCP logging uses stdout'; fi
 grep -rq 'teams-mcp-server' "$dist/auth/session-store.js" || fail "expected the state directory name 'teams-mcp-server' in dist/auth/session-store.js"
 grep -rq 'os.userInfo().username' "$dist/auth/crypto.js" || fail 'expected the hostname:username key derivation in dist/auth/crypto.js; re-verify the README section on the token cache key'
 grep -rq 'StdioServerTransport' "$dist/server.js" || fail 'expected StdioServerTransport in dist/server.js'

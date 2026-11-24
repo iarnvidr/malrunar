@@ -115,6 +115,7 @@ ms_validate_settings() {
 
 # Map the component's MALRUNAR_MSTEAMS_MCP_* settings onto the variables the patched package reads.
 ms_export_package_env() {
+    export TEAMS_BROWSER=firefox
     export PLAYWRIGHT_BROWSERS_PATH="$MS_ROOT/browsers"
     export PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH="${MALRUNAR_MSTEAMS_MCP_FIREFOX:-$MS_PLAYWRIGHT_FIREFOX}"
     # The host check of Playwright only knows the Ubuntu releases it was published for.
@@ -127,12 +128,12 @@ ms_export_package_env() {
     MALRUNAR_MSTEAMS_MCP_BROWSER_PROFILE_DIR="$(ms_browser_profile_dir)"
 }
 
-# `info` and `debug` log to STDOUT, which is the MCP transport: only warn and error are safe.
+# Keep the service's existing quiet logging default.
 ms_server_log_level() {
     local level="${MALRUNAR_MSTEAMS_MCP_LOG_LEVEL:-warn}"
     case "$level" in
         warn|error) ;;
-        *) ms_log "MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=$level would write to stdout, the MCP transport; using warn"; level=warn ;;
+        *) ms_log "Unsupported MALRUNAR_MSTEAMS_MCP_LOG_LEVEL=$level; using warn"; level=warn ;;
     esac
     printf '%s' "$level"
 }

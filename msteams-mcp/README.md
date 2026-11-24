@@ -46,7 +46,7 @@ and the long-lived browser is the `work-browser` component's program.
 FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
 COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
 COPY --link --from=ghcr.io/iarnvidr/work-browser:0.1.0 / /
-COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.27.2 / /
+COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.32.0 / /
 RUN useradd --create-home --uid 1000 --shell /bin/bash me
 ENV PATH=/opt/malrunar/node/bin:$PATH MALRUNAR_WORK_BROWSER_USER=me
 ```
@@ -130,10 +130,8 @@ stable. The build asserts that upstream still derives the key this way.
 
 ### LOG_LEVEL
 
-Upstream logs at `info` by default and writes `info` and `debug` to **stdout**, which is the MCP
-transport: one log line corrupts the protocol. The command therefore always runs the server with
-`LOG_LEVEL=warn` (or `error`). The build asserts that upstream still logs to stdout that way, and the
-smoke test checks that the server's stdout is clean JSON-RPC even when `info` is requested.
+Upstream 0.32.0 logs to stderr, leaving stdout for MCP JSON-RPC. Malrunar keeps the existing
+`warn` default and the option to use `error`. The build and smoke test check the transport.
 
 ## Signing in
 
@@ -179,7 +177,7 @@ extension instead. The smoke test runs it against the real work browser under a 
 ## Patches
 
 The package is built from the pinned upstream commit, then [`patches/apply.sh`](patches/apply.sh) applies
-five patches to the compiled `dist/`. **The build fails** when a patch does not apply to the pinned commit,
+four patches to the compiled `dist/`. **The build fails** when a patch does not apply to the pinned commit,
 when a patch changes nothing, and when an assumption this component relies on is no longer true (the
 logging stream, the state directory name, the key derivation, stdio-only transport, the exports the
 modules of `libexec/` import). The patches are generic fixes, offered upstream in
@@ -187,18 +185,16 @@ modules of `libexec/` import). The patches are generic fixes, offered upstream i
 
 | Patch | Fixes |
 |---|---|
-| [`browser-firefox.cjs`](patches/browser-firefox.cjs) | Launches Firefox instead of the hard-coded Chromium channel; `PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH` selects the binary. Playwright only drives its own Firefox build, so the component ships that |
-| [`login-timeout.cjs`](patches/login-timeout.cjs) | `teams_login --force` timing out before a person sees the page (a doomed headless attempt ate the shared timeout); the timeout becomes `MSTEAMS_LOGIN_TIMEOUT_MS`, default 10 minutes |
+| [`browser-firefox.cjs`](patches/browser-firefox.cjs) | Uses upstream's Firefox support with the existing Firefox profile and executable setting. The component ships Playwright's patched Firefox build. |
+| [`login-timeout.cjs`](patches/login-timeout.cjs) | Keeps the configurable CLI timeout and limits forced reset to the package's authentication files and profile. |
 | [`substrate-token.cjs`](patches/substrate-token.cjs) | A "successful" login that left no Substrate token: login on `teams.cloud.microsoft`, any Teams domain accepted, the search box primed so Teams acquires the token, messaging cookies read from both domains (newest wins) |
 | [`refresh-origin.cjs`](patches/refresh-origin.cjs) | The refresh sent the browser `Origin` header for every client; Entra rejects it for non-SPA clients, so a session made by another public client could never be renewed |
-| [`refresh-expired.cjs`](patches/refresh-expired.cjs) | After an idle hour every access token has expired, and the renewal gave up before trying the HTTP refresh |
 
 The unit tests run the refresh patches against the shipped package with a scripted Microsoft
 (`test/unit/`), and the smoke test starts the Playwright Firefox through the patched package.
 
-**Upstream has moved on.** The pinned commit is the one npm published as 0.27.2; upstream is at 0.30.x, where
-some of these are fixed and the dist layout differs, so four of the five patches do not apply there. Moving
-the pin means re-reading each patch against the new source (the build tells you which no longer apply).
+The 0.32.0 release tries HTTP refresh even when every access token has expired, and goes directly
+to visible login on a forced sign-in. The build relies on those upstream behaviors.
 
 ## Device-code sign-in (optional, off by default)
 
