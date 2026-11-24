@@ -61,7 +61,7 @@ outside="$(grep -v '^opt/malrunar/teams-service\(/\|$\)' "$work/files.txt" \
     | grep -v '^opt/$\|^opt/malrunar/$\|^etc/$\|^etc/supervisor/$\|^etc/supervisor/conf.d/$\|^etc/supervisor/conf.d/malrunar-teams-service.conf$\|^\.dockerenv$\|^dev/\|^etc/hostname$\|^etc/hosts$\|^etc/mtab$\|^etc/resolv.conf$\|^proc/\|^sys/\|^dev$\|^proc$\|^sys$' || true)"
 [ -z "$outside" ] || fail "files outside /opt/malrunar/teams-service and the supervisord fragment: $outside"
 if grep -Ei 'node_modules|(^|/)node$|firefox|playwright|msteams-mcp/' "$work/files.txt"; then fail 'the component ships node, a browser or the msteams-mcp package; they are separate components'; fi
-for f in bin/malrunar-teams-service bin/malrunar-teams-pocketbase lib/common.sh src/main.mjs src/lib.mjs src/server.mjs dev/fixture.mjs package.json README.md LICENSE SOURCE.txt THIRD-PARTY.txt licenses/github.com_pocketbase_pocketbase/LICENSE.md; do
+for f in bin/malrunar-teams-service bin/malrunar-teams-pocketbase lib/common.sh src/main.mjs src/lib.mjs src/server.mjs src/calls.mjs dev/fixture.mjs package.json README.md LICENSE SOURCE.txt THIRD-PARTY.txt licenses/github.com_pocketbase_pocketbase/LICENSE.md; do
     test -s "$work/out/$f" || fail "$f is missing"
 done
 test -x "$work/out/bin/malrunar-teams-service" && test -x "$work/out/bin/malrunar-teams-pocketbase" || fail 'a program is not executable'

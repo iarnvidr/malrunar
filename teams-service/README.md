@@ -32,7 +32,7 @@ For the supervisord program (below) the image also needs `supervisor`, which `de
 ```dockerfile
 FROM ghcr.io/iarnvidr/desktop-base:153.5.1esr
 COPY --link --from=ghcr.io/iarnvidr/node:24.22.1 / /
-COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.27.2 / /        # which itself needs work-browser to run its own commands
+COPY --link --from=ghcr.io/iarnvidr/msteams-mcp:0.32.0 / /        # which itself needs work-browser to run its own commands
 COPY --link --from=ghcr.io/iarnvidr/teams-service:0.1.0 / /
 RUN useradd --create-home --uid 1000 --shell /bin/bash me
 ENV PATH=/opt/malrunar/node/bin:$PATH MALRUNAR_TEAMS_SERVICE_USER=me
