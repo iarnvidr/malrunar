@@ -413,6 +413,8 @@ async def assemble(
             str(target_seconds),
             "-c:v",
             "libx264",
+            "-pix_fmt",
+            "yuv420p",
             "-preset",
             "veryfast",
             "-crf",
